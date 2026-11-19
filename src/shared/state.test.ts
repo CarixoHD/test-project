@@ -331,12 +331,159 @@ const PRODUCT_CASES: Case[] = [
   },
 ];
 
-const ALL_CASES: Case[] = [...PRODUCT_CASES];
+const ISSUE_VIEW: IssueView = {
+  id: I,
+  number: 1,
+  title: 'Add login',
+  body: 'As the owner…',
+  status: 'open',
+  rev: 1,
+  priority: 0,
+  origin: 'orchestrator',
+  prdVersion: 1,
+  attemptCount: 0,
+  heldQuestionId: null,
+  runAfter: 0,
+  mergedOrder: null,
+  mergeSha: null,
+  failureReason: null,
+  dependsOn: [I2],
+};
+
+const issueCreated = (view: IssueView = ISSUE_VIEW): Event =>
+  ev({ type: 'issue.created', productId: P, entityId: view.id, v: 1, data: { issue: view } });
+
+const issue = (s: ClientState) => s.issues[I]!;
+
+/** Product plus issue I in the given status. */
+function withIssue(over: Partial<IssueView> = {}): ClientState {
+  return apply(withProduct(), issueCreated({ ...ISSUE_VIEW, ...over }));
+}
+
+const ISSUE_CASES: Case[] = [
+  {
+    name: 'issue.created adds the issue view under its product',
+    when: () => issueCreated(),
+    then: (s) => expect(s.issues[I]).toEqual({ ...ISSUE_VIEW, productId: P }),
+  },
+  {
+    name: 'issue.edited applies the given fields and the new rev',
+    given: () => withIssue(),
+    when: () =>
+      ev({
+        type: 'issue.edited',
+        productId: P,
+        entityId: I,
+        v: 1,
+        data: { rev: 2, title: 'Add login page', dependsOn: [] },
+      }),
+    then: (s) => {
+      expect(issue(s)).toMatchObject({ rev: 2, title: 'Add login page', dependsOn: [] });
+      expect(issue(s).body).toBe(ISSUE_VIEW.body);
+    },
+  },
+  {
+    name: 'issue.status_changed sets status, attempt count and runAfter',
+    given: () => withIssue({ status: 'in_progress' }),
+    when: () =>
+      ev({
+        type: 'issue.status_changed',
+        productId: P,
+        entityId: I,
+        v: 1,
+        data: { from: 'in_progress', to: 'open', attemptCount: 1, runAfter: T0 + 5000 },
+      }),
+    then: (s) =>
+      expect(issue(s)).toMatchObject({ status: 'open', attemptCount: 1, runAfter: T0 + 5000 }),
+  },
+  {
+    name: 'issue.held records the blocking question',
+    given: () => withIssue(),
+    when: () =>
+      ev({ type: 'issue.held', productId: P, entityId: I, v: 1, data: { questionId: Q } }),
+    then: (s) => expect(issue(s).heldQuestionId).toBe(Q),
+  },
+  {
+    name: 'issue.released clears the hold',
+    given: () => withIssue({ heldQuestionId: Q }),
+    when: () =>
+      ev({ type: 'issue.released', productId: P, entityId: I, v: 1, data: { questionId: Q } }),
+    then: (s) => expect(issue(s).heldQuestionId).toBeNull(),
+  },
+  {
+    name: 'issue.cancelled sets status cancelled',
+    given: () => withIssue({ status: 'in_review' }),
+    when: () =>
+      ev({
+        type: 'issue.cancelled',
+        productId: P,
+        entityId: I,
+        v: 1,
+        data: { from: 'in_review', by: 'owner', reason: 'not needed' },
+      }),
+    then: (s) => expect(issue(s).status).toBe('cancelled'),
+  },
+  {
+    name: 'issue.completed records merge order and sha',
+    given: () => withIssue({ status: 'in_review' }),
+    when: () =>
+      ev({
+        type: 'issue.completed',
+        productId: P,
+        entityId: I,
+        v: 1,
+        data: { attemptId: AT, mergedOrder: 3, mergeSha: SHA },
+      }),
+    then: (s) =>
+      expect(issue(s)).toMatchObject({ status: 'completed', mergedOrder: 3, mergeSha: SHA }),
+  },
+  {
+    name: 'issue.failed records the reason and the final attempt count',
+    given: () => withIssue({ status: 'in_progress', attemptCount: 2 }),
+    when: () =>
+      ev({
+        type: 'issue.failed',
+        productId: P,
+        entityId: I,
+        v: 1,
+        data: { from: 'in_progress', attemptCount: 3, reason: 'checks keep failing' },
+      }),
+    then: (s) =>
+      expect(issue(s)).toMatchObject({
+        status: 'failed',
+        attemptCount: 3,
+        failureReason: 'checks keep failing',
+      }),
+  },
+  {
+    name: 'issue.rewritten reopens with a new body and resets attempts and failure',
+    given: () =>
+      withIssue({ status: 'failed', attemptCount: 3, failureReason: 'checks keep failing' }),
+    when: () =>
+      ev({
+        type: 'issue.rewritten',
+        productId: P,
+        entityId: I,
+        v: 1,
+        data: { rev: 2, body: 'Smaller scope' },
+      }),
+    then: (s) =>
+      expect(issue(s)).toMatchObject({
+        status: 'open',
+        rev: 2,
+        body: 'Smaller scope',
+        attemptCount: 0,
+        failureReason: null,
+      }),
+  },
+];
+
+const ALL_CASES: Case[] = [...PRODUCT_CASES, ...ISSUE_CASES];
 
 // ---- tests ------------------------------------------------------------------------------
 
-describe.each(ALL_CASES)('replay', (c) => {
-  it(c.name, () => {
+describe('replay per event type', () => {
+  it.each(ALL_CASES)('$name', (c) => {
     const before = (c.given ?? withProduct)();
     const e = c.when();
     const after = apply(before, e);

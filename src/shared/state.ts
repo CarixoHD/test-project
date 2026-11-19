@@ -1,7 +1,7 @@
 import type { ProductSettings } from './domain.ts';
 import type { Event, EventOf } from './events.ts';
 import type { ProductId } from './ids.ts';
-import type { ClientState, ProductState } from './state-schema.ts';
+import type { ClientState, IssueState, ProductState } from './state-schema.ts';
 
 export * from './state-schema.ts';
 
@@ -165,6 +165,80 @@ type ProductLevelEvent = EventOf<
   | 'preview.stopped'
 >;
 
+// ---- issue events -------------------------------------------------------------------------
+
+type IssueEvent = EventOf<
+  | 'issue.created'
+  | 'issue.edited'
+  | 'issue.status_changed'
+  | 'issue.held'
+  | 'issue.released'
+  | 'issue.cancelled'
+  | 'issue.completed'
+  | 'issue.failed'
+  | 'issue.rewritten'
+>;
+
+function issueEdited(i: IssueState, d: EventOf<'issue.edited'>['data']): IssueState {
+  const next: IssueState = { ...i, rev: d.rev };
+  if (d.title !== undefined) next.title = d.title;
+  if (d.body !== undefined) next.body = d.body;
+  if (d.dependsOn !== undefined) next.dependsOn = d.dependsOn;
+  return next;
+}
+
+/** Next view of an existing issue. */
+function nextIssue(i: IssueState, e: Exclude<IssueEvent, EventOf<'issue.created'>>): IssueState {
+  switch (e.type) {
+    case 'issue.edited':
+      return issueEdited(i, e.data);
+    case 'issue.status_changed':
+      return {
+        ...i,
+        status: e.data.to,
+        attemptCount: e.data.attemptCount,
+        runAfter: e.data.runAfter,
+      };
+    case 'issue.held':
+      return { ...i, heldQuestionId: e.data.questionId };
+    case 'issue.released':
+      return { ...i, heldQuestionId: null };
+    case 'issue.cancelled':
+      return { ...i, status: 'cancelled' };
+    case 'issue.completed':
+      return {
+        ...i,
+        status: 'completed',
+        mergedOrder: e.data.mergedOrder,
+        mergeSha: e.data.mergeSha,
+      };
+    case 'issue.failed':
+      return {
+        ...i,
+        status: 'failed',
+        attemptCount: e.data.attemptCount,
+        failureReason: e.data.reason,
+      };
+    case 'issue.rewritten':
+      return {
+        ...i,
+        status: 'open',
+        rev: e.data.rev,
+        body: e.data.body,
+        attemptCount: 0,
+        failureReason: null,
+      };
+  }
+}
+
+function reduceIssueEvent(s: ClientState, e: IssueEvent): ClientState {
+  if (e.type === 'issue.created') {
+    const created: IssueState = { ...e.data.issue, productId: e.productId };
+    return { ...s, issues: { ...s.issues, [e.entityId]: created } };
+  }
+  return { ...s, issues: patch(s.issues, e.entityId, (i) => nextIssue(i, e)) };
+}
+
 // ---- reduce -------------------------------------------------------------------------------
 
 /**
@@ -187,6 +261,16 @@ export function reduce(s: ClientState, e: Event): ClientState {
     case 'preview.started':
     case 'preview.stopped':
       return { ...reduceProductEvent(s, e), lastSeq: e.seq };
+    case 'issue.created':
+    case 'issue.edited':
+    case 'issue.status_changed':
+    case 'issue.held':
+    case 'issue.released':
+    case 'issue.cancelled':
+    case 'issue.completed':
+    case 'issue.failed':
+    case 'issue.rewritten':
+      return { ...reduceIssueEvent(s, e), lastSeq: e.seq };
     default:
       return s;
   }
