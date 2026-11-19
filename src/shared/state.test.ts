@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { IssueView } from './domain.ts';
-import { EventSchema, type Event, type EventDraft } from './events.ts';
+import { EventSchema, type Event, type EventDraft, type EventOf } from './events.ts';
 import {
   AgentIdSchema,
   AttemptIdSchema,
@@ -8,6 +8,7 @@ import {
   IssueIdSchema,
   ProductIdSchema,
   QuestionIdSchema,
+  type ProductId,
 } from './ids.ts';
 import { emptyState, reduce, type ClientState } from './state.ts';
 
@@ -658,7 +659,220 @@ const AGENT_CASES: Case[] = [
   },
 ];
 
-const ALL_CASES: Case[] = [...PRODUCT_CASES, ...ISSUE_CASES, ...ATTEMPT_CASES, ...AGENT_CASES];
+const ZERO_TOKENS = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+
+type UsageData = EventOf<'usage.recorded'>['data'];
+
+const API_USAGE: UsageData = {
+  agentId: AG,
+  role: 'implementer',
+  model: MODEL,
+  issueId: I,
+  attemptId: AT,
+  billing: 'api',
+  tokens: { input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+  webSearches: 0,
+  calls: 1,
+  costUsd: 0.5,
+  unpriced: false,
+  estCostUsd: null,
+  source: 'computed',
+};
+
+const SUBSCRIPTION_USAGE: UsageData = {
+  ...API_USAGE,
+  model: CC_MODEL,
+  billing: 'subscription',
+  tokens: { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, reasoning: 0 },
+  calls: 2,
+  costUsd: null,
+  estCostUsd: 0.75,
+  source: 'cli',
+};
+
+let usageRow = 0;
+const usage = (over: Partial<UsageData> = {}): Event =>
+  ev({
+    type: 'usage.recorded',
+    productId: P,
+    entityId: `u${++usageRow}`,
+    v: 1,
+    data: { ...API_USAGE, ...over },
+  });
+
+const USAGE_CASES: Case[] = [
+  {
+    name: 'usage.recorded (api, priced) adds USD to product and issue totals',
+    given: () => apply(withIssue(), usage({ costUsd: 0.25 })),
+    when: () => usage(),
+    then: (s) => {
+      const expected = {
+        apiUsd: 0.75,
+        apiUnpriced: false,
+        subscriptionTokens: ZERO_TOKENS,
+        subscriptionCalls: 0,
+      };
+      expect(s.usage.byProduct[P]).toEqual(expected);
+      expect(s.usage.byIssue[I]).toEqual(expected);
+    },
+  },
+  {
+    name: 'usage.recorded (api, unpriced) sets the unpriced flag and adds no USD',
+    given: () => apply(withIssue(), usage()),
+    when: () => usage({ costUsd: null, unpriced: true }),
+    then: (s) => {
+      expect(s.usage.byProduct[P]).toMatchObject({ apiUsd: 0.5, apiUnpriced: true });
+      expect(s.usage.byIssue[I]).toMatchObject({ apiUsd: 0.5, apiUnpriced: true });
+    },
+  },
+  {
+    name: 'usage.recorded (subscription) adds tokens and calls, never USD',
+    given: () => apply(withIssue(), usage({ ...SUBSCRIPTION_USAGE })),
+    when: () => usage({ ...SUBSCRIPTION_USAGE }),
+    then: (s) => {
+      const expected = {
+        apiUsd: 0,
+        apiUnpriced: false,
+        subscriptionTokens: { input: 20, output: 40, cacheRead: 60, cacheWrite: 80, reasoning: 0 },
+        subscriptionCalls: 4,
+      };
+      expect(s.usage.byProduct[P]).toEqual(expected);
+      expect(s.usage.byIssue[I]).toEqual(expected);
+    },
+  },
+  {
+    name: 'usage.recorded without an issue only counts towards the product',
+    when: () => usage({ issueId: null, attemptId: null, role: 'orchestrator' }),
+    then: (s) => {
+      expect(s.usage.byProduct[P]?.apiUsd).toBe(0.5);
+      expect(s.usage.byIssue).toEqual({});
+    },
+  },
+];
+
+const question = (s: ClientState) => s.questions[Q]!;
+const questionAsked = (): Event =>
+  ev(
+    {
+      type: 'question.asked',
+      productId: P,
+      entityId: Q,
+      v: 1,
+      data: { target: 'issue', issueId: I, agentId: AG, text: 'Which auth provider?' },
+    },
+    T0 + 30,
+  );
+
+const inboxCreated = (productId: ProductId | null = P): Event =>
+  ev(
+    {
+      type: 'inbox.created',
+      productId,
+      entityId: IN,
+      v: 1,
+      data: { kind: 'question', title: 'Question on #1', body: 'Which?', link: '/products/x' },
+    },
+    T0 + 40,
+  );
+
+const limited = (backend = 'claude-code'): Event =>
+  ev({
+    type: 'backend.limited',
+    productId: null,
+    entityId: null,
+    v: 1,
+    data: { backend, until: T0 + 3_600_000, needsLogin: false, reason: 'usage limit' },
+  });
+
+const ACCOUNT_CASES: Case[] = [
+  {
+    name: 'question.asked adds an unanswered question',
+    given: () => withIssue(),
+    when: questionAsked,
+    then: (s) =>
+      expect(question(s)).toEqual({
+        id: Q,
+        productId: P,
+        issueId: I,
+        agentId: AG,
+        target: 'issue',
+        text: 'Which auth provider?',
+        answer: null,
+        createdAt: T0 + 30,
+        answeredAt: null,
+      }),
+  },
+  {
+    name: 'question.answered records the answer and time',
+    given: () => apply(withIssue(), questionAsked()),
+    when: () =>
+      ev(
+        { type: 'question.answered', productId: P, entityId: Q, v: 1, data: { answer: 'GitHub' } },
+        T0 + 300,
+      ),
+    then: (s) => expect(question(s)).toMatchObject({ answer: 'GitHub', answeredAt: T0 + 300 }),
+  },
+  {
+    name: 'inbox.created adds an unread item',
+    when: () => inboxCreated(),
+    then: (s) =>
+      expect(s.inbox[IN]).toEqual({
+        id: IN,
+        productId: P,
+        kind: 'question',
+        title: 'Question on #1',
+        body: 'Which?',
+        link: '/products/x',
+        read: false,
+        createdAt: T0 + 40,
+      }),
+  },
+  {
+    name: 'inbox.created accepts account-wide items without a product',
+    given: () => emptyState,
+    when: () => inboxCreated(null),
+    then: (s) => expect(s.inbox[IN]?.productId).toBeNull(),
+  },
+  {
+    name: 'inbox.read marks the item read',
+    given: () => apply(withProduct(), inboxCreated()),
+    when: () => ev({ type: 'inbox.read', productId: P, entityId: IN, v: 1, data: {} }),
+    then: (s) => expect(s.inbox[IN]?.read).toBe(true),
+  },
+  {
+    name: 'backend.limited records the account-wide limit by backend',
+    when: () => limited(),
+    then: (s) =>
+      expect(s.backendLimits['claude-code']).toEqual({
+        backend: 'claude-code',
+        until: T0 + 3_600_000,
+        needsLogin: false,
+        reason: 'usage limit',
+      }),
+  },
+  {
+    name: 'backend.cleared removes only that backend limit',
+    given: () => apply(withProduct(), limited('claude-code'), limited('anthropic')),
+    when: () =>
+      ev({
+        type: 'backend.cleared',
+        productId: null,
+        entityId: null,
+        v: 1,
+        data: { backend: 'claude-code' },
+      }),
+    then: (s) => expect(Object.keys(s.backendLimits)).toEqual(['anthropic']),
+  },
+];
+
+const ALL_CASES: Case[] = [
+  ...PRODUCT_CASES,
+  ...ISSUE_CASES,
+  ...ATTEMPT_CASES,
+  ...AGENT_CASES,
+  ...USAGE_CASES,
+  ...ACCOUNT_CASES,
+];
 
 // ---- tests ------------------------------------------------------------------------------
 

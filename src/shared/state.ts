@@ -5,9 +5,12 @@ import type {
   AgentView,
   AttemptState,
   ClientState,
+  InboxItem,
   IssueState,
   ProductState,
+  QuestionState,
 } from './state-schema.ts';
+import { addUsage } from './state-usage.ts';
 
 export * from './state-schema.ts';
 
@@ -320,6 +323,74 @@ function reduceAgentEvent(s: ClientState, e: AgentEvent): ClientState {
   return { ...s, agents: patch(s.agents, e.entityId, (a) => nextAgent(a, e)) };
 }
 
+// ---- usage, questions, inbox, backends ----------------------------------------------------
+
+function usageRecorded(s: ClientState, e: EventOf<'usage.recorded'>): ClientState {
+  const { byProduct, byIssue } = s.usage;
+  const issueId = e.data.issueId;
+  return {
+    ...s,
+    usage: {
+      byProduct: { ...byProduct, [e.productId]: addUsage(byProduct[e.productId], e.data) },
+      byIssue:
+        issueId === null ? byIssue : { ...byIssue, [issueId]: addUsage(byIssue[issueId], e.data) },
+    },
+  };
+}
+
+type AccountEvent = EventOf<
+  | 'usage.recorded'
+  | 'question.asked'
+  | 'question.answered'
+  | 'inbox.created'
+  | 'inbox.read'
+  | 'backend.limited'
+  | 'backend.cleared'
+>;
+
+function reduceAccountEvent(s: ClientState, e: AccountEvent): ClientState {
+  switch (e.type) {
+    case 'usage.recorded':
+      return usageRecorded(s, e);
+    case 'question.asked': {
+      const asked: QuestionState = {
+        id: e.entityId,
+        productId: e.productId,
+        ...e.data,
+        answer: null,
+        createdAt: e.ts,
+        answeredAt: null,
+      };
+      return { ...s, questions: { ...s.questions, [e.entityId]: asked } };
+    }
+    case 'question.answered':
+      return {
+        ...s,
+        questions: patch(s.questions, e.entityId, (q) => ({
+          ...q,
+          answer: e.data.answer,
+          answeredAt: e.ts,
+        })),
+      };
+    case 'inbox.created': {
+      const item: InboxItem = {
+        id: e.entityId,
+        productId: e.productId,
+        ...e.data,
+        read: false,
+        createdAt: e.ts,
+      };
+      return { ...s, inbox: { ...s.inbox, [e.entityId]: item } };
+    }
+    case 'inbox.read':
+      return { ...s, inbox: patch(s.inbox, e.entityId, (i) => ({ ...i, read: true })) };
+    case 'backend.limited':
+      return { ...s, backendLimits: { ...s.backendLimits, [e.data.backend]: { ...e.data } } };
+    case 'backend.cleared':
+      return { ...s, backendLimits: without(s.backendLimits, e.data.backend) };
+  }
+}
+
 // ---- reduce -------------------------------------------------------------------------------
 
 /**
@@ -361,6 +432,14 @@ export function reduce(s: ClientState, e: Event): ClientState {
     case 'agent.activity':
     case 'agent.exited':
       return { ...reduceAgentEvent(s, e), lastSeq: e.seq };
+    case 'usage.recorded':
+    case 'question.asked':
+    case 'question.answered':
+    case 'inbox.created':
+    case 'inbox.read':
+    case 'backend.limited':
+    case 'backend.cleared':
+      return { ...reduceAccountEvent(s, e), lastSeq: e.seq };
     default:
       return s;
   }
