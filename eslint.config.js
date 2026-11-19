@@ -13,6 +13,13 @@ import tseslint from 'typescript-eslint';
 const SERVER_IMPORT = '^(\\.\\./)+(src/)?server(/|$)|(^|/)src/server(/|$)';
 const WEB_IMPORT = '^(\\.\\./)+(src/)?web(/|$)|(^|/)src/web(/|$)';
 
+// ADR 3: the AI SDK (`ai`, `ai/*`, `@ai-sdk/*`) stays behind src/server/llm and the API agent backend.
+const AI_SDK_IMPORT = {
+  regex: '^(ai|@ai-sdk/[^/]+)(/|$)',
+  message: 'Only src/server/llm and src/server/agents/api-backend.ts may import the AI SDK.',
+};
+const AI_SDK_ALLOWED = ['src/server/llm/**', 'src/server/agents/api-backend.ts'];
+
 const SHARED_BOUNDARY = {
   paths: builtinModules
     .filter((name) => !name.startsWith('_'))
@@ -21,6 +28,7 @@ const SHARED_BOUNDARY = {
     { regex: '^node:', message: 'src/shared must stay pure: no node:* imports.' },
     { regex: SERVER_IMPORT, message: 'src/shared must not import src/server.' },
     { regex: WEB_IMPORT, message: 'src/shared must not import src/web.' },
+    AI_SDK_IMPORT,
   ],
 };
 
@@ -30,6 +38,7 @@ const WEB_BOUNDARY = {
       regex: SERVER_IMPORT,
       message: 'src/web must not import src/server; use src/web/state/api.ts and src/shared DTOs.',
     },
+    AI_SDK_IMPORT,
   ],
 };
 
@@ -59,6 +68,11 @@ export default defineConfig(
   {
     files: ['src/server/**', 'scripts/**', 'tests/**', '*.{js,ts}'],
     languageOptions: { globals: globals.node },
+  },
+  {
+    files: ['src/server/**', 'scripts/**', 'tests/**'],
+    ignores: AI_SDK_ALLOWED,
+    rules: { 'no-restricted-imports': ['error', { patterns: [AI_SDK_IMPORT] }] },
   },
   {
     files: ['src/web/**/*.{ts,tsx}'],
