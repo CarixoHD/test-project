@@ -3,6 +3,7 @@ export {
   fakeModel,
   FakeScriptSchema,
   FakeTurnSchema,
+  type FakeModelOptions,
   type FakeScript,
   type FakeTurn,
 } from './fake.ts';
