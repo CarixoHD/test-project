@@ -201,6 +201,8 @@ IssueOp      {op:'create', key, title, body, dependsOn:(key|id)[], priority?}
 ImplResult   {summary, question?}
 ReviewResult {approve: boolean, findings: string[]}
 ```
+The result schemas above are defined in `src/shared/agent-results.ts`. The pipeline imports them from there and does not redefine them.
+
 Prompts live in `src/server/pipeline/prompts/<role>.md`. They are plain markdown templates with `{{var}}` substitution.
 
 ### 4.6 server/agents
@@ -305,7 +307,7 @@ assertBindAllowed(host, hasPassword)                       // throws unless loop
 `recover()` runs once at boot, before the scheduler starts:
 - It removes every container labelled `vibecode.managed=1`.
 - It deletes `data/worktrees/*` and runs `git worktree prune` for every repo.
-- For each `running` attempt it records `attempt.interrupted{reason:'restart'}`, which is not counted. It resets `in_progress` and `in_review` issues to `open` and marks live agents as exited.
+- For each `running` attempt it records `attempt.ended{status:'interrupted', interruptReason:'restart'}`, which is not counted. It resets `in_progress` and `in_review` issues to `open`. For every agent that was still live it records `agent.exited{outcome:'restart'}`.
 - It stops stale previews.
 
 ### 4.12 web
