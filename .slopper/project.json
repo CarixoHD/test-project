@@ -1,0 +1,7 @@
+{
+  "install": "npm ci",
+  "typecheck": "npm run typecheck",
+  "lint": "npm run lint",
+  "test": "npm test",
+  "dev": "npm run dev"
+}

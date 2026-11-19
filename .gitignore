@@ -9,3 +9,10 @@ __pycache__/
 .env
 .env.*
 .DS_Store
+.data/
+/data/
+test-results/
+playwright-report/
+*.db
+*.db-wal
+*.db-shm
