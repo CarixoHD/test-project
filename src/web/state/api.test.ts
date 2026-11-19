@@ -48,7 +48,11 @@ describe('api', () => {
     stubFetch(json({ error: { code: 'stale_rev', message: 'Issue changed; reload it' } }, 409));
     const err: unknown = await getState().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
-    expect(err).toMatchObject({ code: 'stale_rev', message: 'Issue changed; reload it', status: 409 });
+    expect(err).toMatchObject({
+      code: 'stale_rev',
+      message: 'Issue changed; reload it',
+      status: 409,
+    });
   });
 
   it('maps an error status without the error body to an http_<status> ApiError', async () => {
