@@ -38,4 +38,35 @@ describe('module boundaries', () => {
   ])('src/shared rejects %s', async (_name, code, ruleId) => {
     expect(await restrictedRuleIds('src/shared/a.ts', code)).toContain(ruleId);
   });
+
+  // ADR 3: only src/server/llm and the API agent backend touch the AI SDK.
+  it.each([
+    ['src/server/pipeline/a.ts', "export { generateText } from 'ai';\n"],
+    [
+      'src/server/agents/claude-code-backend.ts',
+      "export { MockLanguageModelV4 } from 'ai/test';\n",
+    ],
+    ['src/server/http/a.ts', "export { createAnthropic } from '@ai-sdk/anthropic';\n"],
+    ['src/shared/a.ts', "export { tool } from 'ai';\n"],
+    ['src/web/a.tsx', "export { streamText } from 'ai';\n"],
+    ['scripts/a.ts', "export { generateText } from 'ai';\n"],
+  ])('%s may not import the AI SDK: %s', async (filePath, code) => {
+    expect(await restrictedRuleIds(filePath, code)).toContain('no-restricted-imports');
+  });
+
+  it.each([
+    ['src/server/llm/registry.ts', "export { generateText } from 'ai';\n"],
+    ['src/server/llm/deep/a.ts', "export { createOpenAI } from '@ai-sdk/openai';\n"],
+    ['src/server/agents/api-backend.ts', "export { streamText } from 'ai';\n"],
+    ['src/server/pipeline/a.ts', "export { aiThing } from './ai.ts';\n"],
+    ['src/server/pipeline/a.ts', "export { x } from 'aim';\n"],
+  ])('%s may import %s', async (filePath, code) => {
+    expect(await restrictedRuleIds(filePath, code)).toEqual([]);
+  });
+
+  it('src/shared keeps its own boundaries next to the AI SDK rule', async () => {
+    expect(await restrictedRuleIds('src/shared/a.ts', "import 'node:fs';\n")).toContain(
+      'no-restricted-imports',
+    );
+  });
 });
