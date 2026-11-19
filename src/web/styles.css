@@ -1,0 +1,391 @@
+/*
+ * Global tokens and primitives. Contrast (WCAG 2.2 AA) was checked for every pair below:
+ * text >= 4.5:1, UI boundaries and the focus ring >= 3:1 against what they sit on.
+ *   ink/bg 15.1  muted/bg 6.8  accent/bg 6.8  white/accent 7.4  line/surface 3.6
+ *   focus/bg 4.7  header: text 15.1, focus 7.9, live 9.2, reconnecting 10.4, offline 9.7
+ *   badges (text/fill): neutral 7.9 info 7.3 progress 7.4 success 6.3 warning 6.5 danger 6.2
+ */
+:root {
+  --bg: #f3f5f8;
+  --surface: #ffffff;
+  --ink: #17202b;
+  --ink-muted: #4a5666;
+  --line: #7c8798;
+  --accent: #0e5a8a;
+  --accent-strong: #0a4468;
+  --danger: #a1221b;
+  --focus: #c2410c;
+
+  --header-bg: #17202b;
+  --header-ink: #f3f5f8;
+  --header-muted: #b7c1ce;
+  --header-focus: #f5a15c;
+  --header-live: #7fd39a;
+  --header-reconnecting: #f5c76b;
+  --header-offline: #ffb4a8;
+
+  --tone-neutral-ink: #3d4652;
+  --tone-neutral-fill: #e6eaef;
+  --tone-info-ink: #0b4f79;
+  --tone-info-fill: #dceefa;
+  --tone-progress-ink: #5b2e9e;
+  --tone-progress-fill: #eee6fa;
+  --tone-success-ink: #1b6234;
+  --tone-success-fill: #ddf2e3;
+  --tone-warning-ink: #7a4b00;
+  --tone-warning-fill: #fbefd6;
+  --tone-danger-ink: #a1221b;
+  --tone-danger-fill: #fbe3e1;
+
+  --font-sans: 'Segoe UI Variable Text', system-ui, sans-serif;
+  --radius-control: 6px;
+  --radius-panel: 10px;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  color-scheme: light;
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+h1 {
+  font-size: 1.75rem;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  margin: 0 0 var(--space-4);
+}
+
+h2 {
+  font-size: 1.25rem;
+  line-height: 1.3;
+  margin: 0 0 var(--space-3);
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 0.15em;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---- layout ------------------------------------------------------------------------------ */
+
+.skip-link {
+  position: absolute;
+  left: var(--space-4);
+  top: -100px;
+  z-index: 100;
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface);
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  border-radius: var(--radius-control);
+}
+
+.skip-link:focus {
+  top: var(--space-2);
+}
+
+.app-header {
+  --focus: var(--header-focus);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-6);
+  padding: var(--space-3) var(--space-6);
+  background: var(--header-bg);
+  color: var(--header-ink);
+}
+
+.app-header a {
+  color: var(--header-ink);
+  text-decoration: none;
+}
+
+.app-header__brand {
+  font-weight: 700;
+  font-size: 1.125rem;
+  letter-spacing: -0.02em;
+}
+
+.app-nav ul {
+  display: flex;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.app-nav a {
+  display: block;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-control);
+  color: var(--header-muted);
+}
+
+.app-nav a:hover {
+  color: var(--header-ink);
+}
+
+/* The current page is marked by weight and an underline, not colour alone. */
+.app-nav a[aria-current='page'] {
+  color: var(--header-ink);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.4em;
+}
+
+.connection {
+  margin: 0 0 0 auto;
+  font-size: 0.875rem;
+  color: var(--header-muted);
+}
+
+.connection--live {
+  color: var(--header-live);
+}
+
+.connection--reconnecting {
+  color: var(--header-reconnecting);
+}
+
+.connection--offline {
+  color: var(--header-offline);
+}
+
+.app-main {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-6);
+}
+
+/* Focused only as the skip-link target; the ring would frame the whole page. */
+.app-main:focus {
+  outline: none;
+}
+
+/* ---- primitives ---------------------------------------------------------------------------- */
+
+.ui-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.25rem;
+  padding: var(--space-1) var(--space-4);
+  font: inherit;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.ui-button:hover {
+  border-color: var(--ink);
+}
+
+.ui-button--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.ui-button--primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+.ui-button--danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #ffffff;
+}
+
+.ui-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ui-field {
+  display: grid;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+}
+
+.ui-field__label {
+  font-weight: 600;
+}
+
+.ui-field__hint {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+}
+
+.ui-field__error {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.ui-field input,
+.ui-field select,
+.ui-field textarea {
+  font: inherit;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.ui-field [aria-invalid='true'] {
+  border: 2px solid var(--danger);
+}
+
+.ui-badge {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.6;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-control);
+}
+
+.ui-badge--neutral {
+  color: var(--tone-neutral-ink);
+  background: var(--tone-neutral-fill);
+}
+
+.ui-badge--info {
+  color: var(--tone-info-ink);
+  background: var(--tone-info-fill);
+}
+
+.ui-badge--progress {
+  color: var(--tone-progress-ink);
+  background: var(--tone-progress-fill);
+}
+
+.ui-badge--success {
+  color: var(--tone-success-ink);
+  background: var(--tone-success-fill);
+}
+
+.ui-badge--warning {
+  color: var(--tone-warning-ink);
+  background: var(--tone-warning-fill);
+}
+
+.ui-badge--danger {
+  color: var(--tone-danger-ink);
+  background: var(--tone-danger-fill);
+}
+
+.ui-tabs__list {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.ui-tabs__tab {
+  padding: var(--space-2) var(--space-4);
+  font: inherit;
+  color: var(--ink-muted);
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+
+.ui-tabs__tab[aria-selected='true'] {
+  color: var(--ink);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+
+.ui-tabs__panel {
+  padding: var(--space-4) 0;
+}
+
+.ui-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: rgb(23 32 43 / 0.55);
+}
+
+.ui-dialog {
+  position: relative;
+  width: min(32rem, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  padding: var(--space-6);
+  background: var(--surface);
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--line);
+}
+
+.ui-dialog__title {
+  padding-right: var(--space-8);
+}
+
+.ui-dialog__close {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+  width: 2.25rem;
+  height: 2.25rem;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--ink);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.ui-dialog__close:hover {
+  border-color: var(--line);
+}
