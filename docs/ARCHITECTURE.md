@@ -56,7 +56,7 @@ src/
     issues.ts        issue state machine: transition(), isReady(), slotsFree()
     triggers.ts      orchestrator trigger selection (cursor over events)
     budget.ts        budgetLevel(), cost math priceUsage()
-    scene.ts         SceneState + sceneReduce(scene, event) + layoutPiece()
+    scene.ts         SceneState + sceneReduce(scene, event) + sceneFromState(); scene-layout.ts: layoutPiece()
     dto.ts           REST request/response zod schemas
     models.ts        ModelRef, Role, provider ids
   server/
@@ -128,8 +128,22 @@ function priceUsage(u: Usage, p: Price|undefined): {usd:number; unpriced:false} 
 function budgetLevel(spentUsd:number, budgetUsd:number|null): 'ok'|'warn'|'exhausted'; // inclusive at 80 % / 100 %; null → ok
 function priceKey(ref: ModelRef): string;           // 'provider/model', the key of PriceOverrides (settings)
 // scene.ts
-function sceneReduce(s: SceneState, e: Event): SceneState;
+// One scene per product: SceneState {productId, pieces[], workers[], debris[], totalIssues, issueIds}.
+// Arrays are canonically ordered (pieces by placedAt = mergedOrder, the rest by id).
+function emptyScene(productId): SceneState;
+function sceneReduce(s: SceneState, e: Event): SceneState;   // ignores other products and unknown types
+function sceneFromState(state: ClientState, productId): SceneState;  // tested: ≡ replaying the events
+// SCENE_EVENTS / NO_OP_SCENE_EVENTS: every catalogued type is in exactly one (tested).
+// Mapping: issue.created/cancelled (or status_changed→cancelled) → totalIssues; issue.completed → piece,
+//   all pieces relaid out when totalIssues changes; issue.failed (or status_changed→failed) → debris,
+//   removed on rewritten/cancelled/status_changed to anything else; agent.spawned → worker
+//   (orchestrator=foreman, implementer=builder, reviewer=inspector, sparring=drafter at desk, utility=none);
+//   agent.state working/waiting_owner/rate_limited → working / "?" bubble / bench; question.asked with
+//   agentId → bubble until question.answered; agent.exited → worker removed. backend.limited is a
+//   no-op: the server emits agent.state rate_limited per affected agent.
+// scene-layout.ts (re-exported by scene.ts)
 function layoutPiece(index:number, totalIssues:number): {type:PieceType; pos:[number,number,number]; rotY:number};
+//   W×W footprint, storeys bottom-up (floor slab, then 4·W walls/windows), roof = index totalIssues-1.
 ```
 
 Legal issue transitions:
