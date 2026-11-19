@@ -52,7 +52,7 @@ export class ExecError extends Error {
 const DEFAULT_MAX_BUFFER = 10 * 1024 * 1024;
 const DEFAULT_KILL_GRACE_MS = 5_000;
 const MAX_TIMER_MS = 2 ** 31 - 1;
-/** Extra bytes captured past maxBuffer so a secret straddling the cut is still redacted whole. */
+/** Extra bytes captured past maxBuffer, so a secret straddling the maxBuffer-th character is masked, not dropped. */
 const REDACT_MARGIN = 4096;
 const MAX_COMMAND_IN_MESSAGE = 500;
 const IS_POSIX = process.platform !== 'win32';
@@ -270,9 +270,18 @@ class Capture {
   }
 
   text(): { text: string; truncated: boolean } {
-    const full = redactor.redact(Buffer.concat(this.#chunks).toString('utf8'));
-    if (full.length <= this.#limit) return { text: full, truncated: this.#isTruncated };
-    return { text: full.slice(0, this.#limit), truncated: true };
+    const bytes = Buffer.concat(this.#chunks);
+    if (!this.#isTruncated) return this.#cap(redactor.redact(bytes.toString('utf8')), false);
+    // The raw bytes were cut, possibly inside a character or a secret. Drop the incomplete
+    // character (decoder.write holds it back) and any tail that may begin a secret.
+    const decoded = new StringDecoder('utf8').write(bytes);
+    return this.#cap(redactor.redact(decoded.slice(0, redactor.safeBoundary(decoded))), true);
+  }
+
+  /** Cutting redacted text is safe: every complete secret in it is already masked. */
+  #cap(text: string, truncated: boolean): { text: string; truncated: boolean } {
+    if (text.length <= this.#limit) return { text, truncated };
+    return { text: text.slice(0, this.#limit), truncated: true };
   }
 }
 
@@ -293,8 +302,11 @@ class LineSplitter {
     this.#pending = parts.pop() ?? '';
     for (const line of parts) this.#line(line);
     if (this.#pending.length > this.#maxLine) {
-      this.#line(this.#pending);
-      this.#pending = '';
+      // Emit the over-long line in pieces, holding back a tail that may begin a secret,
+      // so a secret is never split across pieces (and so never escapes redaction).
+      const cut = redactor.safeBoundary(this.#pending);
+      if (cut > 0) this.#emit(redactor.redact(this.#pending.slice(0, cut)));
+      this.#pending = this.#pending.slice(cut);
     }
   }
 
