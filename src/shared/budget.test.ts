@@ -31,7 +31,14 @@ const FULL: Price = {
 };
 /** Only the two mandatory fields. */
 const BARE: Price = { input: 2, output: 8 };
-const FREE: Price = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, webSearch: 0 };
+const FREE: Price = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  reasoning: 0,
+  webSearch: 0,
+};
 
 describe('priceUsage', () => {
   const priced: [name: string, u: Usage, p: Price, usd: number][] = [
