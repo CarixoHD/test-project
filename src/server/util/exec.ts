@@ -326,12 +326,8 @@ function validate(cmd: string, o: ExecOptions): void {
 
 function buildEnv(env: ExecOptions['env']): NodeJS.ProcessEnv {
   if (env === undefined) return process.env;
-  const merged: NodeJS.ProcessEnv = { ...process.env };
-  for (const [key, value] of Object.entries(env)) {
-    if (value === undefined) delete merged[key];
-    else merged[key] = value;
-  }
-  return merged;
+  const entries = Object.entries({ ...process.env, ...env });
+  return Object.fromEntries(entries.filter(([, value]) => value !== undefined));
 }
 
 function startError(cmd: string, argv: readonly string[], err: unknown): ExecError {
