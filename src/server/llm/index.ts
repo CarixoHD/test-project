@@ -6,3 +6,9 @@ export {
   type FakeScript,
   type FakeTurn,
 } from './fake.ts';
+export {
+  capabilities,
+  webSearchTool,
+  WEB_SEARCH_TOOL_NAME,
+  type Capabilities,
+} from './capabilities.ts';
