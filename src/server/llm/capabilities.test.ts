@@ -19,7 +19,10 @@ const EXPECTED: Record<
     searchToolId: 'google.google_search',
   },
   // Search is the `:online` model variant (see model(ref, {webSearch: true})), not a tool.
-  openrouter: { caps: { tools: true, webSearch: true, subscription: false }, searchToolId: undefined },
+  openrouter: {
+    caps: { tools: true, webSearch: true, subscription: false },
+    searchToolId: undefined,
+  },
   'openai-compatible': {
     caps: { tools: true, webSearch: false, subscription: false },
     searchToolId: undefined,

@@ -12,3 +12,12 @@ export {
   WEB_SEARCH_TOOL_NAME,
   type Capabilities,
 } from './capabilities.ts';
+export {
+  API_KEY_SECRETS,
+  MissingProviderSetupError,
+  OPENROUTER_BASE_URL,
+  ProviderConfigSchema,
+  model,
+  type ModelDeps,
+  type ProviderConfig,
+} from './registry.ts';
