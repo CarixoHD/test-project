@@ -49,7 +49,9 @@ Design rules:
 src/
   shared/            pure TS: no I/O, no node:* imports. Imported by server AND web.
     ids.ts           ULID ids, branded types
-    events.ts        Event union (zod), EVENT_VERSION
+    events.ts        Event union (zod), EVENT_VERSION, parseEvent()
+    domain.ts        status/kind enums, IssueView, ProductSettings (shared by events, reduce, DTOs)
+    agent-results.ts zod for SparResult, PlanResult, IssueOp, ImplResult, ReviewResult, ProjectConfig
     state.ts         ClientState type + reduce(state, event)  ← the one reducer
     issues.ts        issue state machine: transition(), isReady(), slotsFree()
     triggers.ts      orchestrator trigger selection (cursor over events)
