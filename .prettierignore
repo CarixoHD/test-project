@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.data/
+data/
+test-results/
+playwright-report/
+package-lock.json
+# Docs, ADRs and agent prompts are prose written by agents; formatting them would rewrite content.
+*.md

@@ -8,11 +8,7 @@ export default defineConfig({
         test: {
           name: 'unit',
           environment: 'node',
-          include: [
-            'src/shared/**/*.test.ts',
-            'src/server/**/*.test.ts',
-            'scripts/**/*.test.ts',
-          ],
+          include: ['src/shared/**/*.test.ts', 'src/server/**/*.test.ts', 'scripts/**/*.test.ts'],
         },
       },
       {
@@ -29,7 +25,6 @@ export default defineConfig({
           name: 'docker',
           environment: 'node',
           include: ['tests/docker/**/*.test.ts'],
-          passWithNoTests: true,
           testTimeout: 120_000,
         },
       },
