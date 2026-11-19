@@ -19,10 +19,12 @@ function mask(secret: string): string {
 export class Redactor {
   #secrets = new Set<string>();
   #pattern: RegExp | undefined;
+  #maxLength = 0;
 
   register(value: string): void {
     if (value.length < MIN_SECRET_LENGTH || this.#secrets.has(value)) return;
     this.#secrets.add(value);
+    this.#maxLength = Math.max(this.#maxLength, value.length);
     this.#pattern = undefined;
   }
 
@@ -30,6 +32,25 @@ export class Redactor {
     if (this.#secrets.size === 0 || text.length === 0) return text;
     this.#pattern ??= this.#buildPattern();
     return text.replace(this.#pattern, mask);
+  }
+
+  /**
+   * For text that will be continued (a stream, or output cut at a buffer limit): the largest
+   * index `c` such that `redact(text.slice(0, c))` is final whatever text follows. The rest is
+   * shorter than the longest secret and may begin one, so callers hold it back or drop it.
+   * A secret is never split at `c`.
+   */
+  safeBoundary(text: string): number {
+    if (this.#secrets.size === 0) return text.length;
+    let cut = Math.max(0, text.length - (this.#maxLength - 1));
+    this.#pattern ??= this.#buildPattern();
+    // A match starting before the cut has every secret fully in view, so the choice is final.
+    // If it crosses the cut, release it whole (it is masked in the head).
+    for (const match of text.matchAll(this.#pattern)) {
+      if (match.index >= cut) break;
+      cut = Math.max(cut, match.index + match[0].length);
+    }
+    return cut;
   }
 
   #buildPattern(): RegExp {

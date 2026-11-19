@@ -49,6 +49,42 @@ describe('Redactor', () => {
     }
   });
 
+  describe('safeBoundary', () => {
+    const r = new Redactor();
+    r.register(LONG);
+    r.register(MEDIUM);
+    const holdBack = LONG.length - 1;
+
+    it.each([
+      ['no secrets registered keeps everything', new Redactor(), 'abc', 3],
+      ['short text that could still begin a secret is all held back', r, 'abcdef', 0],
+      ['holds back only a tail shorter than the longest secret', r, 'x'.repeat(50), 50 - holdBack],
+      [
+        'a complete secret over the cut is released whole',
+        r,
+        `${'x'.repeat(10)}${LONG}`,
+        10 + LONG.length,
+      ],
+    ])('%s', (_name, redactor, text, expected) => {
+      expect(redactor.safeBoundary(text)).toBe(expected);
+    });
+
+    it('never splits a secret: the redacted head is final whatever follows', () => {
+      const stream = `ab ${LONG} cd ${MEDIUM}${LONG}${LONG.slice(0, 9)}`;
+      const whole = r.redact(stream);
+      for (let end = 0; end <= stream.length; end++) {
+        const text = stream.slice(0, end);
+        const head = r.redact(text.slice(0, r.safeBoundary(text)));
+        expect(whole.startsWith(head)).toBe(true);
+        for (const secret of [LONG, MEDIUM]) {
+          for (let k = 6; k < secret.length; k++) {
+            expect(head.endsWith(secret.slice(0, k))).toBe(false);
+          }
+        }
+      }
+    });
+  });
+
   it('exports a process-wide default instance', () => {
     expect(redactor).toBeInstanceOf(Redactor);
   });
