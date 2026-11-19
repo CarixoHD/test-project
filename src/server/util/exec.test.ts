@@ -196,6 +196,18 @@ describe('spawnStream', () => {
     expect(got.filter(([s]) => s === 'stderr').map(([, l]) => l)).toEqual(['e1']);
   });
 
+  it('kills the process and rejects with the error when onLine throws', async () => {
+    const script = `console.log('ready'); ${FOREVER}`;
+    const boom = new Error('consumer failed');
+    const pending = spawnStream(NODE, nodeArgs(script), {
+      timeoutMs: 60_000,
+      onLine: () => {
+        throw boom;
+      },
+    });
+    await expect(pending).rejects.toBe(boom);
+  });
+
   it('honours timeoutMs', async () => {
     const r = await spawnStream(NODE, nodeArgs(FOREVER), { timeoutMs: 300, onLine: () => {} });
     expect(r).toMatchObject({ code: null, timedOut: true });
