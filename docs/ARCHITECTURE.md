@@ -105,7 +105,13 @@ const emptyState: ClientState;
 type IssueStatus = 'open'|'in_progress'|'in_review'|'completed'|'failed'|'cancelled';
 function transition(issue: IssueView, ev: IssueTransitionEvent, cfg: {maxAttempts:number}):
   {ok:true; next: IssueView} | {ok:false; reason:string};
-function isReady(issue, issuesById, now): boolean;   // open, not held, deps completed, runAfter<=now
+type IssueTransitionEvent =
+  | {type:'start'} | {type:'checks_passed'} | {type:'merged'; mergedOrder:number; mergeSha:string}
+  | {type:'attempt_failed'; reason:string; runAfter?:number}        // counted: +1 attempt; → open, or → failed on the last
+  | {type:'interrupted'; reason:InterruptReason; runAfter?:number}  // uncounted: → open
+  | {type:'cancel'} | {type:'rewrite'; body:string};                // rewrite: failed → open, attemptCount 0, rev+1
+function isReady(issue, issuesById: Map|Record<IssueId, IssueView>, now): boolean;   // open, not held, deps completed, runAfter<=now
+function slotsFree(running:number, maxParallel:number): number;    // max(0, maxParallel - running)
 // triggers.ts
 function pendingTriggers(events: Event[], cursor: number): Event[];
 // budget.ts
