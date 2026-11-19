@@ -16,7 +16,7 @@ type Captured = { url: string; headers: Headers; body: Record<string, unknown> }
 /** A fetch stand-in that records requests and answers with `respond`. */
 function recordingFetch(respond: (req: Captured) => Response) {
   const requests: Captured[] = [];
-  const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const req: Captured = {
       url: String(input),
       headers: new Headers(init?.headers),
@@ -73,8 +73,11 @@ describe('model registry', () => {
     ['google', 'Add a Google Gemini API key in Settings'],
     ['openrouter', 'Add an OpenRouter API key in Settings'],
   ] as const)('missing %s key → actionable error', async (provider, message) => {
-    const other = { [API_KEY_SECRETS.openai]: SECRET, [API_KEY_SECRETS.anthropic]: SECRET };
-    delete other[API_KEY_SECRETS[provider]];
+    const other = Object.fromEntries(
+      Object.entries(API_KEY_SECRETS)
+        .filter(([p]) => p !== provider)
+        .map(([, key]) => [key, SECRET]),
+    );
 
     const error = await failure(() => model({ provider, model: 'm' }, deps(other)));
 
