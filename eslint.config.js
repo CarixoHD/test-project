@@ -42,6 +42,28 @@ const WEB_BOUNDARY = {
   ],
 };
 
+// Child processes only via src/server/util/exec.ts (CODING_STANDARDS.md §4).
+const CHILD_PROCESS_MESSAGE =
+  'Spawn processes only through src/server/util/exec.ts (argv arrays, timeout, redaction).';
+const CHILD_PROCESS_RE = '/^(node:)?child_process$/';
+const CHILD_PROCESS_BOUNDARY = {
+  paths: ['child_process', 'node:child_process'].map((name) => ({
+    name,
+    message: CHILD_PROCESS_MESSAGE,
+  })),
+};
+
+const CHILD_PROCESS_SYNTAX = [
+  {
+    selector: `ImportExpression[source.value=${CHILD_PROCESS_RE}]`,
+    message: CHILD_PROCESS_MESSAGE,
+  },
+  {
+    selector: `CallExpression[callee.name='require'][arguments.0.value=${CHILD_PROCESS_RE}]`,
+    message: CHILD_PROCESS_MESSAGE,
+  },
+];
+
 export default defineConfig(
   {
     ignores: [
@@ -73,6 +95,23 @@ export default defineConfig(
     files: ['src/server/**', 'scripts/**', 'tests/**'],
     ignores: AI_SDK_ALLOWED,
     rules: { 'no-restricted-imports': ['error', { patterns: [AI_SDK_IMPORT] }] },
+  },
+  {
+    // Everything in src/server except exec.ts: no child_process, and no AI SDK outside its allowed files.
+    files: ['src/server/**/*.{ts,tsx}'],
+    ignores: ['src/server/util/exec.ts', ...AI_SDK_ALLOWED],
+    rules: {
+      'no-restricted-imports': ['error', { ...CHILD_PROCESS_BOUNDARY, patterns: [AI_SDK_IMPORT] }],
+      'no-restricted-syntax': ['error', ...CHILD_PROCESS_SYNTAX],
+    },
+  },
+  {
+    // AI SDK allowed files still must not import child_process.
+    files: AI_SDK_ALLOWED,
+    rules: {
+      'no-restricted-imports': ['error', CHILD_PROCESS_BOUNDARY],
+      'no-restricted-syntax': ['error', ...CHILD_PROCESS_SYNTAX],
+    },
   },
   {
     files: ['src/web/**/*.{ts,tsx}'],

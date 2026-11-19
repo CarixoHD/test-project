@@ -298,10 +298,22 @@ Main history has **one commit per merged issue**: `commit-tree <merged tree> -p 
 ```ts
 secrets.get(key) / secrets.set(key, value) / secrets.list(): {key; last4}[]   // SQLite `secrets` table; DB file 0600, data dir 0700
 redactor.register(value); redactor.redact(text)            // all secret values ≥ 8 chars; applied in store.commit, log writer, errors
+                                                           // literal, longest first; ≥16 chars → `***`+last4, 8–15 chars → `[REDACTED]`
+redactor.safeBoundary(text)                                // where continued/cut text may be split without splitting a secret
 password.hash(pw) / password.verify(pw, hash)              // node:crypto scrypt N=2^15, 16-byte salt
 session.issue() / session.verify(cookie)                   // HMAC-SHA256 signed, 30-day expiry, HttpOnly SameSite=Strict
 assertBindAllowed(host, hasPassword)                       // throws unless loopback or password set
 ```
+
+**server/util/exec.ts** is the only importer of `node:child_process` (ESLint enforces this):
+```ts
+type ExecOptions = {cwd?; env? /* merged over process.env; undefined removes */; input?; timeoutMs /* required */;
+                    signal?: AbortSignal; killSignal? /* default SIGTERM; SIGINT for Claude Code */;
+                    killGraceMs? /* then SIGKILL, default 5000 */; maxBuffer? /* default 10 MiB */};
+exec(cmd, argv, o: ExecOptions): Promise<{code; signal; stdout; stderr; timedOut; aborted; truncated}>;  // non-zero exit is not an error
+spawnStream(cmd, argv, o: ExecOptions & {onLine(line, stream)}): Promise<{code; signal; timedOut; aborted}>;
+```
+Never a shell. The child runs in its own process group, and timeout or abort signals the whole group. Because of that, signals sent to the server (Ctrl-C, SIGHUP, a crash) do not reach running children, which can outlive the server as orphans. Captured output, streamed lines and `ExecError` messages (start failures) pass through `redactor`. When output is cut (at `maxBuffer`, or into pieces of an over-long streamed line), the cut uses `redactor.safeBoundary`, so no part of a secret leaks.
 
 ### 4.11 server/recovery
 `recover()` runs once at boot, before the scheduler starts:
