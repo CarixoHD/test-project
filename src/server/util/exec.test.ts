@@ -240,6 +240,44 @@ describe('exec redaction', () => {
     expect(r.truncated).toBe(true);
   });
 
+  /** True if any 6-character piece of `secret` appears in text (masks show only the last 4). */
+  const leaks = (text: string, secret = SECRET): boolean =>
+    Array.from({ length: secret.length - 5 }, (_, i) => secret.slice(i, i + 6)).some((piece) =>
+      text.includes(piece),
+    );
+  // 100 distinct-ish chars: redaction shrinks it to 7, so truncated output stays under maxBuffer.
+  const LONG_SECRET = `sk-long-${Array.from({ length: 23 }, (_, i) => `${i}`.padStart(4, '-')).join('')}`;
+
+  it.each([
+    ['multi-byte output (fewer characters than bytes)', '€'.repeat(10)],
+    ['repeated secrets (redaction shortens the text)', ''],
+  ])('does not leak part of a secret at the maxBuffer cut: %s', async (_name, filler) => {
+    redactor.register(LONG_SECRET);
+    // Blocks of filler + secret, so the byte cut lands inside a secret wherever it falls.
+    const script =
+      'const [f, s] = process.argv.slice(1); process.stdout.write((f + s).repeat(300))';
+    const r = await exec(NODE, nodeArgs(script, filler, LONG_SECRET), {
+      maxBuffer: 3000,
+      timeoutMs: 10_000,
+    });
+    expect(r.truncated).toBe(true);
+    expect(r.stdout.startsWith(`${filler}***--22${filler}***--22`)).toBe(true);
+    expect(leaks(r.stdout, LONG_SECRET)).toBe(false);
+  });
+
+  it('redacts a secret split across an over-long streamed line piece', async () => {
+    const script =
+      "const s = process.argv[1]; process.stdout.write('x'.repeat(90) + s.slice(0, 20)); setTimeout(() => process.stdout.write(s.slice(20) + '\\n'), 20)";
+    const lines: string[] = [];
+    await spawnStream(NODE, nodeArgs(script, SECRET), {
+      maxBuffer: 100,
+      timeoutMs: 10_000,
+      onLine: (line) => lines.push(line),
+    });
+    expect(leaks(lines.join('|'))).toBe(false);
+    expect(lines.join('')).toBe(`${'x'.repeat(90)}***6789`);
+  });
+
   it('redacts streamed lines', async () => {
     const lines: string[] = [];
     await spawnStream(NODE, nodeArgs('console.log(process.argv[1])', SECRET), {
