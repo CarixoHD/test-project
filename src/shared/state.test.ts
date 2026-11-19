@@ -478,7 +478,187 @@ const ISSUE_CASES: Case[] = [
   },
 ];
 
-const ALL_CASES: Case[] = [...PRODUCT_CASES, ...ISSUE_CASES];
+const attemptStarted = (): Event =>
+  ev(
+    {
+      type: 'attempt.started',
+      productId: P,
+      entityId: AT,
+      v: 1,
+      data: { issueId: I, n: 1, issueRev: 1, baseSha: SHA, branch: 'attempt/01ATTEMPT' },
+    },
+    T0 + 10,
+  );
+
+const attempt = (s: ClientState) => s.attempts[AT]!;
+const withAttempt = () => apply(withIssue({ status: 'in_progress' }), attemptStarted());
+
+const ATTEMPT_CASES: Case[] = [
+  {
+    name: 'attempt.started adds a running, uncounted attempt at the implement step',
+    given: () => withIssue({ status: 'in_progress' }),
+    when: attemptStarted,
+    then: (s) =>
+      expect(attempt(s)).toEqual({
+        id: AT,
+        productId: P,
+        issueId: I,
+        n: 1,
+        issueRev: 1,
+        baseSha: SHA,
+        branch: 'attempt/01ATTEMPT',
+        headSha: null,
+        status: 'running',
+        step: 'implement',
+        counted: false,
+        feedback: null,
+        review: null,
+        checkExit: null,
+        interruptReason: null,
+        startedAt: T0 + 10,
+        endedAt: null,
+      }),
+  },
+  {
+    name: 'attempt.step moves the attempt to the next step',
+    given: withAttempt,
+    when: () =>
+      ev({
+        type: 'attempt.step',
+        productId: P,
+        entityId: AT,
+        v: 1,
+        data: { issueId: I, step: 'review' },
+      }),
+    then: (s) => expect(attempt(s).step).toBe('review'),
+  },
+  {
+    name: 'attempt.ended records outcome, feedback, review and check exit',
+    given: withAttempt,
+    when: () =>
+      ev(
+        {
+          type: 'attempt.ended',
+          productId: P,
+          entityId: AT,
+          v: 1,
+          data: {
+            issueId: I,
+            status: 'rejected',
+            counted: true,
+            headSha: SHA2,
+            feedback: 'missing tests',
+            review: { approve: false, findings: ['missing tests'] },
+            checkExit: 0,
+            interruptReason: null,
+          },
+        },
+        T0 + 900,
+      ),
+    then: (s) =>
+      expect(attempt(s)).toMatchObject({
+        status: 'rejected',
+        counted: true,
+        headSha: SHA2,
+        feedback: 'missing tests',
+        review: { approve: false, findings: ['missing tests'] },
+        checkExit: 0,
+        interruptReason: null,
+        endedAt: T0 + 900,
+      }),
+  },
+];
+
+const agentSpawned = (): Event =>
+  ev(
+    {
+      type: 'agent.spawned',
+      productId: P,
+      entityId: AG,
+      v: 1,
+      data: { role: 'implementer', model: MODEL, issueId: I, attemptId: AT },
+    },
+    T0 + 20,
+  );
+
+const agent = (s: ClientState) => s.agents[AG]!;
+const withAgent = () => apply(withAttempt(), agentSpawned());
+
+const AGENT_CASES: Case[] = [
+  {
+    name: 'agent.spawned adds a working agent with provider and model',
+    given: withAttempt,
+    when: agentSpawned,
+    then: (s) =>
+      expect(agent(s)).toEqual({
+        id: AG,
+        productId: P,
+        role: 'implementer',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-5',
+        issueId: I,
+        attemptId: AT,
+        state: 'working',
+        until: null,
+        lastActivity: null,
+        startedAt: T0 + 20,
+        endedAt: null,
+      }),
+  },
+  {
+    name: 'agent.state sets state and until',
+    given: withAgent,
+    when: () =>
+      ev({
+        type: 'agent.state',
+        productId: P,
+        entityId: AG,
+        v: 1,
+        data: { state: 'rate_limited', until: T0 + 60_000 },
+      }),
+    then: (s) => expect(agent(s)).toMatchObject({ state: 'rate_limited', until: T0 + 60_000 }),
+  },
+  {
+    name: 'agent.activity keeps only the last line',
+    given: withAgent,
+    when: () =>
+      ev({
+        type: 'agent.activity',
+        productId: P,
+        entityId: AG,
+        v: 1,
+        data: { lines: ['read_file src/a.ts', 'run npm test'] },
+      }),
+    then: (s, before) => {
+      expect(agent(s).lastActivity).toBe('run npm test');
+      expect({ ...s, agents: before.agents, lastSeq: before.lastSeq }).toEqual(before);
+      expect({ ...agent(s), lastActivity: null }).toEqual(before.agents[AG]);
+    },
+  },
+  {
+    name: 'agent.exited marks the agent exited and clears until',
+    given: () =>
+      apply(
+        withAgent(),
+        ev({
+          type: 'agent.state',
+          productId: P,
+          entityId: AG,
+          v: 1,
+          data: { state: 'rate_limited', until: T0 + 60_000 },
+        }),
+      ),
+    when: () =>
+      ev(
+        { type: 'agent.exited', productId: P, entityId: AG, v: 1, data: { outcome: 'ok' } },
+        T0 + 5000,
+      ),
+    then: (s) =>
+      expect(agent(s)).toMatchObject({ state: 'exited', until: null, endedAt: T0 + 5000 }),
+  },
+];
+
+const ALL_CASES: Case[] = [...PRODUCT_CASES, ...ISSUE_CASES, ...ATTEMPT_CASES, ...AGENT_CASES];
 
 // ---- tests ------------------------------------------------------------------------------
 

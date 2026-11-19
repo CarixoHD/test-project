@@ -1,7 +1,13 @@
 import type { ProductSettings } from './domain.ts';
 import type { Event, EventOf } from './events.ts';
 import type { ProductId } from './ids.ts';
-import type { ClientState, IssueState, ProductState } from './state-schema.ts';
+import type {
+  AgentView,
+  AttemptState,
+  ClientState,
+  IssueState,
+  ProductState,
+} from './state-schema.ts';
 
 export * from './state-schema.ts';
 
@@ -239,6 +245,81 @@ function reduceIssueEvent(s: ClientState, e: IssueEvent): ClientState {
   return { ...s, issues: patch(s.issues, e.entityId, (i) => nextIssue(i, e)) };
 }
 
+// ---- attempt and agent events -------------------------------------------------------------
+
+type AttemptEvent = EventOf<'attempt.started' | 'attempt.step' | 'attempt.ended'>;
+
+function reduceAttemptEvent(s: ClientState, e: AttemptEvent): ClientState {
+  switch (e.type) {
+    case 'attempt.started': {
+      const started: AttemptState = {
+        id: e.entityId,
+        productId: e.productId,
+        ...e.data,
+        headSha: null,
+        status: 'running',
+        step: 'implement',
+        counted: false,
+        feedback: null,
+        review: null,
+        checkExit: null,
+        interruptReason: null,
+        startedAt: e.ts,
+        endedAt: null,
+      };
+      return { ...s, attempts: { ...s.attempts, [e.entityId]: started } };
+    }
+    case 'attempt.step':
+      return {
+        ...s,
+        attempts: patch(s.attempts, e.entityId, (a) => ({ ...a, step: e.data.step })),
+      };
+    case 'attempt.ended': {
+      const { issueId: _issueId, ...outcome } = e.data;
+      return {
+        ...s,
+        attempts: patch(s.attempts, e.entityId, (a) => ({ ...a, ...outcome, endedAt: e.ts })),
+      };
+    }
+  }
+}
+
+type AgentEvent = EventOf<'agent.spawned' | 'agent.state' | 'agent.activity' | 'agent.exited'>;
+
+/** Next view of an existing agent. */
+function nextAgent(a: AgentView, e: Exclude<AgentEvent, EventOf<'agent.spawned'>>): AgentView {
+  switch (e.type) {
+    case 'agent.state':
+      return { ...a, state: e.data.state, until: e.data.until };
+    case 'agent.activity':
+      // Only the last line is kept; the full log is served per agent.
+      return { ...a, lastActivity: e.data.lines.at(-1) ?? a.lastActivity };
+    case 'agent.exited':
+      return { ...a, state: 'exited', until: null, endedAt: e.ts };
+  }
+}
+
+function reduceAgentEvent(s: ClientState, e: AgentEvent): ClientState {
+  if (e.type === 'agent.spawned') {
+    const spawned: AgentView = {
+      id: e.entityId,
+      productId: e.productId,
+      role: e.data.role,
+      provider: e.data.model.provider,
+      model: e.data.model.model,
+      issueId: e.data.issueId,
+      attemptId: e.data.attemptId,
+      state: 'working',
+      until: null,
+      lastActivity: null,
+      startedAt: e.ts,
+      endedAt: null,
+    };
+    return { ...s, agents: { ...s.agents, [e.entityId]: spawned } };
+  }
+  return { ...s, agents: patch(s.agents, e.entityId, (a) => nextAgent(a, e)) };
+}
+
 // ---- reduce -------------------------------------------------------------------------------
 
 /**
@@ -271,6 +352,15 @@ export function reduce(s: ClientState, e: Event): ClientState {
     case 'issue.failed':
     case 'issue.rewritten':
       return { ...reduceIssueEvent(s, e), lastSeq: e.seq };
+    case 'attempt.started':
+    case 'attempt.step':
+    case 'attempt.ended':
+      return { ...reduceAttemptEvent(s, e), lastSeq: e.seq };
+    case 'agent.spawned':
+    case 'agent.state':
+    case 'agent.activity':
+    case 'agent.exited':
+      return { ...reduceAgentEvent(s, e), lastSeq: e.seq };
     default:
       return s;
   }
