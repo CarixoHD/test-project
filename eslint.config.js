@@ -13,6 +13,13 @@ import tseslint from 'typescript-eslint';
 const SERVER_IMPORT = '^(\\.\\./)+(src/)?server(/|$)|(^|/)src/server(/|$)';
 const WEB_IMPORT = '^(\\.\\./)+(src/)?web(/|$)|(^|/)src/web(/|$)';
 
+// ADR 3: the AI SDK (`ai`, `ai/*`, `@ai-sdk/*`) stays behind src/server/llm and the API agent backend.
+const AI_SDK_IMPORT = {
+  regex: '^(ai|@ai-sdk/[^/]+)(/|$)',
+  message: 'Only src/server/llm and src/server/agents/api-backend.ts may import the AI SDK.',
+};
+const AI_SDK_ALLOWED = ['src/server/llm/**', 'src/server/agents/api-backend.ts'];
+
 const SHARED_BOUNDARY = {
   paths: builtinModules
     .filter((name) => !name.startsWith('_'))
@@ -21,6 +28,7 @@ const SHARED_BOUNDARY = {
     { regex: '^node:', message: 'src/shared must stay pure: no node:* imports.' },
     { regex: SERVER_IMPORT, message: 'src/shared must not import src/server.' },
     { regex: WEB_IMPORT, message: 'src/shared must not import src/web.' },
+    AI_SDK_IMPORT,
   ],
 };
 
@@ -30,6 +38,7 @@ const WEB_BOUNDARY = {
       regex: SERVER_IMPORT,
       message: 'src/web must not import src/server; use src/web/state/api.ts and src/shared DTOs.',
     },
+    AI_SDK_IMPORT,
   ],
 };
 
@@ -43,6 +52,17 @@ const CHILD_PROCESS_BOUNDARY = {
     message: CHILD_PROCESS_MESSAGE,
   })),
 };
+
+const CHILD_PROCESS_SYNTAX = [
+  {
+    selector: `ImportExpression[source.value=${CHILD_PROCESS_RE}]`,
+    message: CHILD_PROCESS_MESSAGE,
+  },
+  {
+    selector: `CallExpression[callee.name='require'][arguments.0.value=${CHILD_PROCESS_RE}]`,
+    message: CHILD_PROCESS_MESSAGE,
+  },
+];
 
 export default defineConfig(
   {
@@ -72,21 +92,25 @@ export default defineConfig(
     languageOptions: { globals: globals.node },
   },
   {
+    files: ['src/server/**', 'scripts/**', 'tests/**'],
+    ignores: AI_SDK_ALLOWED,
+    rules: { 'no-restricted-imports': ['error', { patterns: [AI_SDK_IMPORT] }] },
+  },
+  {
+    // Everything in src/server except exec.ts: no child_process, and no AI SDK outside its allowed files.
     files: ['src/server/**/*.{ts,tsx}'],
-    ignores: ['src/server/util/exec.ts'],
+    ignores: ['src/server/util/exec.ts', ...AI_SDK_ALLOWED],
+    rules: {
+      'no-restricted-imports': ['error', { ...CHILD_PROCESS_BOUNDARY, patterns: [AI_SDK_IMPORT] }],
+      'no-restricted-syntax': ['error', ...CHILD_PROCESS_SYNTAX],
+    },
+  },
+  {
+    // AI SDK allowed files still must not import child_process.
+    files: AI_SDK_ALLOWED,
     rules: {
       'no-restricted-imports': ['error', CHILD_PROCESS_BOUNDARY],
-      'no-restricted-syntax': [
-        'error',
-        {
-          selector: `ImportExpression[source.value=${CHILD_PROCESS_RE}]`,
-          message: CHILD_PROCESS_MESSAGE,
-        },
-        {
-          selector: `CallExpression[callee.name='require'][arguments.0.value=${CHILD_PROCESS_RE}]`,
-          message: CHILD_PROCESS_MESSAGE,
-        },
-      ],
+      'no-restricted-syntax': ['error', ...CHILD_PROCESS_SYNTAX],
     },
   },
   {
