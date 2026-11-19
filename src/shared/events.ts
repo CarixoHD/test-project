@@ -54,11 +54,14 @@ const PRODUCT = { productId: ProductIdSchema, entityId: z.null() };
 const GLOBAL = { productId: z.null(), entityId: z.null() };
 const entityOf = <E extends z.ZodType>(entityId: E) => ({ productId: ProductIdSchema, entityId });
 
-function defineEvent<const T extends string, S extends Scope, D extends z.ZodType>(
-  type: T,
-  scope: S,
-  data: D,
-) {
+// `P`/`E` are separate type parameters so the envelope ids keep their concrete schema types
+// (a single `S extends Scope` widens `scope.productId` to `z.ZodType`, i.e. `unknown`).
+function defineEvent<
+  const T extends string,
+  P extends Scope['productId'],
+  E extends Scope['entityId'],
+  D extends z.ZodType,
+>(type: T, scope: { productId: P; entityId: E }, data: D) {
   return z.object({
     seq: Positive,
     ts: EpochMs,

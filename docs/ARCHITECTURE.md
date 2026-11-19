@@ -98,9 +98,15 @@ Each module exposes the interface below and hides everything else. Cross-module 
 ```ts
 // events.ts — every event is {seq, ts, type, productId|null, entityId|null, v, data}
 type Event = z.infer<typeof EventSchema>;          // discriminated union on `type`
-// state.ts
+// state.ts (per-domain reducers in state-product/-work/-account.ts; zod schema in state-schema.ts)
 function reduce(s: ClientState, e: Event): ClientState;   // ignores unknown types (forward compat)
 const emptyState: ClientState;
+// ClientState: id-keyed records {products, prdDrafts, prdVersions (metadata only), sparMessages,
+//   issues, attempts, agents (lastActivity = last line only), questions, inbox (read flag),
+//   usage {byProduct, byIssue}: {apiUsd, apiUnpriced, subscriptionTokens, subscriptionCalls},
+//   backendLimits (by backend), previews}, lastSeq. prd.applied also rebases the draft.
+// dto.ts
+const StateResponseSchema;                                 // GET /api/state → {state: ClientState, lastSeq}
 // issues.ts
 type IssueStatus = 'open'|'in_progress'|'in_review'|'completed'|'failed'|'cancelled';
 function transition(issue: IssueView, ev: IssueTransitionEvent, cfg: {maxAttempts:number}):
