@@ -119,7 +119,10 @@ function run(
         env: buildEnv(o.env),
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
-        // Own process group, so timeout/abort can signal the whole tree (see killTree).
+        // Own process group, so timeout/abort can signal the whole tree (see TreeKiller).
+        // Trade-off: a terminal Ctrl-C/SIGHUP to the server no longer reaches the child, and if
+        // the server dies, running children are orphaned. Long-lived ones (agents) run in
+        // containers that recovery removes at boot; the callers own anything else.
         detached: IS_POSIX,
         windowsHide: true,
       });
