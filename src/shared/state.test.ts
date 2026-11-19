@@ -10,7 +10,7 @@ import {
   QuestionIdSchema,
   type ProductId,
 } from './ids.ts';
-import { emptyState, reduce, type ClientState } from './state.ts';
+import { ClientStateSchema, emptyState, reduce, type ClientState } from './state.ts';
 
 // ---- fixtures ---------------------------------------------------------------------------
 
@@ -71,7 +71,13 @@ function withProduct(): ClientState {
   return apply(emptyState, productCreated());
 }
 
-const product = (s: ClientState) => s.products[P]!;
+/** Narrows a lookup that the test expects to exist. */
+function must<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error('expected a value');
+  return value;
+}
+
+const product = (s: ClientState) => must(s.products[P]);
 
 /** One replay case: start from `given`, apply `when`, assert with `then`. */
 type Case = {
@@ -82,6 +88,32 @@ type Case = {
 };
 
 const PRODUCT_CASES: Case[] = [
+  {
+    name: 'product.created adds a sparring product with its settings',
+    given: () => emptyState,
+    when: productCreated,
+    then: (s) =>
+      expect(product(s)).toEqual({
+        id: P,
+        name: 'Todo',
+        idea: 'A todo app',
+        createdAt: T0 + 1,
+        settings: {
+          budgetUsd: 20,
+          maxParallel: 3,
+          maxAttempts: 3,
+          models: { implementer: MODEL },
+          gitRemote: null,
+        },
+        phase: 'sparring',
+        paused: false,
+        pauseReason: null,
+        budgetWarned: false,
+        prdVersion: 0,
+        project: null,
+        orchestratorCursor: 0,
+      }),
+  },
   {
     name: 'product.settings_changed merges only the given settings and sets project',
     when: () =>
@@ -354,7 +386,7 @@ const ISSUE_VIEW: IssueView = {
 const issueCreated = (view: IssueView = ISSUE_VIEW): Event =>
   ev({ type: 'issue.created', productId: P, entityId: view.id, v: 1, data: { issue: view } });
 
-const issue = (s: ClientState) => s.issues[I]!;
+const issue = (s: ClientState) => must(s.issues[I]);
 
 /** Product plus issue I in the given status. */
 function withIssue(over: Partial<IssueView> = {}): ClientState {
@@ -491,7 +523,7 @@ const attemptStarted = (): Event =>
     T0 + 10,
   );
 
-const attempt = (s: ClientState) => s.attempts[AT]!;
+const attempt = (s: ClientState) => must(s.attempts[AT]);
 const withAttempt = () => apply(withIssue({ status: 'in_progress' }), attemptStarted());
 
 const ATTEMPT_CASES: Case[] = [
@@ -582,7 +614,7 @@ const agentSpawned = (): Event =>
     T0 + 20,
   );
 
-const agent = (s: ClientState) => s.agents[AG]!;
+const agent = (s: ClientState) => must(s.agents[AG]);
 const withAgent = () => apply(withAttempt(), agentSpawned());
 
 const AGENT_CASES: Case[] = [
@@ -750,7 +782,7 @@ const USAGE_CASES: Case[] = [
   },
 ];
 
-const question = (s: ClientState) => s.questions[Q]!;
+const question = (s: ClientState) => must(s.questions[Q]);
 const questionAsked = (): Event =>
   ev(
     {
@@ -878,6 +910,7 @@ const ALL_CASES: Case[] = [
 
 describe('replay per event type', () => {
   it.each(ALL_CASES)('$name', (c) => {
+    nextSeq = 1;
     const before = (c.given ?? withProduct)();
     const e = c.when();
     const after = apply(before, e);
@@ -886,37 +919,279 @@ describe('replay per event type', () => {
   });
 });
 
-describe('emptyState', () => {
-  it('has no entities and lastSeq 0', () => {
-    expect(emptyState.lastSeq).toBe(0);
-    expect(emptyState.products).toEqual({});
-    expect(emptyState.issues).toEqual({});
+/** Everything except lastSeq, to tell a real reducer case from a pass-through. */
+const content = ({ lastSeq: _lastSeq, ...rest }: ClientState) => rest;
+
+describe('event catalogue coverage', () => {
+  const catalogue = EventSchema.options.map((o) => o.shape.type.value);
+
+  it.each(catalogue)('%s has a reducer case that changes state', (type) => {
+    const cases = ALL_CASES.filter((c) => {
+      nextSeq = 1;
+      (c.given ?? withProduct)();
+      return c.when().type === type;
+    });
+    expect(cases, `no replay case for ${type}`).not.toHaveLength(0);
+    for (const c of cases) {
+      nextSeq = 1;
+      const before = (c.given ?? withProduct)();
+      const after = apply(before, c.when());
+      expect(content(after)).not.toEqual(content(before));
+    }
   });
 });
 
-describe('product events', () => {
-  it('product.created adds a sparring product with its settings', () => {
-    const s = withProduct();
-    expect(s.products[P]).toEqual({
-      id: P,
-      name: 'Todo',
-      idea: 'A todo app',
-      createdAt: T0 + 1,
-      settings: {
-        budgetUsd: 20,
-        maxParallel: 3,
-        maxAttempts: 3,
-        models: { implementer: MODEL },
-        gitRemote: null,
+describe('unknown and orphan events', () => {
+  it('leaves state unchanged for an unknown event type', () => {
+    const before = withIssue();
+    const unknown = {
+      seq: 99,
+      ts: T0 + 99,
+      type: 'issue.teleported',
+      productId: P,
+      entityId: I,
+      v: 1,
+      data: { to: 'mars' },
+    } as unknown as Event;
+    expect(apply(before, unknown)).toBe(before);
+  });
+
+  it('ignores updates to entities it has never seen, apart from lastSeq', () => {
+    const before = withProduct();
+    const after = apply(
+      before,
+      ev({ type: 'issue.held', productId: P, entityId: I2, v: 1, data: { questionId: Q } }),
+      ev({
+        type: 'attempt.step',
+        productId: P,
+        entityId: AT,
+        v: 1,
+        data: { issueId: I, step: 'check' },
+      }),
+      ev({ type: 'agent.exited', productId: P, entityId: AG, v: 1, data: { outcome: 'ok' } }),
+      ev({ type: 'inbox.read', productId: P, entityId: IN, v: 1, data: {} }),
+    );
+    expect(content(after)).toEqual(content(before));
+    expect(after.lastSeq).toBe(5);
+  });
+});
+
+describe('purity', () => {
+  it('never mutates the input state or event', () => {
+    for (const c of ALL_CASES) {
+      nextSeq = 1;
+      const before = (c.given ?? withProduct)();
+      const e = c.when();
+      const stateCopy = structuredClone(before);
+      const eventCopy = structuredClone(e);
+      reduce(before, e);
+      expect(before, c.name).toEqual(stateCopy);
+      expect(e, c.name).toEqual(eventCopy);
+    }
+  });
+
+  it('returns the same output for the same input', () => {
+    const events = scenario();
+    expect(events.reduce(reduce, emptyState)).toEqual(events.reduce(reduce, emptyState));
+  });
+});
+
+// ---- multi-event scenario -----------------------------------------------------------------
+
+const AT2 = AttemptIdSchema.parse('01ATTEMPT2');
+const AG2 = AgentIdSchema.parse('01AGENT2');
+
+/** create → spar → handoff → plan → rejected attempt → retry → merge, with usage throughout. */
+function scenario(): Event[] {
+  nextSeq = 1;
+  usageRow = 0;
+  const e = (d: EventDraft) => ev(d);
+  return [
+    productCreated(),
+    e({
+      type: 'spar.message',
+      productId: P,
+      entityId: 'm1',
+      v: 1,
+      data: { role: 'owner', text: 'todo app' },
+    }),
+    usage({ ...SUBSCRIPTION_USAGE, issueId: null, attemptId: null, role: 'sparring' }),
+    e({
+      type: 'prd.draft_saved',
+      productId: P,
+      entityId: null,
+      v: 1,
+      data: { markdown: '# v1', baseVersion: 0 },
+    }),
+    e({
+      type: 'prd.applied',
+      productId: P,
+      entityId: null,
+      v: 1,
+      data: { version: 1, markdown: '# v1', summary: null },
+    }),
+    e({ type: 'product.handed_off', productId: P, entityId: null, v: 1, data: { prdVersion: 1 } }),
+    issueCreated({ ...ISSUE_VIEW, dependsOn: [] }),
+    issueCreated({ ...ISSUE_VIEW, id: I2, number: 2, title: 'Add logout', dependsOn: [I] }),
+    e({
+      type: 'orchestrator.cursor_advanced',
+      productId: P,
+      entityId: null,
+      v: 1,
+      data: { cursor: 6 },
+    }),
+    // attempt 1: rejected by review
+    e({
+      type: 'issue.status_changed',
+      productId: P,
+      entityId: I,
+      v: 1,
+      data: { from: 'open', to: 'in_progress', attemptCount: 0, runAfter: 0 },
+    }),
+    attemptStarted(),
+    agentSpawned(),
+    e({
+      type: 'agent.activity',
+      productId: P,
+      entityId: AG,
+      v: 1,
+      data: { lines: ['edit src/login.ts'] },
+    }),
+    usage({ costUsd: 0.5 }),
+    e({ type: 'agent.exited', productId: P, entityId: AG, v: 1, data: { outcome: 'ok' } }),
+    e({
+      type: 'attempt.step',
+      productId: P,
+      entityId: AT,
+      v: 1,
+      data: { issueId: I, step: 'review' },
+    }),
+    e({
+      type: 'issue.status_changed',
+      productId: P,
+      entityId: I,
+      v: 1,
+      data: { from: 'in_progress', to: 'in_review', attemptCount: 0, runAfter: 0 },
+    }),
+    usage({ costUsd: null, unpriced: true, role: 'reviewer' }),
+    e({
+      type: 'attempt.ended',
+      productId: P,
+      entityId: AT,
+      v: 1,
+      data: {
+        issueId: I,
+        status: 'rejected',
+        counted: true,
+        headSha: SHA,
+        feedback: 'add tests',
+        review: { approve: false, findings: ['add tests'] },
+        checkExit: 0,
+        interruptReason: null,
       },
-      phase: 'sparring',
-      paused: false,
-      pauseReason: null,
-      budgetWarned: false,
-      prdVersion: 0,
-      project: null,
-      orchestratorCursor: 0,
+    }),
+    e({
+      type: 'issue.status_changed',
+      productId: P,
+      entityId: I,
+      v: 1,
+      data: { from: 'in_review', to: 'open', attemptCount: 1, runAfter: 0 },
+    }),
+    // attempt 2: merged
+    e({
+      type: 'issue.status_changed',
+      productId: P,
+      entityId: I,
+      v: 1,
+      data: { from: 'open', to: 'in_progress', attemptCount: 1, runAfter: 0 },
+    }),
+    e({
+      type: 'attempt.started',
+      productId: P,
+      entityId: AT2,
+      v: 1,
+      data: { issueId: I, n: 2, issueRev: 1, baseSha: SHA, branch: 'attempt/01ATTEMPT2' },
+    }),
+    e({
+      type: 'agent.spawned',
+      productId: P,
+      entityId: AG2,
+      v: 1,
+      data: { role: 'implementer', model: CC_MODEL, issueId: I, attemptId: AT2 },
+    }),
+    usage({ ...SUBSCRIPTION_USAGE, attemptId: AT2 }),
+    e({ type: 'agent.exited', productId: P, entityId: AG2, v: 1, data: { outcome: 'ok' } }),
+    e({
+      type: 'attempt.ended',
+      productId: P,
+      entityId: AT2,
+      v: 1,
+      data: {
+        issueId: I,
+        status: 'merged',
+        counted: true,
+        headSha: SHA2,
+        feedback: null,
+        review: { approve: true, findings: [] },
+        checkExit: 0,
+        interruptReason: null,
+      },
+    }),
+    e({
+      type: 'issue.completed',
+      productId: P,
+      entityId: I,
+      v: 1,
+      data: { attemptId: AT2, mergedOrder: 1, mergeSha: SHA2 },
+    }),
+    e({
+      type: 'inbox.created',
+      productId: P,
+      entityId: IN,
+      v: 1,
+      data: { kind: 'budget_warn', title: 'Budget 80%', body: '', link: null },
+    }),
+    e({ type: 'inbox.read', productId: P, entityId: IN, v: 1, data: {} }),
+  ];
+}
+
+describe('multi-event scenario', () => {
+  it('replays a build from creation to the first merge', () => {
+    const events = scenario();
+    const s = apply(emptyState, ...events);
+
+    expect(ClientStateSchema.parse(s)).toEqual(s);
+    expect(s.lastSeq).toBe(events.length);
+    expect(product(s)).toMatchObject({ phase: 'building', prdVersion: 1, orchestratorCursor: 6 });
+    expect(s.prdDrafts[P]).toMatchObject({ markdown: '# v1', baseVersion: 1 });
+    expect(s.sparMessages[P]).toHaveLength(1);
+    expect(issue(s)).toMatchObject({
+      status: 'completed',
+      attemptCount: 1,
+      mergedOrder: 1,
+      mergeSha: SHA2,
     });
-    expect(s.lastSeq).toBe(1);
+    expect(s.issues[I2]).toMatchObject({ status: 'open', dependsOn: [I] });
+    expect(s.attempts[AT]).toMatchObject({
+      status: 'rejected',
+      step: 'review',
+      feedback: 'add tests',
+    });
+    expect(s.attempts[AT2]).toMatchObject({ status: 'merged', step: 'implement', headSha: SHA2 });
+    expect(agent(s)).toMatchObject({ state: 'exited', lastActivity: 'edit src/login.ts' });
+    expect(s.agents[AG2]).toMatchObject({ state: 'exited', provider: 'claude-code' });
+    expect(s.inbox[IN]?.read).toBe(true);
+    expect(s.usage.byProduct[P]).toEqual({
+      apiUsd: 0.5,
+      apiUnpriced: true,
+      subscriptionTokens: { input: 20, output: 40, cacheRead: 60, cacheWrite: 80, reasoning: 0 },
+      subscriptionCalls: 4,
+    });
+    expect(s.usage.byIssue[I]).toEqual({
+      apiUsd: 0.5,
+      apiUnpriced: true,
+      subscriptionTokens: { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, reasoning: 0 },
+      subscriptionCalls: 2,
+    });
   });
 });
