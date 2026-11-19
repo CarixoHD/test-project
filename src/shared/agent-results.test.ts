@@ -125,7 +125,10 @@ const SCHEMAS: {
       ['escaping image input', { check: ['x'], imageInputs: ['../secrets'] }],
       ['nested escaping image input', { check: ['x'], imageInputs: ['a/../../b'] }],
       ['backslash image input', { check: ['x'], imageInputs: ['..\\b'] }],
-      ['empty preview command', { check: ['x'], imageInputs: [], preview: { command: [], port: 1 } }],
+      [
+        'empty preview command',
+        { check: ['x'], imageInputs: [], preview: { command: [], port: 1 } },
+      ],
       ['port 0', { check: ['x'], imageInputs: [], preview: { command: ['x'], port: 0 } }],
       ['port too big', { check: ['x'], imageInputs: [], preview: { command: ['x'], port: 70000 } }],
     ],
