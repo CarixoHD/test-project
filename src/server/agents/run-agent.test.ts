@@ -4,9 +4,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { ModelRef } from '../../shared/models.ts';
-import { API_KEY_SECRETS, type FakeScript } from '../llm/index.ts';
+import { API_KEY_SECRETS, type FakeCallPrompt, type FakeScript } from '../llm/index.ts';
 import { FakeContainerRuntime, type Sandbox } from '../sandbox/index.ts';
 import { FakeClock } from '../util/clock.ts';
+import { FINISH_NUDGE } from './api-backend.ts';
 import { runAgent, type AgentSpec, type StepUsage } from './index.ts';
 
 const START = 1_700_000_000_000;
@@ -116,6 +117,68 @@ describe('runAgent with the API backend', () => {
     expect(result).toMatchObject({ kind: 'error', transient: false });
     expect(result.kind === 'error' && result.message).toMatch(/2 steps/);
     expect(rec.usage).toHaveLength(2);
+  });
+
+  describe('finish nudge after a text-only step', () => {
+    function recordingSpec(script: FakeScript): {
+      spec: AgentSpec<Result>;
+      prompts: FakeCallPrompt[];
+    } {
+      const prompts: FakeCallPrompt[] = [];
+      const { spec: s } = spec(script, {
+        modelDeps: {
+          getSecret: () => undefined,
+          fake: { script, onCall: (prompt) => prompts.push(prompt) },
+        },
+      });
+      return { spec: s, prompts };
+    }
+
+    const lastMessage = (prompt: FakeCallPrompt | undefined) => prompt?.at(-1);
+    const mentionsNudge = (prompt: FakeCallPrompt | undefined) =>
+      JSON.stringify(prompt).includes(JSON.stringify(FINISH_NUDGE).slice(1, -1));
+
+    it('ends the next prompt with a user message carrying the finish nudge', async () => {
+      const { spec: s, prompts } = recordingSpec([
+        { text: 'Here is my answer.' },
+        { toolCalls: [finish('done')] },
+      ]);
+
+      await runAgent(s);
+
+      expect(prompts).toHaveLength(2);
+      const last = lastMessage(prompts[1]);
+      expect(last?.role).toBe('user');
+      expect(JSON.stringify(last?.content)).toContain(JSON.stringify(FINISH_NUDGE).slice(1, -1));
+      expect(FINISH_NUDGE).toMatch(/finish/);
+    });
+
+    it('does not nudge after a step that made tool calls', async () => {
+      const { spec: s, prompts } = recordingSpec([
+        {
+          text: 'Writing.',
+          toolCalls: [{ name: 'write_file', input: { path: 'a.txt', content: 'a' } }],
+        },
+        { toolCalls: [finish('done')] },
+      ]);
+
+      await runAgent(s);
+
+      expect(prompts).toHaveLength(2);
+      expect(lastMessage(prompts[1])?.role).toBe('tool');
+      expect(mentionsNudge(prompts[1])).toBe(false);
+    });
+
+    it('returns ok when the model answers in text first and calls finish next', async () => {
+      const { spec: s } = recordingSpec([
+        { text: 'The summary is: all good.' },
+        { toolCalls: [finish('all good')] },
+      ]);
+
+      const result = await runAgent(s);
+
+      expect(result).toEqual({ kind: 'ok', result: { summary: 'all good' } });
+    });
   });
 
   it('checks shouldStop between steps and returns stopped', async () => {
