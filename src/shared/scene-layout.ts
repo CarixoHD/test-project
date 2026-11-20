@@ -8,7 +8,10 @@ export interface PieceLayout {
   type: PieceType;
   /** Building-local position; one storey is 1 unit high, y = 0 is the ground floor. */
   pos: Vec3;
-  /** Rotation around the y axis, in radians. */
+  /**
+   * Rotation around the y axis, in radians. Walls and windows turn their local +z outward,
+   * away from the footprint centre, so their outer face can lie on the perimeter line.
+   */
   rotY: number;
 }
 
@@ -58,5 +61,6 @@ export function layoutPiece(index: number, totalIssues: number): PieceLayout {
   };
   const [x, z] = sides[side] ?? [0, 0];
   const type: PieceType = (offset + level) % 2 === 1 ? 'window' : 'wall';
-  return { type, pos: [n0(x), level + 0.5, n0(z)], rotY: (side * Math.PI) / 2 };
+  // Local +z rotated by rotY points along (sin, cos): north π, east π/2, south 0, west -π/2.
+  return { type, pos: [n0(x), level + 0.5, n0(z)], rotY: Math.PI - (side * Math.PI) / 2 };
 }

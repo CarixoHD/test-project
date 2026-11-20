@@ -192,25 +192,50 @@ export function questionBubbleMaterial(): SpriteMaterial {
   return bubbleMaterial;
 }
 
+/** Depth of a wall or window: the shell is this thick, inside the floor slab. */
+export const WALL_THICKNESS = 0.1;
+
+/**
+ * The box a wall or window fills, in the coordinates of its slot (layoutPiece: on the
+ * perimeter line, half a storey up, local +z facing outward). Its outer face lies on the
+ * perimeter line, so it stays inside the floor slab. It spans 1 - WALL_THICKNESS along the
+ * side and leaves its -x end free: there, the piece of the neighbouring side (turned a
+ * quarter) fills the corner, so the sides meet like a pinwheel without overlapping.
+ */
+const WALL_CELL = {
+  min: new Vector3(-0.5 + WALL_THICKNESS, -0.4, -WALL_THICKNESS),
+  max: new Vector3(0.5, 0.5, 0),
+};
+
+const WALL_LENGTH = 1 - WALL_THICKNESS;
+
+/** Moves geometry built around the origin (x/z) into WALL_CELL. */
+const intoWallCell = (g: BufferGeometry) => g.translate(WALL_THICKNESS / 2, 0, -WALL_THICKNESS / 2);
+
 /**
  * Primitive geometry of one building piece. Floors and roofs have their origin at the bottom
- * centre; walls and windows are centred on their slot, which layoutPiece puts half a storey
- * up, so they stand on the floor slab and reach the next storey (PIECE_CELL).
+ * centre; walls and windows fill WALL_CELL, so they stand on the floor slab and reach the
+ * next storey.
  */
 export function pieceGeometry(type: PieceType): BufferGeometry {
   switch (type) {
     case 'floor':
       return new BoxGeometry(1, 0.1, 1).translate(0, 0.05, 0);
     case 'wall':
-      return new BoxGeometry(1, 0.9, 0.12).translate(0, 0.05, 0);
-    case 'window':
-      return merge([
-        new BoxGeometry(1, 0.25, 0.12).translate(0, -0.275, 0),
-        new BoxGeometry(1, 0.2, 0.12).translate(0, 0.4, 0),
-        new BoxGeometry(0.2, 0.45, 0.12).translate(-0.4, 0.075, 0),
-        new BoxGeometry(0.2, 0.45, 0.12).translate(0.4, 0.075, 0),
-        new BoxGeometry(0.6, 0.45, 0.04).translate(0, 0.075, 0),
-      ]);
+      return intoWallCell(new BoxGeometry(WALL_LENGTH, 0.9, WALL_THICKNESS).translate(0, 0.05, 0));
+    case 'window': {
+      const t = WALL_THICKNESS;
+      const jamb = (WALL_LENGTH - 0.2) / 2;
+      return intoWallCell(
+        merge([
+          new BoxGeometry(WALL_LENGTH, 0.25, t).translate(0, -0.275, 0),
+          new BoxGeometry(WALL_LENGTH, 0.2, t).translate(0, 0.4, 0),
+          new BoxGeometry(0.2, 0.45, t).translate(-jamb, 0.075, 0),
+          new BoxGeometry(0.2, 0.45, t).translate(jamb, 0.075, 0),
+          new BoxGeometry(WALL_LENGTH - 0.4, 0.45, 0.04).translate(0, 0.075, 0),
+        ]),
+      );
+    }
     case 'roof':
       return new ConeGeometry(Math.SQRT1_2, 0.7, 4).rotateY(Math.PI / 4).translate(0, 0.35, 0);
   }
@@ -333,19 +358,21 @@ export function figureFromGltf(gltf: GLTF): FigureModel {
   return model;
 }
 
-/** Where each GLB piece is fitted, in the coordinates of its slot (see pieceGeometry). */
-const PIECE_CELL: Record<ModelPieceType, { size: Vector3; bottom: number; stretch: boolean }> = {
-  wall: { size: new Vector3(1, 0.9, 1), bottom: -0.4, stretch: false },
-  window: { size: new Vector3(1, 0.9, 1), bottom: -0.4, stretch: false },
-  // The roof is scaled to the footprint per instance, so its x/z span one unit.
-  roof: { size: new Vector3(1, 0.3, 1), bottom: 0, stretch: true },
+/** The box each GLB piece is stretched into, in the coordinates of its slot. */
+const PIECE_CELL: Record<ModelPieceType, { min: Vector3; max: Vector3; maxScaleY: number }> = {
+  // City Kit modules are small buildings; squeezed to WALL_THICKNESS they become facades.
+  wall: { ...WALL_CELL, maxScaleY: Infinity },
+  window: { ...WALL_CELL, maxScaleY: Infinity },
+  // Scaled to the footprint per instance, so its x/z span one unit; never stretched taller
+  // than it is, so the solar panels stay flat.
+  roof: { min: new Vector3(-0.5, 0, -0.5), max: new Vector3(0.5, 0.3, 0.5), maxScaleY: 1 },
 };
 
 const gltfParts = new WeakMap<GLTF, PiecePart[]>();
 
 /**
  * The parts (one per mesh/material) of a City Kit Industrial GLB, baked and fitted into the
- * piece's cell: walls and windows keep their proportions; the roof is stretched to a unit
+ * piece's cell: walls and windows fill WALL_CELL; the roof is stretched to a unit
  * footprint. Cached per GLB; the geometries are never disposed.
  */
 export function piecePartsFromGltf(type: ModelPieceType, gltf: GLTF): PiecePart[] {
@@ -362,18 +389,18 @@ export function piecePartsFromGltf(type: ModelPieceType, gltf: GLTF): PiecePart[
     parts.push({ geometry, material: o.material as Material });
   });
   const cell = PIECE_CELL[type];
+  const cellSize = cell.max.clone().sub(cell.min);
   const size = box.getSize(new Vector3());
-  const fit = new Vector3(cell.size.x / size.x, cell.size.y / size.y, cell.size.z / size.z);
-  const uniform = Math.min(fit.x, fit.y, fit.z);
-  const scale = cell.stretch
-    ? new Vector3(fit.x, Math.min(1, fit.y), fit.z)
-    : new Vector3(uniform, uniform, uniform);
-  const centre = box.getCenter(new Vector3());
+  const scale = new Vector3(
+    cellSize.x / size.x,
+    Math.min(cell.maxScaleY, cellSize.y / size.y),
+    cellSize.z / size.z,
+  );
   for (const p of parts) {
     p.geometry
-      .translate(-centre.x, -box.min.y, -centre.z)
+      .translate(-box.min.x, -box.min.y, -box.min.z)
       .scale(scale.x, scale.y, scale.z)
-      .translate(0, cell.bottom, 0);
+      .translate(cell.min.x, cell.min.y, cell.min.z);
   }
   gltfParts.set(gltf, parts);
   return parts;

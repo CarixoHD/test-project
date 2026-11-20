@@ -1,11 +1,19 @@
 /// <reference types="node" />
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { Box3, Mesh, MeshStandardMaterial, Vector3, type Object3D } from 'three';
+import {
+  Box3,
+  Matrix4,
+  Mesh,
+  MeshStandardMaterial,
+  Quaternion,
+  Vector3,
+  type Object3D,
+} from 'three';
 import type { GLTF, GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Figure } from '../../shared/scene.ts';
+import { layoutPiece, type Figure } from '../../shared/scene.ts';
 import {
   BUILDING_LOADER,
   CHARACTER_LOADER,
@@ -18,6 +26,7 @@ import {
   type ClipName,
   type FigureModel,
   type PiecePart,
+  WALL_THICKNESS,
 } from './figures.ts';
 
 // The vendored Kenney GLBs parsed by the same loaders the scene uses. jsdom cannot decode
@@ -125,7 +134,7 @@ describe('building GLBs (Kenney City Kit Industrial)', () => {
   });
 
   it.each(['wall', 'window'] as const)(
-    '%s fits one storey-high, one-unit cell centred on its slot',
+    '%s fills a storey-high facade cell with its outer face on the slot line',
     async (type) => {
       const parts = piecePartsFromGltf(type, await load(BUILDING_LOADER, PIECE_URLS[type]));
       expect(parts.length).toBeGreaterThan(0);
@@ -133,11 +142,11 @@ describe('building GLBs (Kenney City Kit Industrial)', () => {
       expect(fetched.some((u) => u.includes('/assets/city-kit-industrial/Textures/'))).toBe(true);
       const box = bounds(parts);
       expect(box.min.y).toBeCloseTo(-0.4, 3);
-      expect(box.max.y).toBeLessThanOrEqual(0.5 + 1e-6);
-      expect(box.max.x - box.min.x).toBeLessThanOrEqual(1 + 1e-6);
-      expect(box.max.z - box.min.z).toBeLessThanOrEqual(1 + 1e-6);
-      expect(Math.abs(box.max.x + box.min.x)).toBeLessThan(1e-6);
-      expect(Math.abs(box.max.z + box.min.z)).toBeLessThan(1e-6);
+      expect(box.max.y).toBeCloseTo(0.5, 3);
+      expect(box.min.x).toBeCloseTo(-0.5 + WALL_THICKNESS, 3);
+      expect(box.max.x).toBeCloseTo(0.5, 3);
+      expect(box.min.z).toBeCloseTo(-WALL_THICKNESS, 3);
+      expect(box.max.z).toBeCloseTo(0, 3);
     },
   );
 
@@ -146,6 +155,101 @@ describe('building GLBs (Kenney City Kit Industrial)', () => {
     expect(box.min.y).toBeCloseTo(0, 3);
     expect(box.max.x - box.min.x).toBeCloseTo(1, 3);
     expect(box.max.z - box.min.z).toBeCloseTo(1, 3);
+  });
+});
+
+/** Pieces in one building of `width`: floor slab and perimeter of the ground storey. */
+function storey(width: number) {
+  const perStorey = 1 + 4 * width;
+  // A building of `width` storeys of `width`, plus the roof, has footprint `width`.
+  const total = width * perStorey + 1;
+  const pieces = Array.from({ length: perStorey }, (_, i) => layoutPiece(i, total));
+  expect(pieces.filter((p) => p.type === 'floor')).toHaveLength(1);
+  return pieces.filter((p) => p.type === 'wall' || p.type === 'window');
+}
+
+const UP = new Vector3(0, 1, 0);
+
+/** World box of `parts` placed at a layout slot (as the 3D view does, settled). */
+function placed(parts: PiecePart[], pos: readonly number[], rotY: number): Box3 {
+  const [x = 0, y = 0, z = 0] = pos;
+  const m = new Matrix4().compose(
+    new Vector3(x, y, z),
+    new Quaternion().setFromAxisAngle(UP, rotY),
+    new Vector3(1, 1, 1),
+  );
+  return bounds(parts).applyMatrix4(m);
+}
+
+function overlap(a: Box3, b: Box3): number {
+  const i = a.clone().intersect(b);
+  if (i.isEmpty()) return 0;
+  const s = i.getSize(new Vector3());
+  return s.x * s.y * s.z;
+}
+
+describe('perimeter shell (walls and windows of one storey)', () => {
+  async function partsBy(source: 'glb' | 'primitive') {
+    if (source === 'primitive') {
+      return { wall: primitivePieceParts('wall'), window: primitivePieceParts('window') };
+    }
+    const [wall, window] = await Promise.all(
+      (['wall', 'window'] as const).map(async (t) =>
+        piecePartsFromGltf(t, await load(BUILDING_LOADER, PIECE_URLS[t])),
+      ),
+    );
+    return { wall: wall ?? [], window: window ?? [] };
+  }
+
+  describe.each(['glb', 'primitive'] as const)('%s pieces', (source) => {
+    it.each([1, 2, 3])('stay inside the floor slab of width %i', async (width) => {
+      const parts = await partsBy(source);
+      const half = width / 2;
+      for (const p of storey(width)) {
+        const box = placed(parts[p.type as 'wall' | 'window'], p.pos, p.rotY);
+        const where = `${p.type} at ${p.pos.join(',')}`;
+        expect(box.min.x, where).toBeGreaterThanOrEqual(-half - 1e-3);
+        expect(box.max.x, where).toBeLessThanOrEqual(half + 1e-3);
+        expect(box.min.z, where).toBeGreaterThanOrEqual(-half - 1e-3);
+        expect(box.max.z, where).toBeLessThanOrEqual(half + 1e-3);
+        // Stands on the slab (top at level + 0.1) and reaches the next storey.
+        expect(box.min.y, where).toBeCloseTo(0.1, 3);
+        expect(box.max.y, where).toBeCloseTo(1, 3);
+      }
+    });
+
+    it.each([1, 2, 3])('do not intersect each other at width %i', async (width) => {
+      const parts = await partsBy(source);
+      const pieces = storey(width);
+      const boxes = pieces.map((p) => placed(parts[p.type as 'wall' | 'window'], p.pos, p.rotY));
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          const a = boxes[i] as Box3;
+          const b = boxes[j] as Box3;
+          expect(overlap(a, b), `pieces ${i} and ${j}`).toBeLessThanOrEqual(1e-3);
+        }
+      }
+    });
+
+    it.each([1, 2, 3])('close every corner of width %i', async (width) => {
+      const parts = await partsBy(source);
+      const boxes = storey(width).map((p) =>
+        placed(parts[p.type as 'wall' | 'window'], p.pos, p.rotY),
+      );
+      const half = width / 2;
+      for (const [cx, cz] of [
+        [-half, -half],
+        [half, -half],
+        [half, half],
+        [-half, half],
+      ] as const) {
+        const corner = new Vector3(cx, 0.5, cz);
+        expect(
+          boxes.some((b) => b.distanceToPoint(corner) < 1e-3),
+          `corner ${cx},${cz}`,
+        ).toBe(true);
+      }
+    });
   });
 });
 
