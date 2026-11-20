@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { StateResponseSchema } from '../shared/dto.ts';
+import { CreateProductResponseSchema, StateResponseSchema } from '../shared/dto.ts';
 import { parseEvent, type Event } from '../shared/events.ts';
 import { InboxIdSchema } from '../shared/ids.ts';
 import { parseConfig } from './config.ts';
@@ -54,6 +54,65 @@ describe('start (composition root)', () => {
     expect(JSON.parse(text)).toMatchObject({ keys: [{ provider: 'anthropic', last4: '5678' }] });
   });
 
+  it('runs sparring turns: POST /spar yields the agent reply over SSE', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const config = {
+      ...parseConfig({ VIBECODE_DATA_DIR: join(root, 'data'), VIBECODE_DEMO: '1' }),
+      port: 0,
+    };
+    running = await start(config, join(root, 'no-web'), {
+      fakeScript: [finish({ reply: 'Who will use it?' })],
+    });
+    const base = `http://127.0.0.1:${String(running.address.port)}`;
+    const productId = await createProduct(base);
+
+    const events = await fetch(`${base}/api/events?since=0`);
+    const spar = await fetch(`${base}/api/products/${productId}/spar`, json({ message: 'Hi' }));
+    expect(spar.status).toBe(202);
+
+    const isReply = (e: Event) =>
+      e.type === 'spar.message' && e.data.role === 'agent' && e.data.text === 'Who will use it?';
+    const streamed = await readEvents(events, (es) => es.some(isReply));
+    expect(streamed.find(isReply)).toMatchObject({ productId });
+  });
+
+  it('close() waits for a running sparring turn before closing the database', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const config = {
+      ...parseConfig({ VIBECODE_DATA_DIR: join(root, 'data'), VIBECODE_DEMO: '1' }),
+      port: 0,
+    };
+    let release = () => {};
+    const gate = new Promise<void>((done) => (release = done));
+    running = await start(config, join(root, 'no-web'), {
+      fakeScript: [finish({ reply: 'Who will use it?' })],
+      // Holds the real turn until close() has begun.
+      wrapSparTurn: (run) => async (productId, message) => {
+        await gate;
+        await run(productId, message);
+      },
+    });
+    const base = `http://127.0.0.1:${String(running.address.port)}`;
+    const productId = await createProduct(base);
+    const committed: Event[] = [];
+    running.store.subscribe((e) => committed.push(e));
+
+    const spar = await fetch(`${base}/api/products/${productId}/spar`, json({ message: 'Hi' }));
+    expect(spar.status).toBe(202);
+    const closing = running.close();
+    running = undefined;
+    await new Promise((done) => setTimeout(done, 50));
+    release();
+    await closing;
+
+    expect(
+      committed.flatMap((e) => (e.type === 'spar.message' ? [[e.data.role, e.data.text]] : [])),
+    ).toEqual([
+      ['owner', 'Hi'],
+      ['agent', 'Who will use it?'],
+    ]);
+  });
+
   it('runs the inbox hook: a limiting event yields an inbox item in snapshot, SSE and mark-read', async () => {
     root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
     const config = { ...parseConfig({ VIBECODE_DATA_DIR: join(root, 'data') }), port: 0 };
@@ -96,6 +155,19 @@ describe('start (composition root)', () => {
     expect(after.state.inbox[inboxId]?.read).toBe(true);
   });
 });
+
+const finish = (input: object) => ({ toolCalls: [{ name: 'finish', input }] });
+const json = (body: unknown): RequestInit => ({
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+async function createProduct(base: string): Promise<string> {
+  const res = await fetch(`${base}/api/products`, json({ name: 'Todo', idea: 'A todo app' }));
+  expect(res.status).toBe(201);
+  return CreateProductResponseSchema.parse(await res.json()).id;
+}
 
 /** Reads SSE `data:` lines from `res` until `done(events)` holds, then cancels the stream. */
 async function readEvents(
