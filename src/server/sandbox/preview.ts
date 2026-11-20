@@ -191,6 +191,9 @@ export function createPreviews(deps: PreviewDeps): Previews {
   }
 
   async function start(productId: ProductId): Promise<StartPreviewResult> {
+    // start() runs when the per-product queue lets it, so this also catches starts that were
+    // queued before stopAll: they create no worktree, image or container.
+    if (shutdown.signal.aborted) return { ok: false, code: 'conflict', reason: SHUTTING_DOWN };
     const product = deps.store.q.product(productId);
     if (product === null)
       return { ok: false, code: 'not_found', reason: `No product ${productId}` };
@@ -205,6 +208,7 @@ export function createPreviews(deps: PreviewDeps): Previews {
       };
     }
     await stopRunning(productId);
+    if (shutdown.signal.aborted) return { ok: false, code: 'conflict', reason: SHUTTING_DOWN };
 
     const fail = (reason: string): Failure => ({
       ok: false,
