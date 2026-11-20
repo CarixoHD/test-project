@@ -3,10 +3,12 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { exec } from '../util/exec.ts';
+import { exec, ExecError } from '../util/exec.ts';
 import {
   AGENT_IDENTITY,
   GIT_SAFETY_FLAGS,
+  GIT_VERSION_REQUIRED_MESSAGE,
+  GitError,
   MainMovedError,
   createGit,
   gitVersionOk,
@@ -478,5 +480,143 @@ describe('integrate and advanceMain', () => {
     for (const f of ['one.txt', 'two.txt', 'three.txt', 'extra-0.txt', 'extra-2.txt']) {
       expect(await git.readFileAtMain('p1', f)).not.toBeNull();
     }
+  });
+});
+
+describe('hardening', () => {
+  const okResult = (stdout: string, extra: Partial<Awaited<ReturnType<typeof exec>>> = {}) => ({
+    code: 0,
+    signal: null,
+    stdout,
+    stderr: '',
+    timedOut: false,
+    aborted: false,
+    truncated: false,
+    ...extra,
+  });
+
+  it('passes the AbortSignal to exec and rejects (no output) when it is already aborted', async () => {
+    await git.initRepo('p1');
+    const seen: (AbortSignal | undefined)[] = [];
+    const g = createGit({
+      dataDir,
+      exec: (cmd, argv, o) => {
+        seen.push(o.signal);
+        return exec(cmd, argv, o);
+      },
+    });
+    const ac = new AbortController();
+    ac.abort();
+    const signal = ac.signal;
+
+    await expect(g.readFileAtMain('p1', 'README.md', { signal })).rejects.toThrow(GitError);
+    await expect(g.mainSha('p1', { signal })).rejects.toThrow(/abort/i);
+    await expect(g.addWorktree('p1', 'r1', 'main', { signal })).rejects.toThrow(GitError);
+    await expect(g.commitFilesOnMain('p1', { 'a.txt': 'a' }, 'm', { signal })).rejects.toThrow(
+      GitError,
+    );
+    await expect(g.listRepos({ signal })).resolves.toEqual(['p1']);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((s) => s === signal)).toBe(true);
+    expect(await commitCount('p1')).toBe('1');
+  });
+
+  it('a live signal lets the call through', async () => {
+    await git.initRepo('p1');
+    const signal = new AbortController().signal;
+    expect(await git.readFileAtMain('p1', 'README.md', { signal })).toContain('#');
+  });
+
+  it('gitVersionOk returns false when git cannot be spawned', async () => {
+    const missing: typeof exec = () => Promise.reject(new ExecError('spawn git ENOENT', 'ENOENT'));
+    expect(await gitVersionOk({ exec: missing })).toBe(false);
+    expect(await gitVersionOk({ exec: (c, a, o) => exec(c, a, { ...o, env: { PATH: '' } }) })).toBe(
+      false,
+    );
+    expect(GIT_VERSION_REQUIRED_MESSAGE).toBe(
+      'Vibecode needs git >= 2.38 on the host: install or upgrade git',
+    );
+  });
+
+  it('readFileAtMain throws for a product without a repo', async () => {
+    await expect(git.readFileAtMain('nope', 'README.md')).rejects.toThrow(GitError);
+  });
+
+  it('readFileAtMain throws when main cannot be resolved', async () => {
+    await rawGit(['init', '--quiet', '--bare', repoOf('empty')]);
+    await expect(git.readFileAtMain('empty', 'README.md')).rejects.toThrow(GitError);
+  });
+
+  it('throws a GitError mentioning truncation when exec output was truncated', async () => {
+    await git.initRepo('p1');
+    const truncating: typeof exec = async (cmd, argv, o) => ({
+      ...(await exec(cmd, argv, o)),
+      truncated: true,
+    });
+    const g = createGit({ dataDir, exec: truncating });
+    const err = await g.readFileAtMain('p1', 'README.md').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GitError);
+    expect(String(err)).toMatch(/truncat/i);
+    await expect(g.mainSha('p1')).rejects.toThrow(/truncat/i);
+    const fake: typeof exec = () => Promise.resolve(okResult('git version 2.40.0', { truncated: true }));
+    await expect(createGit({ dataDir, exec: fake }).mainSha('p1')).rejects.toThrow(/truncat/i);
+  });
+
+  it('addWorktree twice with the same runId yields a clean worktree at the requested ref', async () => {
+    await git.initRepo('p1');
+    const first = await git.addWorktree('p1', 'r1');
+    await writeFile(join(first.dir, 'leftover.txt'), 'x');
+    await writeFile(join(first.dir, 'README.md'), 'dirty\n');
+    await writeFile(join(first.dir, 'committed.txt'), 'c\n');
+    await git.commitAll(first.dir, 'on the stale branch');
+    await writeFile(join(first.dir, 'untracked.txt'), 'u');
+    const v2 = await git.commitFilesOnMain('p1', { 'v2.txt': '2\n' }, 'v2');
+
+    const second = await git.addWorktree('p1', 'r1');
+
+    expect(second.dir).toBe(first.dir);
+    expect(second.branch).toBe(first.branch);
+    expect(second.baseSha).toBe(v2);
+    expect(await rawGit(['rev-parse', 'HEAD'], second.dir)).toBe(v2);
+    expect(await rawGit(['status', '--porcelain', '--ignored'], second.dir)).toBe('');
+    expect(existsSync(join(second.dir, 'committed.txt'))).toBe(false);
+    expect(existsSync(join(second.dir, 'untracked.txt'))).toBe(false);
+    expect(existsSync(join(second.dir, 'v2.txt'))).toBe(true);
+  });
+
+  it('addWorktree recovers when the old dir was deleted but its branch and admin entry remain', async () => {
+    await git.initRepo('p1');
+    const first = await git.addWorktree('p1', 'r1');
+    await rm(first.dir, { recursive: true, force: true });
+    const second = await git.addWorktree('p1', 'r1');
+    expect(await rawGit(['rev-parse', 'HEAD'], second.dir)).toBe(await git.mainSha('p1'));
+
+    // and a stray non-worktree directory at the path
+    await git.removeWorktree(second.dir);
+    await mkdir(join(second.dir, 'sub'), { recursive: true });
+    const third = await git.addWorktree('p1', 'r1', 'main', { detached: true });
+    expect(await rawGit(['status', '--porcelain', '--ignored'], third.dir)).toBe('');
+  });
+
+  it('clearWorktrees skips a *.git dir that is not a repo, with a warning, and prunes the rest', async () => {
+    const warnings: string[] = [];
+    const g = createGit({ dataDir, log: (line) => warnings.push(line) });
+    await g.initRepo('p1');
+    await g.addWorktree('p1', 'r1');
+    await mkdir(join(dataDir, 'repos', 'junk.git'));
+    await writeFile(join(dataDir, 'repos', 'junk.git', 'x'), 'x');
+
+    await g.clearWorktrees();
+
+    expect(warnings.some((w) => w.includes('junk'))).toBe(true);
+    const heads = await rawGit([
+      '--git-dir',
+      repoOf('p1'),
+      'for-each-ref',
+      '--format=%(refname:short)',
+      'refs/heads/',
+    ]);
+    expect(heads).toBe('main');
+    expect(await readdir(join(dataDir, 'worktrees'))).toEqual([]);
   });
 });
