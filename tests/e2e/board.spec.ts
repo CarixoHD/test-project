@@ -126,7 +126,11 @@ test('create a product, spar, hand off and watch the board complete without relo
   await page.getByRole('tab', { name: 'Build' }).click();
 
   for (const title of PLANNED) {
-    await expect(page.getByRole('link', { name: new RegExp(` ${title}$`) })).toBeVisible({
+    // Scoped to the board: a running issue is also linked from the "Running agents" list.
+    const onBoard = page
+      .getByRole('region', { name: 'Issues' })
+      .getByRole('link', { name: new RegExp(` ${title}$`) });
+    await expect(onBoard).toBeVisible({
       timeout: PIPELINE_TIMEOUT_MS,
     });
   }
