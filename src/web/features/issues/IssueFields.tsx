@@ -118,3 +118,32 @@ export function IssueFields({
     </>
   );
 }
+
+export interface PriorityFieldProps {
+  value: number;
+  onChange: (priority: number) => void;
+}
+
+/** Priority select; a value outside the usual choices (set by the orchestrator) stays selectable. */
+export function PriorityField({ value, onChange }: PriorityFieldProps) {
+  const known = PRIORITY_OPTIONS.some((p) => p.value === value);
+  return (
+    <Field label="Priority">
+      {(control) => (
+        <select
+          {...control}
+          name="priority"
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+        >
+          {known ? null : <option value={value}>Custom ({value})</option>}
+          {PRIORITY_OPTIONS.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+      )}
+    </Field>
+  );
+}

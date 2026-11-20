@@ -48,7 +48,7 @@ const productCreated = () =>
     gitRemote: null,
   });
 
-const issueCreated = (n: number, title: string, status: IssueStatus = 'open') =>
+const issueCreated = (n: number, title: string, status: IssueStatus = 'open', priority = 0) =>
   event('issue.created', `i${String(n)}`, {
     issue: {
       id: `i${String(n)}`,
@@ -57,7 +57,7 @@ const issueCreated = (n: number, title: string, status: IssueStatus = 'open') =>
       body: `Body of ${title}`,
       status,
       rev: 1,
-      priority: 0,
+      priority,
       origin: 'orchestrator',
       prdVersion: 1,
       attemptCount: 0,
@@ -248,6 +248,41 @@ describe('Board: edit issue', () => {
       },
     ]);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('shows the current priority and sends the changed priority', async () => {
+    const user = await renderBoard([() => issueCreated(1, 'Login', 'open', 1)]);
+    routes['PATCH /api/issues/i1'] = () => Response.json({ ok: true, rev: 2 });
+
+    await user.click(screen.getByRole('button', { name: 'Edit issue #1' }));
+    const dialog = screen.getByRole('dialog', { name: 'Edit issue #1' });
+    const priority = within(dialog).getByRole('combobox', { name: 'Priority' });
+    expect(priority).toHaveDisplayValue('High');
+    await user.selectOptions(priority, 'Urgent');
+    await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    expect(calls).toEqual([
+      {
+        url: '/api/issues/i1',
+        method: 'PATCH',
+        body: { title: 'Login', body: 'Body of Login', dependsOn: [], priority: 2, rev: 1 },
+      },
+    ]);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps a priority outside the usual choices selectable and unsent when unchanged', async () => {
+    const user = await renderBoard([() => issueCreated(1, 'Login', 'open', 5)]);
+    routes['PATCH /api/issues/i1'] = () => Response.json({ ok: true, rev: 2 });
+
+    await user.click(screen.getByRole('button', { name: 'Edit issue #1' }));
+    const dialog = screen.getByRole('dialog', { name: 'Edit issue #1' });
+    expect(within(dialog).getByRole('combobox', { name: 'Priority' })).toHaveValue('5');
+    await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    expect(calls.map((c) => c.body)).toEqual([
+      { title: 'Login', body: 'Body of Login', dependsOn: [], rev: 1 },
+    ]);
   });
 
   it('on a stale rev shows an actionable message with the fresh values and retries on them', async () => {
