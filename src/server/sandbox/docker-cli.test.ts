@@ -355,8 +355,7 @@ describe('ensureNetworks', () => {
       if (argv[1] === 'create' && argv.includes('vibecode-egress')) {
         return {
           code: 1,
-          stderr:
-            'Error response from daemon: all predefined address pools have been fully subnetted',
+          stderr: 'Error response from daemon: plugin "foo" not found',
         };
       }
       return {};
@@ -366,8 +365,9 @@ describe('ensureNetworks', () => {
       .catch((e: unknown) => e);
     expect(err).not.toBeInstanceOf(IccUnsupportedError);
     expect(err instanceof Error ? err.message : '').toContain(
-      'Could not create the Docker network vibecode-egress: Error response from daemon: all predefined',
+      'Could not create the Docker network vibecode-egress: Error response from daemon: plugin "foo" not found',
     );
+    expect(err).not.toBeInstanceOf(AddressPoolsExhaustedError);
   });
   it('rejects with IccUnsupportedError when egress exists but the probe hits br_netfilter', async () => {
     const stub = stubDocker((argv) => {
@@ -399,7 +399,7 @@ describe('ensureNetworks', () => {
   it('fails closed with a generic error when the probe fails for another reason', async () => {
     const stub = stubDocker((argv) =>
       argv[1] === 'create' && isProbe(argv)
-        ? { code: 1, stderr: 'Error response from daemon: all predefined address pools' }
+        ? { code: 1, stderr: 'Error response from daemon: plugin "foo" not found' }
         : healthyDocker(argv),
     );
     const err = await runtime(stub)
@@ -409,7 +409,8 @@ describe('ensureNetworks', () => {
     expect(err instanceof Error ? err.message : '').toContain(
       'Could not verify that Docker can turn off inter-container traffic',
     );
-    expect(err instanceof Error ? err.message : '').toContain('all predefined address pools');
+    expect(err).not.toBeInstanceOf(AddressPoolsExhaustedError);
+    expect(err instanceof Error ? err.message : '').toContain('plugin "foo" not found');
     expect(
       stub
         .argvs()
@@ -424,7 +425,11 @@ describe('ensureNetworks', () => {
     'Error response from daemon: could not find an available, non-overlapping IPv4 address ' +
     'pool among the defaults to assign to the network';
 
-  function expectPoolsExhausted(err: unknown) {
+  /** The same refusal as worded by older daemons. */
+  const POOLS_FULLY_SUBNETTED =
+    'Error response from daemon: all predefined address pools have been fully subnetted';
+
+  function expectPoolsExhausted(err: unknown, daemonSaid = 'non-overlapping IPv4 address pool') {
     expect(err).toBeInstanceOf(AddressPoolsExhaustedError);
     expect(err).toMatchObject({ code: DOCKER_ADDRESS_POOLS_EXHAUSTED });
     expect(err).not.toBeInstanceOf(IccUnsupportedError);
@@ -434,7 +439,7 @@ describe('ensureNetworks', () => {
     expect(message).toContain('docker network ls');
     expect(message).toContain('default-address-pools');
     expect(message).toContain('daemon.json');
-    expect(message).toContain('non-overlapping IPv4 address pool');
+    expect(message).toContain(daemonSaid);
   }
 
   it('rejects with AddressPoolsExhaustedError when the probe finds no free address pool', async () => {
@@ -503,6 +508,54 @@ describe('ensureNetworks', () => {
     expectPoolsExhausted(err);
     const creates = stub.argvs().filter((a) => a[1] === 'create' && !isProbe(a));
     expect(creates).toEqual([['network', 'create', '--driver', 'bridge', 'vibecode-preview']]);
+  });
+
+  it('rejects with AddressPoolsExhaustedError when the probe hits the older fully-subnetted wording', async () => {
+    const stub = stubDocker((argv) =>
+      argv[1] === 'create' && isProbe(argv)
+        ? { code: 1, stderr: POOLS_FULLY_SUBNETTED }
+        : healthyDocker(argv),
+    );
+    const err = await runtime(stub)
+      .ensureNetworks()
+      .catch((e: unknown) => e);
+    expectPoolsExhausted(err, 'have been fully subnetted');
+    const argvs = stub.argvs();
+    expect(argvs.filter((a) => a[1] === 'rm').map(isProbe)).toEqual([true]);
+    expect(argvs).not.toContainEqual(['network', 'inspect', 'vibecode-preview']);
+  });
+
+  it('rejects with AddressPoolsExhaustedError when creating vibecode-egress hits the older fully-subnetted wording', async () => {
+    const stub = stubDocker((argv) => {
+      if (argv[1] === 'inspect') return { code: 1, stderr: 'network not found' };
+      if (argv[1] === 'create' && argv.includes('vibecode-egress')) {
+        return { code: 1, stderr: POOLS_FULLY_SUBNETTED };
+      }
+      return {};
+    });
+    const err = await runtime(stub)
+      .ensureNetworks()
+      .catch((e: unknown) => e);
+    expectPoolsExhausted(err, 'have been fully subnetted');
+    const creates = stub.argvs().filter((a) => a[1] === 'create' && !isProbe(a));
+    expect(creates).toHaveLength(1);
+    expect(stub.argvs()).not.toContainEqual(['network', 'inspect', 'vibecode-preview']);
+  });
+
+  it('rejects with AddressPoolsExhaustedError when creating vibecode-preview hits the older fully-subnetted wording', async () => {
+    const stub = stubDocker((argv) => {
+      if (argv[1] === 'inspect' && argv.includes('vibecode-preview')) {
+        return { code: 1, stderr: 'network not found' };
+      }
+      if (argv[1] === 'create' && argv.includes('vibecode-preview')) {
+        return { code: 1, stderr: POOLS_FULLY_SUBNETTED };
+      }
+      return healthyDocker(argv);
+    });
+    const err = await runtime(stub)
+      .ensureNetworks()
+      .catch((e: unknown) => e);
+    expectPoolsExhausted(err, 'have been fully subnetted');
   });
 
   it('logs, but does not throw, when removing the probe network fails', async () => {

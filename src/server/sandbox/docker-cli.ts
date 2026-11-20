@@ -103,10 +103,11 @@ export const DOCKER_ADDRESS_POOLS_EXHAUSTED = 'DOCKER_ADDRESS_POOLS_EXHAUSTED';
 /**
  * The daemon's refusal to create a network because every default address pool is in use.
  * Docker 29: "could not find an available, non-overlapping IPv4 address pool among the defaults
- * to assign to the network".
+ * to assign to the network". Older daemons: "all predefined address pools have been fully
+ * subnetted".
  */
 const ADDRESS_POOLS_EXHAUSTED_RE =
-  /could not find an available, non-overlapping IPv[46] address pool/i;
+  /could not find an available, non-overlapping IPv[46] address pool|all predefined address pools have been fully subnetted/i;
 
 /**
  * Thrown by ensureNetworks when the ICC probe or creating `vibecode-egress` / `vibecode-preview`
