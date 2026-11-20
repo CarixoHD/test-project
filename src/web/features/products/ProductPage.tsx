@@ -2,11 +2,12 @@ import { useLocation, useNavigate, useParams } from 'react-router';
 import { ProductIdSchema } from '../../../shared/ids.ts';
 import type { ProductState } from '../../../shared/state.ts';
 import { useApp } from '../../state/store.ts';
-import { Tabs, type TabItem } from '../../ui/index.ts';
+import { StatusBadge, Tabs, type TabItem } from '../../ui/index.ts';
 import { BuildTab } from '../board/BuildTab.tsx';
 import { ProductSettingsTab } from '../settings/ProductSettingsTab.tsx';
 import { SpecTab } from '../sparring/SpecTab.tsx';
 import type { CreatedLocationState } from './NewProductForm.tsx';
+import { PHASE_LABELS, PHASE_TONES } from './phase.ts';
 
 const TAB_IDS = ['build', 'spec', 'settings'] as const;
 
@@ -39,7 +40,10 @@ export function ProductPage() {
   const tab = TAB_IDS.find((t) => t === rest) ?? 'build';
   return (
     <>
-      <h1>{product.name}</h1>
+      <header className="product-header">
+        <h1>{product.name}</h1>
+        <StatusBadge tone={PHASE_TONES[product.phase]}>{PHASE_LABELS[product.phase]}</StatusBadge>
+      </header>
       <Tabs
         label="Product views"
         items={tabs(product)}
