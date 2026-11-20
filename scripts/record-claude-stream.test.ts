@@ -1,16 +1,24 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { buildClaudeArgv, claudeExecArgv } from '../src/server/agents/index.ts';
-import { AGENT_HOME, CLAUDE_CONFIG_VOLUME } from '../src/server/sandbox/index.ts';
-import { Redactor } from '../src/server/security/index.ts';
+import { open } from '../src/server/db/index.ts';
+import {
+  AGENT_HOME,
+  CLAUDE_CONFIG_VOLUME,
+  CONTAINER_LIMITS,
+  TMP_TMPFS,
+} from '../src/server/sandbox/index.ts';
+import { Redactor, createSecrets } from '../src/server/security/index.ts';
 import type { ExecResult } from '../src/server/util/exec.ts';
 import {
   DEFAULT_OUT,
   RECORD_LIMITS,
   RECORD_ROLE,
   RecordResultSchema,
+  loadStoredSecrets,
   parseRecordArgs,
   recordClaudeStream,
   type RecordDeps,
@@ -44,6 +52,7 @@ function setup(overrides: Partial<RecordDeps> = {}) {
   redactor.register(SECRET);
   const deps: RecordDeps = {
     claudeTag: async () => TAG,
+    loadStoredSecrets: async () => [],
     uid: 1501,
     gid: 20,
     redactor,
@@ -183,5 +192,103 @@ describe('recordClaudeStream', () => {
   it('accepts the structured result schema used for the task', () => {
     expect(RecordResultSchema.parse({ ok: true })).toEqual({ ok: true });
     expect(z.toJSONSchema(RecordResultSchema)).toMatchObject({ type: 'object' });
+  });
+
+  it('registers stored secrets before the CLI runs, so they are redacted in the fixture', async () => {
+    const stored = 'ghp_storedgittoken_abcdefghij0123456789';
+    const order: string[] = [];
+    const { deps, writes } = setup({
+      loadStoredSecrets: async () => {
+        order.push('load');
+        return [stored];
+      },
+      exec: async (_cmd, argv) => {
+        order.push('exec');
+        return argv.includes('--version')
+          ? ok('2.1.329\n')
+          : ok(`{"type":"result","structured_output":{"ok":true},"leak":"${stored}"}\n`);
+      },
+    });
+    expect(await recordClaudeStream(options, deps)).toBe(0);
+    expect(order[0]).toBe('load');
+    expect(writes[0]?.text).not.toContain(stored);
+    expect(writes[0]?.text).toContain(`"leak":"***${stored.slice(-4)}"`);
+  });
+
+  it('hardens both docker runs with sandbox policy flags and limits', async () => {
+    const { deps, calls } = setup();
+    await recordClaudeStream(options, deps);
+    expect(calls).toHaveLength(2);
+    for (const c of calls) {
+      const argv = c.argv.slice(0, c.argv.indexOf(TAG));
+      const after = (flag: string) => argv[argv.indexOf(flag) + 1];
+      expect(argv).toContain('--read-only');
+      expect(argv.join(' ')).toContain(`--tmpfs ${TMP_TMPFS}`);
+      expect(TMP_TMPFS.startsWith('/tmp:')).toBe(true);
+      expect(after('--memory')).toBe(CONTAINER_LIMITS.memory);
+      expect(after('--memory-swap')).toBe(CONTAINER_LIMITS.memory);
+      expect(after('--cpus')).toBe(CONTAINER_LIMITS.cpus);
+      expect(after('--pids-limit')).toBe(CONTAINER_LIMITS.pids);
+      expect(after('--cap-drop')).toBe('ALL');
+      expect(after('--security-opt')).toBe('no-new-privileges:true');
+    }
+    const run = calls.find((c) => !c.argv.includes('--version'))?.argv ?? [];
+    expect(run.join(' ')).toContain(`--tmpfs ${AGENT_HOME}:rw`);
+    expect(run[run.indexOf('--workdir') + 1]).toBe('/tmp');
+  });
+});
+
+describe('loadStoredSecrets', () => {
+  let dir = '';
+  const fresh = () => (dir = mkdtempSync(path.join(tmpdir(), 'record-secrets-')));
+  const cleanup = () => rmSync(dir, { recursive: true, force: true });
+
+  it('reads every value of the secrets table from an existing DB', async () => {
+    fresh();
+    try {
+      const dbPath = path.join(dir, 'vibecode.db');
+      const db = open(dbPath);
+      const secrets = createSecrets({ db, clock: { now: () => 1 }, redactor: new Redactor() });
+      secrets.set('anthropic-api-key', 'sk-ant-stored-0123456789abcdef');
+      secrets.set('git-token:p1', 'ghp_storedtoken0123456789');
+      db.$client.close();
+      const logs: string[] = [];
+      const values = await loadStoredSecrets(dbPath, (l) => logs.push(l));
+      expect(values.sort()).toEqual(
+        ['ghp_storedtoken0123456789', 'sk-ant-stored-0123456789abcdef'].sort(),
+      );
+      expect(logs.join('\n')).not.toContain('sk-ant-stored');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('does not create a missing DB, logs a note and returns nothing', async () => {
+    fresh();
+    try {
+      const dbPath = path.join(dir, 'vibecode.db');
+      const logs: string[] = [];
+      expect(await loadStoredSecrets(dbPath, (l) => logs.push(l))).toEqual([]);
+      expect(existsSync(dbPath)).toBe(false);
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toContain(dbPath);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('still records when no stored secrets were found', async () => {
+    fresh();
+    try {
+      const dbPath = path.join(dir, 'vibecode.db');
+      const { deps, writes, logs } = setup();
+      deps.loadStoredSecrets = () => loadStoredSecrets(dbPath, deps.log);
+      expect(await recordClaudeStream(options, deps)).toBe(0);
+      expect(writes).toHaveLength(1);
+      expect(existsSync(dbPath)).toBe(false);
+      expect(logs[0]).toContain('no stored secrets');
+    } finally {
+      cleanup();
+    }
   });
 });

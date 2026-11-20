@@ -12,6 +12,16 @@ export const NETWORKS = {
   preview: 'vibecode-preview',
 } as const;
 export const MANAGED_LABEL = 'vibecode.managed';
+/** Per-container resource limits (CODING_STANDARDS §7). Swap equals memory: no extra swap. */
+export const CONTAINER_LIMITS = { memory: '4g', cpus: '2', pids: '512' } as const;
+/** The writable `/tmp` on top of the read-only rootfs. */
+export const TMP_TMPFS = '/tmp:rw,nosuid,nodev,exec,size=1g,mode=1777';
+
+/** `docker run` flags applying CONTAINER_LIMITS. */
+export function limitArgs(): string[] {
+  const { memory, cpus, pids } = CONTAINER_LIMITS;
+  return ['--memory', memory, '--memory-swap', memory, '--cpus', cpus, '--pids-limit', pids];
+}
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 /** docker image reference characters; a leading `-` would be read as a flag. */
@@ -45,12 +55,12 @@ export function buildRunArgs(spec: SandboxSpec, host: HostIdentity): string[] {
     ...['--cap-drop', 'ALL'],
     ...['--security-opt', 'no-new-privileges:true'],
     '--read-only',
-    ...['--tmpfs', '/tmp:rw,nosuid,nodev,exec,size=1g,mode=1777'],
+    ...['--tmpfs', TMP_TMPFS],
     ...[
       '--tmpfs',
       `${AGENT_HOME}:rw,nosuid,nodev,exec,size=1g,mode=0700,uid=${host.uid},gid=${host.gid}`,
     ],
-    ...['--memory', '4g', '--memory-swap', '4g', '--cpus', '2', '--pids-limit', '512'],
+    ...limitArgs(),
     ...['--restart', 'no'],
     ...['--label', `${MANAGED_LABEL}=1`],
     ...['--label', `vibecode.product=${spec.productId}`],
