@@ -219,6 +219,24 @@ describe('IssuePage: issue facts', () => {
     expect(screen.getByText('Which colour for dark mode?')).toBeInTheDocument();
   });
 
+  it('answers the held question with the shared answer form', async () => {
+    const user = await renderPage([
+      ...HISTORY(),
+      event('question.asked', 'q1', {
+        target: 'issue',
+        issueId: 'i2',
+        agentId: null,
+        text: 'Which colour for dark mode?',
+      }),
+      event('issue.held', 'i2', { questionId: 'q1' }),
+    ]);
+    routes['POST /api/questions/q1/answer'] = () => Response.json({ ok: true });
+    const section = screen.getByRole('region', { name: 'Waiting for your answer' });
+    await user.type(within(section).getByRole('textbox', { name: 'Your answer' }), 'Slate grey');
+    await user.click(within(section).getByRole('button', { name: 'Send answer' }));
+    expect(calls).toContainEqual({ url: '/api/questions/q1/answer', method: 'POST' });
+  });
+
   it('opens the shared Edit and Cancel dialogs and cancels the issue', async () => {
     const user = await renderPage();
     routes['POST /api/issues/i2/cancel'] = () => Response.json({ ok: true });

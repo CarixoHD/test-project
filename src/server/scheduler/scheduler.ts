@@ -7,6 +7,7 @@ import type { ClientState, IssueState, ProductState } from '../../shared/state.t
 import { pendingTriggers } from '../../shared/triggers.ts';
 import type { Store } from '../store/index.ts';
 import { allIssuesDone, completeProduct } from './completion.ts';
+import { clearExpiredLimits } from './limits.ts';
 
 // The scheduler (ARCHITECTURE §4.4). It decides WHEN runs start; the runners (pipeline) do
 // the work and write state through the store. Live runs are in memory only: after a restart
@@ -223,6 +224,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
   function tickOnce(): void {
     const { state } = store.snapshot();
+    // An expired rate limit clears first; the commit re-enters kick(), which then schedules on
+    // the cleared state (the interrupted issues' runAfter is the same `until`).
+    clearExpiredLimits(store, state.backendLimits, clock.now());
     const products = Object.values(state.products).filter((p) => p.phase === 'building');
     if (products.length === 0) return;
     const minCursor = Math.min(...products.map((p) => p.orchestratorCursor));

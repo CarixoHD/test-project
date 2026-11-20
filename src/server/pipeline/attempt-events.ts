@@ -5,6 +5,9 @@ import type { AgentId, AttemptId, IssueId, ProductId, QuestionId } from '../../s
 import { transition, type IssueTransitionEvent } from '../../shared/issues.ts';
 import type { IssueState } from '../../shared/state.ts';
 import type { Store, Tx } from '../store/index.ts';
+import { limitDrafts, type BackendLimitDraft } from './backend-limit.ts';
+
+export type { BackendLimitDraft } from './backend-limit.ts';
 
 // Store commits of an attempt (ARCHITECTURE §6 flow 4). Issue moves always go through the
 // shared `transition()`; a move that is no longer legal (e.g. the owner cancelled) is skipped.
@@ -158,14 +161,6 @@ export function endWithError(
   ]);
 }
 
-/** An account-wide backend limit recorded with an interruption (backend.limited). */
-export type BackendLimitDraft = {
-  backend: string;
-  until: number | null;
-  needsLogin: boolean;
-  reason: string;
-};
-
 /** An implementer's question to the owner (flow 4.3); it holds the issue until answered. */
 export type QuestionDraft = { id: QuestionId; agentId: AgentId; text: string };
 
@@ -190,7 +185,7 @@ export function interruptAttempt(
     if (question !== undefined && tx.q.issue(ref.issueId)?.status === 'cancelled') {
       return [endedDraft(ref, 'discarded', feedback, outcome)];
     }
-    const limited = limit !== undefined && limitChanged(tx, limit) ? [limitedDraft(limit)] : [];
+    const limited = limit === undefined ? [] : limitDrafts(tx, limit);
     const asked = question === undefined ? [] : questionDrafts(ref, question);
     return [
       endedDraft(ref, 'interrupted', feedback, outcome, false, reason),
@@ -238,21 +233,6 @@ function reopenDrafts(
   const reopened = issue === null ? null : statusDraft(tx, issue, ev);
   return reopened === null ? [] : [reopened];
 }
-
-function limitChanged(tx: Tx, limit: BackendLimitDraft): boolean {
-  const current = tx.q.backendLimit(limit.backend);
-  return (
-    current === null || current.until !== limit.until || current.needsLogin !== limit.needsLogin
-  );
-}
-
-const limitedDraft = (data: BackendLimitDraft): EventDraft => ({
-  type: 'backend.limited',
-  productId: null,
-  entityId: null,
-  v: 1,
-  data,
-});
 
 const config = (tx: Tx, issue: IssueState) => ({
   maxAttempts: tx.q.product(issue.productId)?.settings.maxAttempts ?? 1,

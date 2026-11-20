@@ -15,6 +15,12 @@ import type { Git, Worktree } from '../git/index.ts';
 import { capabilities, type ModelDeps } from '../llm/index.ts';
 import type { ContainerRuntime, Sandbox } from '../sandbox/index.ts';
 import type { RunHandle } from '../scheduler/index.ts';
+import {
+  limitDrafts,
+  limitOf,
+  LOGIN_RETRY_DELAY_MS,
+  type BackendLimitDraft,
+} from './backend-limit.ts';
 import { OrchestratorBackoff } from './orchestrator-backoff.ts';
 import { orchestratorPrompt } from './orchestrator-prompt.ts';
 import { readRepoFile } from './repo-file.ts';
@@ -26,6 +32,8 @@ import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
 // project.json and the image, merges to main under the merge lock and applies the plan (issue
 // events, project config, replan inbox item and cursor advance in one store commit). A failed
 // run leaves the cursor alone and is retried with backoff; repeated failures go to the inbox.
+// A rate limit or missing login is not a failure: it records backend.limited (like an attempt)
+// and the next run waits for the limit instead of counting toward the give-up limit.
 
 export const DEFAULT_ORCHESTRATOR_LIMITS: AgentLimits = { maxSteps: 80, wallClockMs: 45 * 60_000 };
 const PROJECT_FILE = '.vibecode/project.json';
@@ -58,7 +66,12 @@ export interface Orchestrator {
   orchestratorNotBefore(productId: ProductId): number;
 }
 
-type Outcome = { kind: 'done' } | { kind: 'stopped' } | { kind: 'failed'; reason: string };
+type Outcome =
+  | { kind: 'done' }
+  | { kind: 'stopped' }
+  | { kind: 'failed'; reason: string }
+  /** The backend is rate-limited or needs a login: not a failure, wait until `retryAt`. */
+  | { kind: 'limited'; limit: BackendLimitDraft; retryAt: number };
 type Check<T> = { ok: true; value: T } | { ok: false; reason: string };
 
 const failed = (reason: string): Outcome => ({ kind: 'failed', reason });
@@ -112,6 +125,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       }
       if (outcome.kind === 'done') backoff.recordSuccess(productId);
       if (outcome.kind === 'failed') recordFailure(productId, consumedSeq, outcome.reason);
+      if (outcome.kind === 'limited') {
+        const { limit } = outcome;
+        deps.store.commit((tx) => limitDrafts(tx, limit));
+        backoff.waitUntil(productId, outcome.retryAt);
+      }
     },
     orchestratorNotBefore(productId) {
       return backoff.notBefore(productId, () => latestTriggerSeq(productId));
@@ -175,6 +193,11 @@ async function orchestrate(
       modelDeps: { ...deps.modelDeps, webSearch },
     });
     if (result.kind === 'stopped') return { kind: 'stopped' };
+    if (result.kind === 'rate_limited' || result.kind === 'auth_required') {
+      const retryAt =
+        result.kind === 'rate_limited' ? result.until : deps.clock.now() + LOGIN_RETRY_DELAY_MS;
+      return { kind: 'limited', limit: limitOf(result, agentFailure(result)), retryAt };
+    }
     if (result.kind !== 'ok') return failed(agentFailure(result));
     return await land(deps, productId, wt, result.result, triggers, consumedSeq);
   } finally {
