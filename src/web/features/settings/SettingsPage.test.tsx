@@ -76,7 +76,9 @@ class FakeSettingsServer {
       ...this.stored,
       keys: KEYED_PROVIDER_IDS.flatMap((provider) => {
         const key = this.keys.get(provider);
-        return key === undefined ? [] : [{ provider, last4: key.length < 16 ? null : key.slice(-4) }];
+        return key === undefined
+          ? []
+          : [{ provider, last4: key.length < 16 ? null : key.slice(-4) }];
       }),
     };
   }
@@ -84,7 +86,10 @@ class FakeSettingsServer {
   update(raw: unknown): Response {
     const parsed = SettingsUpdateRequestSchema.safeParse(raw);
     if (!parsed.success) {
-      return Response.json({ error: { code: 'invalid', message: 'Invalid settings' } }, { status: 400 });
+      return Response.json(
+        { error: { code: 'invalid', message: 'Invalid settings' } },
+        { status: 400 },
+      );
     }
     const u = parsed.data;
     this.puts.push(u);
@@ -120,7 +125,9 @@ beforeEach(() => {
       if (url === '/api/state') {
         return Promise.resolve(Response.json({ state: emptyState, lastSeq: 0 }));
       }
-      return Promise.resolve(Response.json({ error: { code: 'not_found', message: url } }, { status: 404 }));
+      return Promise.resolve(
+        Response.json({ error: { code: 'not_found', message: url } }, { status: 404 }),
+      );
     }),
   );
 });
@@ -142,8 +149,8 @@ const providerGroup = (name: string) => screen.getByRole('group', { name });
 /** Every place a value could leak into the page: text and the values of all form controls. */
 function pageContains(secret: string): boolean {
   if (document.body.innerHTML.includes(secret)) return true;
-  return [...document.querySelectorAll('input, textarea, select')].some(
-    (el) => (el as HTMLInputElement).value.includes(secret),
+  return [...document.querySelectorAll('input, textarea, select')].some((el) =>
+    (el as HTMLInputElement).value.includes(secret),
   );
 }
 
@@ -159,6 +166,9 @@ describe('Settings: provider keys', () => {
 
     expect(await within(providerGroup('Anthropic')).findByText('Key ending in wxyz')).toBeVisible();
     expect(server.puts).toContainEqual({ keys: { anthropic: KEY } });
+    expect(
+      within(providerGroup('Anthropic')).getByRole('button', { name: 'Replace Anthropic key' }),
+    ).toHaveFocus();
     expect(pageContains(KEY)).toBe(false);
     expect(pageContains('SECRETSECRET')).toBe(false);
   });
@@ -187,11 +197,13 @@ describe('Settings: stored keys', () => {
   it('removes a key after confirmation and offers key entry again', async () => {
     server.keys.set('google', 'AIzaSyGOOGLEGOOGLEGOOGLE-9876');
     const { user } = await renderSettings();
-    await user.click(within(providerGroup('Google')).getByRole('button', { name: 'Remove Google key' }));
+    await user.click(
+      within(providerGroup('Google')).getByRole('button', { name: 'Remove Google key' }),
+    );
     const dialog = screen.getByRole('dialog', { name: 'Remove the Google key?' });
     await user.click(within(dialog).getByRole('button', { name: 'Remove key' }));
 
-    expect(await within(providerGroup('Google')).findByLabelText('Google API key')).toBeVisible();
+    expect(await within(providerGroup('Google')).findByLabelText('Google API key')).toHaveFocus();
     expect(server.puts).toContainEqual({ keys: { google: null } });
     expect(within(providerGroup('Google')).queryByText(/Key ending in/)).toBeNull();
   });
@@ -217,8 +229,13 @@ describe('Settings: OpenAI-compatible base URL', () => {
   it('saves a base URL for a local endpoint such as Ollama', async () => {
     const { user } = await renderSettings();
     const group = providerGroup('OpenAI-compatible');
-    await user.type(within(group).getByLabelText('OpenAI-compatible base URL'), 'http://localhost:11434/v1');
-    await user.click(within(group).getByRole('button', { name: 'Save OpenAI-compatible base URL' }));
+    await user.type(
+      within(group).getByLabelText('OpenAI-compatible base URL'),
+      'http://localhost:11434/v1',
+    );
+    await user.click(
+      within(group).getByRole('button', { name: 'Save OpenAI-compatible base URL' }),
+    );
 
     expect(await within(group).findByText('OpenAI-compatible base URL saved.')).toBeVisible();
     expect(server.puts).toContainEqual({
@@ -228,7 +245,9 @@ describe('Settings: OpenAI-compatible base URL', () => {
 
   it('rejects something that is not a URL', async () => {
     const { user } = await renderSettings();
-    const input = within(providerGroup('OpenAI-compatible')).getByLabelText('OpenAI-compatible base URL');
+    const input = within(providerGroup('OpenAI-compatible')).getByLabelText(
+      'OpenAI-compatible base URL',
+    );
     await user.type(input, 'localhost{Enter}');
     expect(input).toHaveAttribute('aria-invalid', 'true');
     expect(server.puts).toEqual([]);
@@ -300,7 +319,9 @@ describe('Settings: models per role', () => {
     await user.click(within(modelsRegion()).getByRole('button', { name: 'Save models' }));
 
     expect(await within(modelsRegion()).findByText('Models saved.')).toBeVisible();
-    expect(server.stored.roleDefaults).toEqual({ reviewer: { provider: 'openai', model: 'gpt-5' } });
+    expect(server.stored.roleDefaults).toEqual({
+      reviewer: { provider: 'openai', model: 'gpt-5' },
+    });
     expect(server.stored.defaultModel).toBeNull();
   });
 
@@ -312,6 +333,68 @@ describe('Settings: models per role', () => {
     const model = within(roleGroup('Sparring')).getByLabelText('Model');
     expect(model).toHaveAttribute('aria-invalid', 'true');
     expect(model).toHaveFocus();
+    expect(server.puts).toEqual([]);
+  });
+});
+
+describe('Settings: price overrides', () => {
+  const pricesRegion = () => screen.getByRole('region', { name: 'Price overrides' });
+
+  it('adds an override for a model with input and output $ per 1M tokens', async () => {
+    const { user } = await renderSettings();
+    await user.click(within(pricesRegion()).getByRole('button', { name: 'Add price override' }));
+    await user.type(
+      within(pricesRegion()).getByLabelText('Model, row 1'),
+      'openrouter/qwen3-coder',
+    );
+    await user.type(within(pricesRegion()).getByLabelText('Input $ per 1M tokens, row 1'), '0.4');
+    await user.type(within(pricesRegion()).getByLabelText('Output $ per 1M tokens, row 1'), '1.6');
+    await user.click(within(pricesRegion()).getByRole('button', { name: 'Save price overrides' }));
+
+    expect(await within(pricesRegion()).findByText('Price overrides saved.')).toBeVisible();
+    expect(server.stored.priceOverrides).toEqual({
+      'openrouter/qwen3-coder': { input: 0.4, output: 1.6 },
+    });
+  });
+
+  it('edits and removes saved overrides, keeping their other prices', async () => {
+    server.stored.priceOverrides = {
+      'anthropic/claude-sonnet-4-5': { input: 3, output: 15, cacheRead: 0.3 },
+      'openai/gpt-5': { input: 1.25, output: 10 },
+    };
+    const { user } = await renderSettings();
+    const output = within(pricesRegion()).getByLabelText('Output $ per 1M tokens, row 1');
+    expect(within(pricesRegion()).getByLabelText('Model, row 1')).toHaveValue(
+      'anthropic/claude-sonnet-4-5',
+    );
+    await user.clear(output);
+    await user.type(output, '12');
+    await user.click(
+      within(pricesRegion()).getByRole('button', { name: 'Remove price override, row 2' }),
+    );
+    await user.click(within(pricesRegion()).getByRole('button', { name: 'Save price overrides' }));
+
+    expect(await within(pricesRegion()).findByText('Price overrides saved.')).toBeVisible();
+    expect(server.stored.priceOverrides).toEqual({
+      'anthropic/claude-sonnet-4-5': { input: 3, output: 12, cacheRead: 0.3 },
+    });
+  });
+
+  it('rejects a negative price and a model without its provider', async () => {
+    const { user } = await renderSettings();
+    await user.click(within(pricesRegion()).getByRole('button', { name: 'Add price override' }));
+    await user.type(within(pricesRegion()).getByLabelText('Model, row 1'), 'gpt-5');
+    await user.type(within(pricesRegion()).getByLabelText('Input $ per 1M tokens, row 1'), '-1');
+    await user.type(within(pricesRegion()).getByLabelText('Output $ per 1M tokens, row 1'), '2');
+    await user.click(within(pricesRegion()).getByRole('button', { name: 'Save price overrides' }));
+
+    const model = within(pricesRegion()).getByLabelText('Model, row 1');
+    expect(model).toHaveAttribute('aria-invalid', 'true');
+    expect(model).toHaveFocus();
+    expect(within(pricesRegion()).getByLabelText('Input $ per 1M tokens, row 1')).toHaveAttribute(
+      'aria-invalid',
+      'true',
+    );
     expect(server.puts).toEqual([]);
   });
 });

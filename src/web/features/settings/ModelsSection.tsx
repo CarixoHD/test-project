@@ -47,7 +47,10 @@ function validate(draft: Draft): Errors {
   for (const id of ROWS) {
     const { provider, model } = draft[id];
     if (provider !== '' && model.trim() === '') {
-      errors[id] = { field: 'model', message: 'Enter the model name, or set the provider to Not set.' };
+      errors[id] = {
+        field: 'model',
+        message: 'Enter the model name, or set the provider to Not set.',
+      };
     } else if (provider === '' && model.trim() !== '') {
       errors[id] = { field: 'provider', message: 'Choose the provider for this model.' };
     }
@@ -93,7 +96,9 @@ export function ModelsSection({ settings, onSaved }: SettingsSectionProps) {
     const first = ROWS.find((id) => found[id] !== undefined);
     if (first !== undefined) {
       const field = found[first]?.field ?? 'model';
-      formRef.current?.querySelector<HTMLElement>(`[data-row="${first}"][data-field="${field}"]`)?.focus();
+      formRef.current
+        ?.querySelector<HTMLElement>(`[data-row="${first}"][data-field="${field}"]`)
+        ?.focus();
       return;
     }
     const roleDefaults: RoleModels = {};
@@ -102,7 +107,10 @@ export function ModelsSection({ settings, onSaved }: SettingsSectionProps) {
       if (ref !== null) roleDefaults[role] = ref;
     }
     setBusy(true);
-    const failed = await saveSettings({ roleDefaults, defaultModel: toRef(draft.default) }, onSaved);
+    const failed = await saveSettings(
+      { roleDefaults, defaultModel: toRef(draft.default) },
+      onSaved,
+    );
     setBusy(false);
     setServerError(failed);
     if (failed === null) setNotice('Models saved.');

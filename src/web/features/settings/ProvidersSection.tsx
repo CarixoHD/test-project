@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import type { SettingsUpdateRequest } from '../../../shared/dto.ts';
 import { KEYED_PROVIDER_IDS, type KeyedProviderId } from '../../../shared/models.ts';
 import { Button, Dialog, Field } from '../../ui/index.ts';
@@ -60,6 +60,13 @@ function ProviderKey({ provider, name, optional, stored, onSaved }: ProviderKeyP
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const replaceRef = useRef<HTMLButtonElement>(null);
+  /** Saving, replacing and removing swap the key input and the masked key: keep focus inside. */
+  const focusNext = useRef<'input' | 'replace' | null>(null);
+  useEffect(() => {
+    if (focusNext.current === null) return;
+    (focusNext.current === 'input' ? inputRef : replaceRef).current?.focus();
+    focusNext.current = null;
+  });
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -76,6 +83,7 @@ function ProviderKey({ provider, name, optional, stored, onSaved }: ProviderKeyP
     setDraft('');
     setReplacing(false);
     setNotice(`${name} key saved.`);
+    focusNext.current = 'replace';
   }
 
   async function remove() {
@@ -85,7 +93,9 @@ function ProviderKey({ provider, name, optional, stored, onSaved }: ProviderKeyP
     setBusy(false);
     setConfirmingRemove(false);
     setError(failed);
-    if (failed === null) setNotice(`${name} key removed.`);
+    if (failed !== null) return;
+    setNotice(`${name} key removed.`);
+    focusNext.current = 'input';
   }
 
   const showEntry = stored === null || replacing;
@@ -101,6 +111,7 @@ function ProviderKey({ provider, name, optional, stored, onSaved }: ProviderKeyP
               setNotice('');
               setError(null);
               setReplacing(true);
+              focusNext.current = 'input';
             }}
           >
             Replace
@@ -121,7 +132,7 @@ function ProviderKey({ provider, name, optional, stored, onSaved }: ProviderKeyP
         <form onSubmit={(e) => void submit(e)} className="settings-provider__form" noValidate>
           <Field
             label={`${name} API key`}
-            hint={optional ? 'Optional: local servers such as Ollama need no key.' : undefined}
+            {...(optional ? { hint: 'Optional: local servers such as Ollama need no key.' } : {})}
             error={error}
           >
             {(control) => (
@@ -131,7 +142,6 @@ function ProviderKey({ provider, name, optional, stored, onSaved }: ProviderKeyP
                 type="password"
                 autoComplete="off"
                 spellCheck={false}
-                autoFocus={replacing}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
               />
@@ -147,6 +157,7 @@ function ProviderKey({ provider, name, optional, stored, onSaved }: ProviderKeyP
                   setDraft('');
                   setError(null);
                   setReplacing(false);
+                  focusNext.current = 'replace';
                 }}
               >
                 Cancel
@@ -206,7 +217,8 @@ function BaseUrl({ name, settings, onSaved }: BaseUrlProps) {
     const body: SettingsUpdateRequest = {
       providerConfig: url === '' ? rest : { ...rest, openaiCompatible: { baseURL: url } },
     };
-    const reason = invalidReason(body) === null ? null : 'Enter a full URL, such as http://localhost:11434/v1.';
+    const reason =
+      invalidReason(body) === null ? null : 'Enter a full URL, such as http://localhost:11434/v1.';
     setError(reason);
     setNotice('');
     if (reason !== null) return inputRef.current?.focus();
@@ -214,7 +226,8 @@ function BaseUrl({ name, settings, onSaved }: BaseUrlProps) {
     const failed = await saveSettings(body, onSaved);
     setBusy(false);
     setError(failed);
-    if (failed === null) setNotice(url === '' ? `${name} base URL cleared.` : `${name} base URL saved.`);
+    if (failed === null)
+      setNotice(url === '' ? `${name} base URL cleared.` : `${name} base URL saved.`);
   }
 
   return (
