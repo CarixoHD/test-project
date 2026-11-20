@@ -1,5 +1,5 @@
 import type { RouteObject } from 'react-router';
-import { InboxPage } from './features/inbox/InboxPage.tsx';
+import { InboxPage } from './features/inbox/index.ts';
 import { IssuePage } from './features/issues/IssuePage.tsx';
 import { ProductPage } from './features/products/ProductPage.tsx';
 import { ProductsPage } from './features/products/ProductsPage.tsx';

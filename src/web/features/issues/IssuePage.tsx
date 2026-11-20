@@ -4,6 +4,7 @@ import { IssueIdSchema } from '../../../shared/ids.ts';
 import type { IssueState } from '../../../shared/state.ts';
 import { useApp, type AppSnapshot } from '../../state/store.ts';
 import { Button, Markdown, StatusBadge } from '../../ui/index.ts';
+import { QuestionAnswer } from '../inbox/index.ts';
 import { issueCostText } from '../products/cost-format.ts';
 import { attemptsOf } from './attempt-text.ts';
 import { AttemptList } from './AttemptList.tsx';
@@ -133,6 +134,7 @@ function IssueDetail({ issue }: { issue: IssueState }) {
         <section className="issue-detail__question" aria-labelledby="held-question">
           <h2 id="held-question">Waiting for your answer</h2>
           <p>{question.text}</p>
+          <QuestionAnswer question={question} />
         </section>
       )}
 

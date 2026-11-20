@@ -58,7 +58,12 @@ const issueCreated = EventSchema.parse({
 function fixedStore(status: ConnectionStatus = 'live'): AppStore {
   const state = [productCreated, issueCreated].reduce(reduce, emptyState);
   const snapshot: AppSnapshot = { state, lastSeq: 2, status, loaded: true, error: null };
-  return { getSnapshot: () => snapshot, subscribe: () => () => {}, start: () => () => {} };
+  return {
+    getSnapshot: () => snapshot,
+    subscribe: () => () => {},
+    start: () => () => {},
+    onLiveEvent: () => () => {},
+  };
 }
 
 function renderAt(path: string, store = fixedStore()) {

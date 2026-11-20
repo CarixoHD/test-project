@@ -33,6 +33,12 @@ export interface AppStore {
   subscribe(listener: () => void): () => void;
   /** Connects; returns the matching stop function. Safe to start again after stopping. */
   start(): () => void;
+  /**
+   * Calls `listener` after each new event from the live stream is applied. Not called for the
+   * snapshot or for events buffered while it loaded (history, e.g. no notifications for them).
+   * Returns the unsubscribe function.
+   */
+  onLiveEvent(listener: (e: Event) => void): () => void;
 }
 
 export interface AppStoreOptions {
@@ -53,6 +59,7 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
     error: null,
   };
   const listeners = new Set<() => void>();
+  const liveListeners = new Set<(e: Event) => void>();
 
   // Connection state. `generation` changes on every (re)connect and stop, so callbacks from a
   // superseded stream or request do nothing.
@@ -92,8 +99,13 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
   function onMessage(data: unknown): void {
     const e = decode(data);
     if (e === null) return;
-    if (synced) apply([e]);
-    else buffer.push(e);
+    if (!synced) {
+      buffer.push(e);
+      return;
+    }
+    if (e.seq <= snapshot.lastSeq) return;
+    apply([e]);
+    for (const listener of [...liveListeners]) listener(e);
   }
 
   function openStream(gen: number): void {
@@ -206,6 +218,12 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
     start() {
       connect();
       return disconnect;
+    },
+    onLiveEvent(listener) {
+      liveListeners.add(listener);
+      return () => {
+        liveListeners.delete(listener);
+      };
     },
   };
 }

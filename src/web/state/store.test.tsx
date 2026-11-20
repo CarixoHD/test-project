@@ -171,6 +171,26 @@ describe('app store', () => {
     expect(store.getSnapshot().status).toBe('live');
   });
 
+  it('tells live-event listeners about streamed events only, not the snapshot or its buffer', async () => {
+    queueSnapshots(snapshotWith(productCreated(1, 'p1', 'Alpha')));
+    const store = createAppStore();
+    const seen: number[] = [];
+    const off = store.onLiveEvent((e) => seen.push(e.seq));
+    stopStore = store.start();
+    latestStream().open();
+    latestStream().send(productCreated(2, 'p2', 'Buffered'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([]);
+
+    latestStream().send(productCreated(2, 'p-dup', 'Duplicate'));
+    latestStream().send(productCreated(3, 'p3', 'Live'));
+    expect(seen).toEqual([3]);
+
+    off();
+    latestStream().send(productCreated(4, 'p4', 'After unsubscribe'));
+    expect(seen).toEqual([3]);
+  });
+
   it('skips event types this build does not know', async () => {
     const store = await started();
     latestStream().open();
