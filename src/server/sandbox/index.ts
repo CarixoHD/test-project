@@ -52,6 +52,8 @@ export {
   EgressIccEnabledError,
   ICC_UNSUPPORTED,
   IccUnsupportedError,
+  DOCKER_ADDRESS_POOLS_EXHAUSTED,
+  AddressPoolsExhaustedError,
   baseImageTag,
   claudeImageTag,
   claudeLoginCommands,
