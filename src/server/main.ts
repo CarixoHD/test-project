@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
 import { ensureDataDir, parseConfig, type Config } from './config.ts';
 import { open } from './db/index.ts';
+import { createGit } from './git/index.ts';
 import { createApp } from './http/index.ts';
 import { createScheduler, type Runners } from './scheduler/index.ts';
 import { redactor } from './security/index.ts';
@@ -28,8 +29,9 @@ export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise
   ensureDataDir(config.dataDir);
   const db = open(config.dbPath);
   const store = createStore({ db, clock: systemClock, redactor });
+  const git = createGit({ dataDir: config.dataDir });
   const ids = createIdGen(systemClock);
-  const app = createApp({ store, redactor, ids, webRoot });
+  const app = createApp({ store, ids, git, redactor, webRoot });
   const scheduler = createScheduler({
     store,
     clock: systemClock,

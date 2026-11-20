@@ -3,16 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { StateResponseSchema } from '../../shared/dto.ts';
-import { FakeIdGen } from '../util/id-gen.ts';
 import { createApp } from './index.ts';
 import { productCreated, setupStore, sparMessage } from './testing.ts';
 
 function setup(webRoot?: string) {
   const deps = setupStore();
-  return {
-    ...deps,
-    app: createApp({ store: deps.store, redactor: deps.redactor, ids: new FakeIdGen(), webRoot }),
-  };
+  return { ...deps, app: createApp({ ...deps, webRoot }) };
 }
 
 describe('GET /api/health', () => {

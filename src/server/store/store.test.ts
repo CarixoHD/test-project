@@ -199,3 +199,20 @@ describe('commit hooks', () => {
     expect(rowCount(db, 'products')).toBe(0);
   });
 });
+
+describe('store.q.setting', () => {
+  it('returns the stored JSON value, or undefined when the key is unset', () => {
+    const { store } = setup();
+    expect(store.q.setting('defaultModel')).toBeUndefined();
+
+    store.commit((tx) => {
+      tx.db
+        .insert(schema.settings)
+        .values({ key: 'defaultModel', value: { provider: 'fake', model: 'm' } })
+        .run();
+      return [];
+    });
+
+    expect(store.q.setting('defaultModel')).toEqual({ provider: 'fake', model: 'm' });
+  });
+});
