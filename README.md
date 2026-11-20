@@ -56,6 +56,8 @@ The login stores its state in the `vibecode-claude-config` Docker volume. Then c
 
 Copy the commands from Settings rather than typing them: the server fills in the current `<hash>` and your uid and gid. The image tags change whenever the pinned CLI version (`CLAUDE_CODE_VERSION`) or `docker/base.Dockerfile` changes, and Vibecode then rebuilds the images. The volume stays the same, so an existing login keeps working. `--pull never` makes sure Docker never fetches a look-alike image from a registry.
 
+**Removing old images.** Each new tag leaves the previous `vibecode/base` and `vibecode/claude-code` images behind, as do plain `latest` tags from older Vibecode versions. `npm run -s docker:prune` prints one `docker image rm ...` command for every local tag of those two repositories that is not current (nothing when there is nothing to remove); it never removes anything itself and never touches other images, product images (`vibecode/p-*`) included. Read it, then run `npm run -s docker:prune | sh` to remove them.
+
 **Volume from an older image.** Docker copies the image's owner and mode into a named volume only when the volume is first mounted. A `vibecode-claude-config` volume created by an older Vibecode image therefore keeps owner 1000:1000 and mode 0700. If your host uid is not 1000, the login (which now runs as your uid:gid) cannot write to it: remove it with `docker volume rm vibecode-claude-config`, then run steps 2 and 3 again to log in.
 
 ### How it runs
