@@ -904,6 +904,49 @@ a {
   border: 2px solid var(--danger);
 }
 
+/* 3D view: a heading button collapses it; the canvas only illustrates what the board says. */
+.scene-panel__title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.scene-panel__toggle {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  margin-left: calc(-1 * var(--space-2));
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-control);
+}
+
+.scene-panel__body {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.build-tab__slot .scene-panel__note {
+  font-size: 0.875rem;
+}
+
+.scene-panel__viewport {
+  position: relative;
+  height: 18rem;
+  overflow: hidden;
+  background: #e7ecef;
+  border-radius: var(--radius-control);
+}
+
+.build-tab__slot .scene-panel__loading {
+  padding: var(--space-4);
+}
+
 /* Agent list: one entry per running agent; facts as a compact term/value grid. */
 .agent-list__heading {
   margin: 0 0 var(--space-2);
