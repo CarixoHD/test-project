@@ -62,6 +62,7 @@ const ARCHITECTURE_EVENT_TYPES = [
   'budget.warned',
   'question.asked',
   'question.answered',
+  'question.withdrawn',
   'inbox.created',
   'inbox.read',
   'backend.limited',
@@ -411,6 +412,16 @@ const SAMPLES: { [K in EventType]: Sample<K> } = {
       data: { answer: 'Use passkeys' },
     },
     invalidData: { answer: '' },
+  },
+  'question.withdrawn': {
+    valid: {
+      type: 'question.withdrawn',
+      productId: P,
+      entityId: Q,
+      v: 1,
+      data: { reason: 'the issue was cancelled' },
+    },
+    invalidData: { reason: '' },
   },
   'inbox.created': {
     valid: {

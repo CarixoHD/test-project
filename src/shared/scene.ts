@@ -35,7 +35,7 @@ export interface SceneWorker {
   location: WorkerLocation;
   /** Shows the "?" bubble: waiting for the owner, or has an unanswered question. */
   bubble: boolean;
-  /** Unanswered questions this agent asked, sorted. */
+  /** Open (unanswered, not withdrawn) questions this agent asked, sorted. */
   questionIds: QuestionId[];
 }
 
@@ -175,6 +175,7 @@ export const SCENE_EVENTS = [
   'agent.exited',
   'question.asked',
   'question.answered',
+  'question.withdrawn',
 ] as const satisfies readonly EventType[];
 
 /**
@@ -254,6 +255,7 @@ function reduceSceneEvent(s: SceneState, e: SceneEvent): SceneState {
       );
     }
     case 'question.answered':
+    case 'question.withdrawn':
       if (!s.workers.some((w) => w.questionIds.includes(e.entityId))) return s;
       return mapWorkers(s, (w) =>
         w.questionIds.includes(e.entityId)
@@ -284,6 +286,7 @@ export function sceneReduce(s: SceneState, e: Event): SceneState {
     case 'agent.exited':
     case 'question.asked':
     case 'question.answered':
+    case 'question.withdrawn':
       return e.productId === s.productId ? reduceSceneEvent(s, e) : s;
     case 'product.created':
     case 'product.settings_changed':
@@ -340,7 +343,9 @@ export function sceneFromState(state: ClientState, productId: ProductId): SceneS
     .map((i) => ({ issueId: i.id }))
     .sort(byIssue);
 
-  const openQuestions = Object.values(state.questions).filter((q) => q.answer === null);
+  const openQuestions = Object.values(state.questions).filter(
+    (q) => q.answer === null && q.withdrawnAt === null,
+  );
   const workers = Object.values(state.agents)
     .filter((a) => a.productId === productId)
     .flatMap((a) => {
