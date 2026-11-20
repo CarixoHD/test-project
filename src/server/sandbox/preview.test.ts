@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectConfig } from '../../shared/agent-results.ts';
 import { ProductIdSchema } from '../../shared/ids.ts';
 import { ensureDataDir } from '../config.ts';
@@ -352,6 +352,74 @@ describe('startPreview', () => {
   });
 });
 
+describe('startPreview cleanup failures', () => {
+  it('logs a removal failure with product id and container, and still reports the start error', async () => {
+    createProduct();
+    const logged: string[] = [];
+    const rt: ContainerRuntime = {
+      ...delegating(runtime),
+      publishedPort: () => Promise.reject(new Error('no such port mapping')),
+      remove: () => Promise.reject(new Error('daemon hiccup')),
+    };
+
+    const r = await createPreviews(deps({ runtime: rt, log: (l) => logged.push(l) })).startPreview(
+      P,
+    );
+
+    expect(r).toMatchObject({ ok: false, code: 'conflict' });
+    if (!r.ok) expect(r.reason).toContain('no such port mapping');
+    const [spec] = runtime.detached;
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain(P);
+    expect(logged[0]).toContain(`vibecode-${spec?.runId ?? '?'}`);
+    expect(logged[0]).toContain('daemon hiccup');
+  });
+
+  it('a readiness timeout whose worktree removal fails still resolves with the timeout reason', async () => {
+    createProduct();
+    isUp = () => false;
+    const logged: string[] = [];
+    const brokenGit: Git = {
+      ...git,
+      addWorktree: (...a) => git.addWorktree(...a),
+      removeWorktree: () => Promise.reject(new Error('worktree is locked')),
+    };
+
+    const r = await createPreviews(
+      deps({ git: brokenGit, log: (l) => logged.push(l) }),
+    ).startPreview(P);
+
+    expect(r).toMatchObject({ ok: false, code: 'conflict' });
+    if (!r.ok) expect(r.reason).toMatch(/did not answer/);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain(P);
+    expect(logged[0]).toMatch(/worktree.*worktree is locked/);
+    expect(await runtime.listManaged()).toEqual([]);
+  });
+
+  it('a start error whose worktree removal fails still reports the start error', async () => {
+    createProduct();
+    const logged: string[] = [];
+    const brokenGit: Git = {
+      ...git,
+      addWorktree: (...a) => git.addWorktree(...a),
+      removeWorktree: () => Promise.reject(new Error('worktree is locked')),
+    };
+    const rt: ContainerRuntime = {
+      ...delegating(runtime),
+      runDetached: () => Promise.reject(new Error('port is already allocated')),
+    };
+
+    const r = await createPreviews(
+      deps({ git: brokenGit, runtime: rt, log: (l) => logged.push(l) }),
+    ).startPreview(P);
+
+    expect(r).toMatchObject({ ok: false, code: 'conflict' });
+    if (!r.ok) expect(r.reason).toContain('port is already allocated');
+    expect(logged).toEqual([expect.stringMatching(/worktree is locked/)]);
+  });
+});
+
 describe('startPreview on the docker CLI runtime (stubbed docker binary)', () => {
   it('starts the container detached and uses the host port from `docker port`', async () => {
     createProduct();
@@ -434,7 +502,56 @@ describe('stopPreview', () => {
 });
 
 describe('stopAll', () => {
-  it('waits for a start that is still polling and stops what it started', async () => {
+  it('aborts a start that is still polling, removes its container and commits nothing', async () => {
+    vi.useFakeTimers();
+    try {
+      createProduct();
+      const polling = gate();
+      // Never ready: every poll hangs until its signal aborts, like a real fetch would.
+      const neverReady: PreviewFetch = (url, { signal }) => {
+        fetched.push(url);
+        polling.open();
+        return new Promise((_, reject) => {
+          signal.addEventListener('abort', () => {
+            reject(new Error('aborted'));
+          });
+        });
+      };
+      // The real sleep, so the poll waits on (fake) timers between attempts.
+      const { sleep: _fakeSleep, ...withRealSleep } = deps({ fetch: neverReady, log: () => {} });
+      const previews = createPreviews(withRealSleep);
+
+      const starting = previews.startPreview(P);
+      await polling.promise;
+      expect(runtime.detached).toHaveLength(1);
+      const eventsBefore = store.eventsSince(0).length;
+
+      let stopped = false;
+      const stopping = previews.stopAll().then(() => {
+        stopped = true;
+      });
+      // No timer needs to fire: stopAll aborts the poll itself.
+      await stopping;
+
+      expect(stopped).toBe(true);
+      const r = await starting;
+      expect(r).toMatchObject({ ok: false, code: 'conflict' });
+      if (!r.ok) expect(r.reason).toMatch(/shutting down/);
+      expect(await runtime.listManaged()).toEqual([]);
+      expect(await worktrees()).toEqual([]);
+      expect(store.eventsSince(0)).toHaveLength(eventsBefore);
+      // Nothing is left pending: advancing past the timeout commits nothing and polls no more.
+      const polls = fetched.length;
+      await vi.advanceTimersByTimeAsync(2 * PREVIEW_TIMEOUT_MS);
+      expect(fetched).toHaveLength(polls);
+      expect(store.eventsSince(0)).toHaveLength(eventsBefore);
+      expect(store.snapshot().state.previews).toEqual({});
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts a start whose in-flight poll answers after shutdown began', async () => {
     createProduct();
     const hold = gate();
     const polling = gate();
@@ -454,14 +571,11 @@ describe('stopAll', () => {
     const stopping = previews.stopAll();
     hold.open();
 
-    expect((await starting).ok).toBe(true);
+    expect(await starting).toMatchObject({ ok: false, code: 'conflict' });
     await stopping;
     expect(await runtime.listManaged()).toEqual([]);
     expect(await worktrees()).toEqual([]);
-    expect(eventTypes().filter((t) => t.startsWith('preview.'))).toEqual([
-      'preview.started',
-      'preview.stopped',
-    ]);
+    expect(eventTypes().filter((t) => t.startsWith('preview.'))).toEqual([]);
     expect(store.snapshot().state.previews).toEqual({});
   });
 
