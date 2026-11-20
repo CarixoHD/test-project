@@ -23,9 +23,7 @@ export function pauseProduct(deps: CommandDeps, productId: ProductId): PauseComm
       outcome = { ok: false, code: 'conflict', reason: 'The product is already paused' };
       return [];
     }
-    return [
-      { type: 'product.paused', productId, entityId: null, v: 1, data: { reason: 'owner' } },
-    ];
+    return [{ type: 'product.paused', productId, entityId: null, v: 1, data: { reason: 'owner' } }];
   });
   return outcome.ok ? { ok: true, events } : outcome;
 }

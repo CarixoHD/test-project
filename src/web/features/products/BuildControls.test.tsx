@@ -9,7 +9,15 @@ import { BuildControls } from './BuildControls.tsx';
 const P = ProductIdSchema.parse('p1');
 
 const ev = (seq: number, type: string, data: object): Event =>
-  EventSchema.parse({ seq, ts: 1_700_000_000_000 + seq, type, productId: P, entityId: null, v: 1, data });
+  EventSchema.parse({
+    seq,
+    ts: 1_700_000_000_000 + seq,
+    type,
+    productId: P,
+    entityId: null,
+    v: 1,
+    data,
+  });
 
 function product(pause?: 'owner' | 'budget'): ProductState {
   const events = [
