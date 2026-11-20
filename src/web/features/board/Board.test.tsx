@@ -84,6 +84,41 @@ const issueCreated = ({ n, title, status, priority, attemptCount, dependsOn }: I
 const statusChanged = (n: number, from: IssueStatus, to: IssueStatus, attemptCount = 0) =>
   event('issue.status_changed', `i${String(n)}`, { from, to, attemptCount, runAfter: 0 });
 
+const ZERO_TOKENS = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+
+/** One usage row for issue `n`: API spend in USD (null = unpriced) or subscription tokens. */
+const usageRecorded = (
+  n: number,
+  usage: { costUsd: number | null } | { subscriptionTokens: number; calls: number },
+) =>
+  event('usage.recorded', `u${String(seq + 1)}`, {
+    agentId: 'a1',
+    role: 'implementer',
+    issueId: `i${String(n)}`,
+    attemptId: null,
+    webSearches: 0,
+    estCostUsd: null,
+    ...('costUsd' in usage
+      ? {
+          model: { provider: 'anthropic', model: 'claude-sonnet-4-5' },
+          billing: 'api',
+          tokens: { ...ZERO_TOKENS, input: 100 },
+          calls: 1,
+          costUsd: usage.costUsd,
+          unpriced: usage.costUsd === null,
+          source: 'computed',
+        }
+      : {
+          model: { provider: 'claude-code', model: 'sonnet' },
+          billing: 'subscription',
+          tokens: { ...ZERO_TOKENS, output: usage.subscriptionTokens },
+          calls: usage.calls,
+          costUsd: null,
+          unpriced: false,
+          source: 'cli',
+        }),
+  });
+
 const held = (n: number) => event('issue.held', `i${String(n)}`, { questionId: 'q1' });
 
 beforeEach(() => {
@@ -197,6 +232,23 @@ describe('Board', () => {
     expect(card('#1 Pick a colour')).not.toHaveTextContent('Waiting for owner');
     push(held(1));
     expect(card('#1 Pick a colour')).toHaveTextContent('Waiting for owner');
+  });
+
+  it('shows each issue its own cost from the usage totals, live', async () => {
+    await renderBoard([
+      () => issueCreated({ n: 1, title: 'Paid' }),
+      () => issueCreated({ n: 2, title: 'Subscription' }),
+      () => issueCreated({ n: 3, title: 'Untouched' }),
+      () => usageRecorded(1, { costUsd: 0.3 }),
+      () => usageRecorded(2, { subscriptionTokens: 1500, calls: 2 }),
+    ]);
+    expect(card('#1 Paid')).toHaveTextContent('Cost: US$0.30');
+    expect(card('#2 Subscription')).toHaveTextContent('Cost: 1,500 subscription tokens in 2 calls');
+    expect(card('#2 Subscription')).not.toHaveTextContent('US$');
+    expect(card('#3 Untouched')).not.toHaveTextContent('Cost:');
+
+    push(usageRecorded(1, { costUsd: 0.12 }), usageRecorded(1, { costUsd: null }));
+    expect(card('#1 Paid')).toHaveTextContent('Cost: US$0.42 + unpriced usage');
   });
 
   it('moves a card when issue.status_changed arrives', async () => {
