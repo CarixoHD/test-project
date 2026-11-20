@@ -1019,4 +1019,32 @@ describe('Docker unavailable', () => {
     await expect(runtime(down).ensureNetworks()).rejects.toThrow(DOCKER_NOT_RUNNING);
     await expect(runtime(down).remove('vibecode-x')).rejects.toThrow(DOCKER_NOT_RUNNING);
   });
+
+  it('maps a daemon that stops mid-attempt to DOCKER_NOT_RUNNING for Sandbox.exec and runOnce', async () => {
+    const DOWN =
+      'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?';
+    let daemonUp = true;
+    const stub = stubDocker((argv) =>
+      daemonUp ? {} : { code: argv[0] === 'run' ? 125 : 1, stderr: `${DOWN}\n` },
+    );
+    const rt = runtime(stub);
+    const sb = await rt.open(spec());
+    daemonUp = false;
+    await expect(sb.exec(['npm', 'test'], T)).rejects.toThrow(DOCKER_NOT_RUNNING);
+    await expect(sb.exec(['npm', 'test'], { ...T, onLine: () => {} })).rejects.toThrow(
+      DOCKER_NOT_RUNNING,
+    );
+    await expect(rt.runOnce(spec({ role: 'check' }), ['npm', 'test'], T)).rejects.toThrow(
+      DOCKER_NOT_RUNNING,
+    );
+  });
+
+  it('keeps a failing command that merely prints the daemon message a command result', async () => {
+    const stub = stubDocker(() => ({
+      code: 2,
+      stderr: 'Cannot connect to the Docker daemon (from the product tests)\n',
+    }));
+    const r = await runtime(stub).runOnce(spec({ role: 'check' }), ['npm', 'test'], T);
+    expect(r.code).toBe(2);
+  });
 });
