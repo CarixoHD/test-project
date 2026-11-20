@@ -207,7 +207,7 @@ function ProductSettingsForm({ product }: { product: ProductState }) {
       </Field>
       <Field
         label="Git remote URL"
-        hint="Optional. Leave blank for none."
+        hint="Optional. An https:// or SSH URL (git@host:path) without credentials. Leave blank for none."
         error={errors.gitRemote ?? null}
       >
         {(control) => (
