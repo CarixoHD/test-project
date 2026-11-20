@@ -2,7 +2,7 @@
 // docker CLI through util/exec only (argv arrays, never a shell). Every container is created from
 // buildRunArgs; before that, the worktree is resolved with realpath and confined to
 // realpath(<dataDir>/worktrees), because Docker follows symlinks in bind sources.
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { lstat, readFile, realpath, truncate, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ProjectConfigSchema } from '../../shared/agent-results.ts';
@@ -17,6 +17,7 @@ import {
 import { NETWORKS, WORKSPACE, buildRunArgs, containerName } from './run-args.ts';
 import type {
   ContainerRuntime,
+  EnsureImageParams,
   ExecOpts,
   ExecResult,
   HostIdentity,
@@ -28,10 +29,24 @@ import type {
 export const DOCKER_NOT_RUNNING =
   'Docker is not running: start Docker Desktop or the docker service';
 export const BASE_IMAGE = 'vibecode/base';
-/** docker/ at the repo root: base.Dockerfile and its build context. */
+/** vibecode/base plus the pinned Claude Code CLI; also the image the owner logs in with (ADR 4). */
+export const CLAUDE_IMAGE = 'vibecode/claude-code';
+const CLAUDE_DOCKERFILE = 'claude-code.Dockerfile';
+/** docker/ at the repo root: base.Dockerfile, claude-code.Dockerfile and their build context. */
 export const DEFAULT_BASE_IMAGE_DIR = path.resolve(import.meta.dirname, '../../../docker');
 
 const MANAGE_TIMEOUT_MS = 60_000;
+const SIGNAL_TIMEOUT_MS = 10_000;
+const DEFAULT_KILL_GRACE_MS = 5_000;
+/**
+ * In-container wrapper for execs with a `killSignal`: records the shell's pid in the file `$1`,
+ * then execs the argv (same pid). A signal to the host `docker exec` client is not forwarded
+ * into the container (non-TTY), so stops are delivered there with KILL_SCRIPT instead.
+ */
+const PID_WRAPPER = 'echo $$ > "$1"; shift; exec "$@"';
+/** `kill -s <SIG> <pid from file>`, run in the container by a separate `docker exec`. */
+const KILL_SCRIPT = 'kill -s "$1" "$(cat "$2")"';
+const SIGNAL_NAMES = { SIGINT: 'INT', SIGTERM: 'TERM' } as const;
 const BUILD_TIMEOUT_MS = 30 * 60_000;
 const MAX_STREAMED = 10 * 1024 * 1024;
 const MAX_ERROR_DETAIL = 2000;
@@ -46,8 +61,10 @@ export type DockerCliRuntimeOptions = {
   gid: number;
   /** docker CLI binary; default `docker`. */
   docker?: string | undefined;
-  /** Directory holding base.Dockerfile; default the repo's docker/. */
+  /** Directory holding base.Dockerfile and claude-code.Dockerfile; default the repo's docker/. */
   baseImageDir?: string | undefined;
+  /** After an in-container stop signal, how long until SIGKILL; default 5000. */
+  killGraceMs?: number | undefined;
   /** Injected so unit tests can stub util/exec and assert argv. */
   exec?: typeof defaultExec;
   spawnStream?: typeof defaultSpawnStream;
@@ -96,19 +113,46 @@ export class DockerCliRuntime implements ContainerRuntime {
     }
   }
 
-  async ensureImage(p: { productId: string; contextDir: string }): Promise<string> {
+  async ensureImage(p: EnsureImageParams): Promise<string> {
     if (!PRODUCT_ID_RE.test(p.productId)) throw new Error(`Invalid productId: ${p.productId}`);
-    const dockerfile = path.join(p.contextDir, 'Dockerfile');
+    const productImage = await this.#ensureProductImage(p.productId, p.contextDir);
+    if (p.claude !== true) return productImage;
+    return this.#ensureClaudeImage(p.productId, productImage);
+  }
+
+  async #ensureProductImage(productId: string, contextDir: string): Promise<string> {
+    const dockerfile = path.join(contextDir, 'Dockerfile');
     const content = await readIfExists(dockerfile);
     if (content === null) {
-      const dir = this.#o.baseImageDir ?? DEFAULT_BASE_IMAGE_DIR;
+      const dir = this.#imageDir();
       await this.#ensureBuilt(BASE_IMAGE, path.join(dir, 'base.Dockerfile'), dir);
       return BASE_IMAGE;
     }
-    const hash = await imageHash(p.contextDir, content);
-    const tag = `vibecode/p-${p.productId.toLowerCase()}:${hash}`;
-    await this.#ensureBuilt(tag, dockerfile, p.contextDir);
+    const hash = await imageHash(contextDir, content);
+    const tag = `vibecode/p-${productId.toLowerCase()}:${hash}`;
+    await this.#ensureBuilt(tag, dockerfile, contextDir);
     return tag;
+  }
+
+  /**
+   * The derived image FROM `productImage` with the pinned CLI layered on (ADR 4). Over
+   * vibecode/base it is vibecode/claude-code, the image of the login command.
+   */
+  async #ensureClaudeImage(productId: string, productImage: string): Promise<string> {
+    const dir = this.#imageDir();
+    const dockerfile = path.join(dir, CLAUDE_DOCKERFILE);
+    let tag = CLAUDE_IMAGE;
+    if (productImage !== BASE_IMAGE) {
+      const content = await readFile(dockerfile);
+      const hash = createHash('sha256').update(`${productImage}\0`).update(content).digest('hex');
+      tag = `vibecode/p-${productId.toLowerCase()}-claude:${hash}`;
+    }
+    await this.#ensureBuilt(tag, dockerfile, dir, ['--build-arg', `BASE_IMAGE=${productImage}`]);
+    return tag;
+  }
+
+  #imageDir(): string {
+    return this.#o.baseImageDir ?? DEFAULT_BASE_IMAGE_DIR;
   }
 
   async open(spec: SandboxSpec): Promise<Sandbox> {
@@ -207,14 +251,29 @@ export class DockerCliRuntime implements ContainerRuntime {
   }
 
   /** Builds `tag` unless it exists; concurrent callers share one build. */
-  #ensureBuilt(tag: string, dockerfile: string, contextDir: string): Promise<void> {
+  #ensureBuilt(
+    tag: string,
+    dockerfile: string,
+    contextDir: string,
+    buildArgs: readonly string[] = [],
+  ): Promise<void> {
     let build = this.#builds.get(tag);
     if (build === undefined) {
       build = (async () => {
         const found = await this.#manage(['image', 'inspect', '--format', '{{.Id}}', tag]);
         if (found.code === 0) return;
         const r = await this.#manage(
-          ['buildx', 'build', '--load', '--tag', tag, '--file', dockerfile, contextDir],
+          [
+            'buildx',
+            'build',
+            '--load',
+            '--tag',
+            tag,
+            ...buildArgs,
+            '--file',
+            dockerfile,
+            contextDir,
+          ],
           BUILD_TIMEOUT_MS,
         );
         if (r.code !== 0) throw new Error(`Image build failed for ${tag}: ${detail(r)}`);
@@ -227,18 +286,73 @@ export class DockerCliRuntime implements ContainerRuntime {
   #sandbox(name: string): Sandbox {
     return {
       name,
-      exec: (argv, o) => this.#run(['exec', '-i', '-w', WORKSPACE, name, ...argv], o),
+      exec: (argv, o) =>
+        o.killSignal === undefined
+          ? this.#run(['exec', '-i', '-w', WORKSPACE, name, ...argv], o)
+          : this.#execSignalled(name, argv, o, o.killSignal),
       close: () => this.remove(name),
     };
   }
 
+  /**
+   * An exec whose abort delivers `killSignal` to the process inside the container (by pid
+   * file), then after the grace period SIGKILL there and to the host client.
+   */
+  async #execSignalled(
+    name: string,
+    argv: readonly string[],
+    o: ExecOpts,
+    killSignal: keyof typeof SIGNAL_NAMES,
+  ): Promise<ExecResult> {
+    if (o.signal?.aborted === true) return { ...ABORTED };
+    const pidFile = `/tmp/vibecode-exec-${randomUUID()}.pid`;
+    const client = new AbortController();
+    let grace: NodeJS.Timeout | undefined;
+    let stopped = false;
+    const onAbort = (): void => {
+      stopped = true;
+      void this.#signalInContainer(name, pidFile, SIGNAL_NAMES[killSignal]);
+      grace = setTimeout(() => {
+        void this.#signalInContainer(name, pidFile, 'KILL');
+        client.abort();
+      }, this.#o.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
+    };
+    o.signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const r = await this.#run(
+        ['exec', '-i', '-w', WORKSPACE, name, 'sh', '-c', PID_WRAPPER, 'sh', pidFile, ...argv],
+        { ...o, signal: client.signal },
+        'SIGKILL',
+      );
+      return { ...r, aborted: r.aborted || stopped };
+    } finally {
+      clearTimeout(grace);
+      o.signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /** Best effort: the process may already be gone, or not have written its pid yet. */
+  async #signalInContainer(name: string, pidFile: string, sig: string): Promise<void> {
+    try {
+      await this.#exec(this.#docker, ['exec', name, 'sh', '-c', KILL_SCRIPT, 'sh', sig, pidFile], {
+        timeoutMs: SIGNAL_TIMEOUT_MS,
+      });
+    } catch {
+      // The grace-period SIGKILL of the client still applies.
+    }
+  }
+
   /** A command whose output belongs to the caller (exec / runOnce). */
-  async #run(argv: string[], o: ExecOpts): Promise<ExecResult> {
+  async #run(
+    argv: string[],
+    o: ExecOpts,
+    clientKillSignal: NodeJS.Signals = 'SIGINT',
+  ): Promise<ExecResult> {
     const base: ExecOptions = {
       input: o.stdin,
       timeoutMs: o.timeoutMs,
       signal: o.signal,
-      killSignal: 'SIGINT',
+      killSignal: clientKillSignal,
     };
     try {
       if (o.onLine === undefined) {
@@ -382,6 +496,15 @@ function detail(r: UtilExecResult): string {
   );
   return redactor.redact(text);
 }
+
+const ABORTED: ExecResult = {
+  code: null,
+  stdout: '',
+  stderr: '',
+  timedOut: false,
+  aborted: true,
+  truncated: false,
+};
 
 function toResult(r: UtilExecResult): ExecResult {
   return {

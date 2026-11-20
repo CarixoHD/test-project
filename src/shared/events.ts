@@ -125,6 +125,8 @@ const productEvents = [
     PRODUCT,
     z.object({ version: Positive, markdown: z.string(), summary: z.string().nullable() }),
   ),
+  // The orchestrator's replan summary for an applied PRD version (ARCHITECTURE §6 flow 6).
+  defineEvent('prd.summarized', PRODUCT, z.object({ version: Positive, summary: z.string() })),
   defineEvent('orchestrator.cursor_advanced', PRODUCT, z.object({ cursor: Count })),
 ] as const;
 

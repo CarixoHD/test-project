@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import type { IdGen } from '../../shared/ids.ts';
+import type { IdGen, ProductId } from '../../shared/ids.ts';
 import type { Access, AccountSettings, Sparring } from '../commands/index.ts';
 import type { Git } from '../git/index.ts';
 import type { Previews } from '../sandbox/index.ts';
@@ -20,10 +20,16 @@ export interface AppDeps {
   clientKey?: ((c: Context) => string) | undefined;
   /** Account settings (GET|PUT /api/settings); those routes exist only when given. */
   settings?: AccountSettings | undefined;
+  /** The scheduler's per-product merge lock; apply-prd commits docs/PRD.md under it. */
+  withMergeLock?: (<T>(productId: ProductId, fn: () => Promise<T>) => Promise<T>) | undefined;
   /** Sparring turns (POST /spar). Optional until main.ts wires the pipeline; absent → 500. */
   sparring?: Sparring | undefined;
   /** Preview of main (POST|DELETE /api/products/:id/preview); those routes exist only when given. */
   previews?: Previews | undefined;
+  /** `data/logs` (agent logs, GET /api/agents/:id/log); that route exists only when given. */
+  logsDir?: string | undefined;
+  /** How often a followed agent log is re-read; defaults to LOG_POLL_MS. Tests shorten it. */
+  logPollMs?: number | undefined;
   /** Directory with the built SPA. Served only when it exists. */
   webRoot?: string | undefined;
   /** SSE heartbeat interval; defaults to HEARTBEAT_MS. Tests shorten it. */

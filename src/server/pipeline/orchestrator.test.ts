@@ -442,4 +442,37 @@ describe('orchestrator prompt', () => {
     }).instructions;
     expect(withSearch).toMatch(/Web search is available/);
   });
+
+  it('on a replan shows the previous and the new PRD version, all issues and the replan rules', async () => {
+    const h = await setup();
+    await h.run(setupScript());
+    const [scaffold] = h.store.q.issuesByProduct(P);
+    if (scaffold === undefined) throw new Error('no issues planned');
+    h.store.commit(() => [
+      draft('issue.completed', scaffold.id, {
+        attemptId: 'attempt-1',
+        mergedOrder: 1,
+        mergeSha: 'a'.repeat(40),
+      }),
+    ]);
+    h.store.commit(() => [
+      draft('prd.applied', null, { version: 2, markdown: '# Todo v2 with sharing', summary: null }),
+    ]);
+
+    const { instructions } = orchestratorPrompt({
+      store: h.store,
+      productId: P,
+      triggers: triggersOf(h.store, P),
+      prd: '# Todo v2 with sharing',
+      webSearch: false,
+    });
+
+    expect(instructions).toMatch(
+      /Previous PRD \(version 1\)[\s\S]*# Todo\n[\s\S]*New PRD \(version 2\)[\s\S]*# Todo v2 with sharing/,
+    );
+    expect(instructions).toMatch(/#1 \[completed\] Scaffold/);
+    expect(instructions).toMatch(/#3 \[open\] Add a todo/);
+    expect(instructions).toMatch(/follow-up/);
+    expect(instructions).toMatch(/never revert/i);
+  });
 });

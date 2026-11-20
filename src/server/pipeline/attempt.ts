@@ -293,9 +293,13 @@ async function runAgentIn<T>(
   const resolved = resolveModel(deps.store, ctx.productId, role, { demo: deps.demo === true });
   if (!resolved.ok) return resolved;
   const model = resolved.model;
+  // Claude Code runs in the derived image with the CLI login volume, and needs egress to reach
+  // Anthropic even for the reviewer (ADR 4); its mount stays read-only.
+  const claude = model.provider === 'claude-code';
   const image = await deps.runtime.ensureImage({
     productId: ctx.productId,
     contextDir: o.worktree,
+    ...(claude ? { claude } : {}),
   });
   const sandbox = await deps.runtime.open({
     runId: o.runId,
@@ -304,8 +308,8 @@ async function runAgentIn<T>(
     image,
     worktree: o.worktree,
     readOnly: o.readOnly,
-    network: o.network,
-    ...(model.provider === 'claude-code' ? { claude: true } : {}),
+    network: claude ? 'egress' : o.network,
+    ...(claude ? { claude } : {}),
   });
   ctx.sandboxes.add(sandbox);
   try {

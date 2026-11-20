@@ -1,5 +1,6 @@
 import { and, asc, eq, max } from 'drizzle-orm';
 import {
+  AgentViewSchema,
   AttemptStateSchema,
   ClientStateSchema,
   EMPTY_USAGE_TOTALS,
@@ -8,6 +9,7 @@ import {
   PrdDraftSchema,
   ProductStateSchema,
   SparMessageSchema,
+  type AgentView,
   type AttemptState,
   type ClientState,
   type InboxItem,
@@ -17,7 +19,7 @@ import {
   type SparMessage,
   type UsageTotals,
 } from '../../shared/state.ts';
-import type { AttemptId, InboxId, IssueId, ProductId } from '../../shared/ids.ts';
+import type { AgentId, AttemptId, InboxId, IssueId, ProductId } from '../../shared/ids.ts';
 import { type Db, schema } from '../db/index.ts';
 import { readSettingsChangedAt, totalsFromRow } from './project-account.ts';
 
@@ -165,10 +167,14 @@ export interface Queries {
   productUsage(productId: ProductId): UsageTotals;
   issueUsage(issueId: IssueId): UsageTotals;
   inboxItem(id: InboxId): InboxItem | null;
+  /** The projected agent (also after it exited), null when unknown. */
+  agent(id: AgentId): AgentView | null;
   /** The sparring transcript in arrival (event seq) order. */
   sparMessages(productId: ProductId): SparMessage[];
   /** The current PRD draft, null before the first save. */
   prdDraft(productId: ProductId): PrdDraft | null;
+  /** Markdown of an applied PRD version, null when that version does not exist. */
+  prdVersionMarkdown(productId: ProductId, version: number): string | null;
   /** Raw JSON value of a `settings` row (unvalidated; callers parse it), undefined when unset. */
   setting(key: string): unknown;
 }
@@ -219,6 +225,10 @@ export function createQueries(db: Db): Queries {
       const r = db.select().from(s.inbox).where(eq(s.inbox.id, id)).get();
       return r === undefined ? null : InboxItemSchema.parse(inboxView(r));
     },
+    agent(id) {
+      const r = db.select().from(s.agents).where(eq(s.agents.id, id)).get();
+      return r === undefined ? null : AgentViewSchema.parse(r);
+    },
     sparMessages(productId) {
       return db
         .select()
@@ -235,6 +245,14 @@ export function createQueries(db: Db): Queries {
       if (r === undefined) return null;
       const { productId: _p, ...draft } = r;
       return PrdDraftSchema.parse(draft);
+    },
+    prdVersionMarkdown(productId, version) {
+      const r = db
+        .select({ markdown: s.prdVersions.markdown })
+        .from(s.prdVersions)
+        .where(and(eq(s.prdVersions.productId, productId), eq(s.prdVersions.version, version)))
+        .get();
+      return r?.markdown ?? null;
     },
     setting(key) {
       return db.select().from(s.settings).where(eq(s.settings.key, key)).get()?.value;

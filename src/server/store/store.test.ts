@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Event, EventDraft } from '../../shared/events.ts';
-import { ProductIdSchema } from '../../shared/ids.ts';
+import { AgentIdSchema, ProductIdSchema } from '../../shared/ids.ts';
 import { open, schema } from '../db/index.ts';
 import { Redactor } from '../security/index.ts';
 import { FakeClock } from '../util/clock.ts';
@@ -240,5 +240,57 @@ describe('store.q.sparMessages / prdDraft', () => {
       ['m-1', 'second'],
     ]);
     expect(store.q.prdDraft(P)).toMatchObject({ markdown: '# D', baseVersion: 0 });
+  });
+});
+
+describe('store.q.agent', () => {
+  it('returns the projected agent, or null when unknown', () => {
+    const { store } = setup();
+    store.commit(() => [productCreated()]);
+    expect(store.q.agent(AgentIdSchema.parse('a-1'))).toBeNull();
+
+    store.commit(() => [
+      {
+        type: 'agent.spawned',
+        productId: P,
+        entityId: AgentIdSchema.parse('a-1'),
+        v: 1,
+        data: {
+          role: 'implementer',
+          model: { provider: 'fake', model: 'fake' },
+          issueId: null,
+          attemptId: null,
+        },
+      },
+    ]);
+
+    expect(store.q.agent(AgentIdSchema.parse('a-1'))).toMatchObject({
+      id: 'a-1',
+      role: 'implementer',
+      state: 'working',
+      endedAt: null,
+    });
+  });
+});
+
+describe('store.q.prdVersionMarkdown', () => {
+  it('returns the markdown of an applied version, null for an unknown one', () => {
+    const { store } = setup();
+    store.commit(() => [productCreated()]);
+    for (const version of [1, 2]) {
+      store.commit(() => [
+        {
+          type: 'prd.applied',
+          productId: P,
+          entityId: null,
+          v: 1,
+          data: { version, markdown: `# v${String(version)}`, summary: null },
+        },
+      ]);
+    }
+
+    expect(store.q.prdVersionMarkdown(P, 1)).toBe('# v1');
+    expect(store.q.prdVersionMarkdown(P, 2)).toBe('# v2');
+    expect(store.q.prdVersionMarkdown(P, 3)).toBeNull();
   });
 });

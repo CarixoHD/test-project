@@ -43,6 +43,7 @@ export function orchestratorPrompt(input: OrchestratorPromptInput): {
       issues.length === 0 ? '(none yet)' : issues.map((i) => describeIssue(store, i)).join('\n'),
     blockedIssues: describeBlocked(issues),
     triggers: input.triggers.map((e) => describeTrigger(e, issues, questions)).join('\n'),
+    prdChange: describePrdChange(store, productId, input.triggers),
   });
   return { instructions, prompt: renderPrompt('orchestrator-task', {}) };
 }
@@ -72,6 +73,32 @@ function describeIssue(store: Store, issue: IssueState): string {
     .at(-1)?.feedback;
   if (feedback != null) lines.push(indent(`Last attempt feedback: ${clip(feedback)}`));
   return lines.join('\n');
+}
+
+/**
+ * The replan section for consumed `prd.applied` triggers with version > 1: the version before the
+ * first of them and the newest one, so several applies in one run read as one change.
+ */
+function describePrdChange(store: Store, productId: ProductId, triggers: readonly Event[]): string {
+  const applied = triggers.flatMap((e) =>
+    e.type === 'prd.applied' && e.data.version > 1 ? [e.data] : [],
+  );
+  const newest = applied.reduce<(typeof applied)[number] | undefined>(
+    (a, b) => (a === undefined || b.version > a.version ? b : a),
+    undefined,
+  );
+  if (newest === undefined) return '';
+  const previousVersion = Math.min(...applied.map((a) => a.version)) - 1;
+  const previousPrd = store.q.prdVersionMarkdown(productId, previousVersion);
+  return (
+    '\n' +
+    renderPrompt('orchestrator-replan', {
+      previousVersion: String(previousVersion),
+      previousPrd: previousPrd ?? '(not available)',
+      newVersion: String(newest.version),
+      newPrd: newest.markdown,
+    })
+  );
 }
 
 function describeBlocked(issues: readonly IssueState[]): string {
@@ -106,8 +133,7 @@ function describeTrigger(
       return (
         `- The owner applied PRD version ${String(e.data.version)}` +
         (e.data.summary === null ? '' : ` (${e.data.summary})`) +
-        ': compare it with the current issues; create, edit or cancel issues to match it, and add ' +
-        'follow-up issues for completed work that must change.'
+        ': replan as described under "The PRD changed" below.'
       );
     case 'issue.failed': {
       const issue = issues.find((i) => i.id === e.entityId);
