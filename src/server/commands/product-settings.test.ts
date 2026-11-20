@@ -204,6 +204,30 @@ describe('PATCH /api/products/:id/settings', () => {
     },
   );
 
+  it('replays a git remote stored before the URL rule and lets the owner replace it', async () => {
+    const { app, store } = setup();
+    const legacy = 'https://user:token@example.com/r.git';
+    store.commit(() => [
+      {
+        type: 'product.settings_changed',
+        productId: TEST_PRODUCT,
+        entityId: null,
+        v: 1,
+        data: { gitRemote: { url: legacy } },
+      },
+    ]);
+    expect(settingsEvents(store).map((e) => e.data)).toEqual([{ gitRemote: { url: legacy } }]);
+    expect(store.q.product(TEST_PRODUCT)?.settings.gitRemote).toEqual({ url: legacy });
+    expectSnapshotMatchesReplay(store);
+    expect((await app.request('/api/state')).status).toBe(200);
+
+    const res = await patch(app, { gitRemote: { url: 'https://example.com/r.git' } });
+    expect(res.status).toBe(200);
+    expect(store.q.product(TEST_PRODUCT)?.settings.gitRemote).toEqual({
+      url: 'https://example.com/r.git',
+    });
+  });
+
   it('answers 404 for an unknown product', async () => {
     const { app } = setup();
     const res = await patch(app, { maxParallel: 2 }, 'product-unknown');

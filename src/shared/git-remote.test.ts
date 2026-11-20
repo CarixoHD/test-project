@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { GitRemoteSchema } from './domain.ts';
+import { ProductSettingsUpdateRequestSchema } from './dto.ts';
+import { EventSchema } from './events.ts';
+import type { ProductId } from './ids.ts';
+import { emptyState, reduce } from './state.ts';
 import {
   GIT_REMOTE_URL_ERROR,
   GIT_REMOTE_URL_MAX_LENGTH,
@@ -70,19 +74,58 @@ describe('validateGitRemoteUrl', () => {
   });
 });
 
-describe('GitRemoteSchema', () => {
+describe('ProductSettingsUpdateRequestSchema gitRemote (owner input)', () => {
   it('accepts the existing fixtures', () => {
-    expect(GitRemoteSchema.parse({ url: 'git@example.com:me/a.git' })).toEqual({
-      url: 'git@example.com:me/a.git',
-    });
-    expect(GitRemoteSchema.safeParse({ url: 'https://example.com/r.git' }).success).toBe(true);
+    for (const url of ['git@example.com:me/a.git', 'https://example.com/r.git']) {
+      expect(ProductSettingsUpdateRequestSchema.parse({ gitRemote: { url } })).toEqual({
+        gitRemote: { url },
+      });
+    }
   });
 
-  it('reports a rejected URL on the url field with the clear message', () => {
-    const r = GitRemoteSchema.safeParse({ url: 'https://user:pw@example.com/r.git' });
+  it('reports a rejected URL on gitRemote.url with the clear message', () => {
+    const r = ProductSettingsUpdateRequestSchema.safeParse({
+      gitRemote: { url: 'https://user:pw@example.com/r.git' },
+    });
     expect(r.success).toBe(false);
     expect(r.error?.issues).toEqual([
-      expect.objectContaining({ path: ['url'], message: GIT_REMOTE_URL_ERROR }),
+      expect.objectContaining({ path: ['gitRemote', 'url'], message: GIT_REMOTE_URL_ERROR }),
     ]);
+  });
+});
+
+describe('stored git remotes written before the URL rule', () => {
+  const legacy = ['http://example.com/r.git', 'https://user:token@example.com/r.git'];
+
+  it.each(legacy)('still parse in a product.settings_changed event and reduce: %s', (url) => {
+    const created = EventSchema.parse({
+      seq: 1,
+      ts: 1,
+      type: 'product.created',
+      productId: 'p1',
+      entityId: null,
+      v: 1,
+      data: {
+        name: 'Todo',
+        idea: 'x',
+        budgetUsd: null,
+        maxParallel: 3,
+        maxAttempts: 3,
+        models: {},
+        gitRemote: { url },
+      },
+    });
+    const changed = EventSchema.parse({
+      seq: 2,
+      ts: 2,
+      type: 'product.settings_changed',
+      productId: 'p1',
+      entityId: null,
+      v: 1,
+      data: { gitRemote: { url } },
+    });
+    const state = [created, changed].reduce(reduce, emptyState);
+    expect(state.products['p1' as ProductId]?.settings.gitRemote).toEqual({ url });
+    expect(GitRemoteSchema.parse({ url })).toEqual({ url });
   });
 });
