@@ -582,3 +582,116 @@ describe('scheduler: clearing backend limits', () => {
     expect(t.attempts()).toHaveLength(0);
   });
 });
+
+describe('scheduler: tick robustness', () => {
+  /** A store whose snapshot()/eventsSince() calls are counted and can be made to fail. */
+  function instrumented() {
+    const db = open(':memory:');
+    const clock = new FakeClock();
+    const subscriberErrors: unknown[] = [];
+    const inner = createStore({
+      db,
+      clock,
+      redactor: new Redactor(),
+      onSubscriberError: (err) => subscriberErrors.push(err),
+    });
+    const spy = { snapshots: 0, failNext: 0, cursors: [] as number[] };
+    const store: Store = {
+      ...inner,
+      snapshot() {
+        spy.snapshots += 1;
+        if (spy.failNext > 0) {
+          spy.failNext -= 1;
+          throw new Error('disk I/O error');
+        }
+        return inner.snapshot();
+      },
+      eventsSince(seq, limit) {
+        spy.cursors.push(seq);
+        return inner.eventsSince(seq, limit);
+      },
+    };
+    const ids = new FakeIdGen();
+    const fake = fakeRunners();
+    const timer = new FakeTimer();
+    const tickErrors: unknown[] = [];
+    const scheduler = createScheduler({
+      store,
+      clock,
+      runners: fake.runners,
+      ids,
+      timer,
+      isBackendBlocked: () => false,
+      onTickError: (err) => tickErrors.push(err),
+    });
+    function plan(ops: PlanResult['issueOps'], productId = P): Record<string, IssueId> {
+      const r = applyPlan(
+        { store: inner, ids },
+        productId,
+        { issueOps: ops, questions: [], summary: 's' },
+        inner.snapshot().lastSeq,
+      );
+      if (!r.ok) throw new Error(r.reason);
+      return r.createdIds;
+    }
+    return { inner, store, spy, scheduler, timer, plan, tickErrors, subscriberErrors, ...fake };
+  }
+
+  it('one committed batch of N events triggers at most 2 ticks, not N', () => {
+    const t = instrumented();
+    createProduct(t.inner, P, { maxParallel: 1 });
+    t.plan([]);
+    t.scheduler.start();
+    t.spy.snapshots = 0;
+    const before = t.inner.snapshot().lastSeq;
+    t.plan(['a', 'b', 'c', 'd', 'e', 'f'].map((k) => create(k)));
+    const committed = t.inner.snapshot().lastSeq - before;
+    expect(committed).toBeGreaterThanOrEqual(6);
+    expect(t.spy.snapshots).toBeLessThanOrEqual(2);
+    expect(t.attempts()).toHaveLength(1);
+  });
+
+  it('a paused product with an older cursor does not lower the eventsSince cursor', () => {
+    const t = instrumented();
+    createProduct(t.inner, P2);
+    t.inner.commit(() => [draft('product.paused', P2, null, { reason: 'owner' })]);
+    createProduct(t.inner, P);
+    t.plan([], P);
+    t.inner.commit(() => [
+      draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null }),
+    ]);
+    const cursor = t.inner.q.product(P)?.orchestratorCursor ?? -1;
+    expect(t.inner.q.product(P2)?.orchestratorCursor).toBeLessThan(cursor);
+
+    t.scheduler.start();
+    expect(t.spy.cursors.length).toBeGreaterThan(0);
+    expect(Math.min(...t.spy.cursors)).toBe(cursor);
+    const o = nth(t.orchestrators(), 0);
+    if (o.kind !== 'orchestrator') throw new Error('expected orchestrator');
+    expect(o.productId).toBe(P);
+    expect(o.triggers.map((e) => e.type)).toEqual(['prd.applied']);
+  });
+
+  it('a failing snapshot neither throws from commit() nor from the interval; the next tick runs', () => {
+    const t = instrumented();
+    createProduct(t.inner, P);
+    t.plan([]);
+    t.scheduler.start();
+
+    t.spy.failNext = 1;
+    expect(() =>
+      t.inner.commit(() => [draft('product.paused', P, null, { reason: 'owner' })]),
+    ).not.toThrow();
+    expect(t.subscriberErrors).toEqual([]);
+    expect(t.tickErrors).toHaveLength(1);
+
+    t.spy.failNext = 1;
+    expect(() => t.timer.fire()).not.toThrow();
+    expect(t.tickErrors).toHaveLength(2);
+
+    t.inner.commit(() => [draft('product.resumed', P, null, {})]);
+    t.plan([create('a')]);
+    expect(t.attempts()).toHaveLength(1);
+    expect(t.tickErrors).toHaveLength(2);
+  });
+});
