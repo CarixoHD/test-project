@@ -28,12 +28,15 @@ import { Redactor } from '../../src/server/security/index.ts';
 import { createStore, type Store } from '../../src/server/store/index.ts';
 import { systemClock } from '../../src/server/util/clock.ts';
 import { createIdGen, type IdGen } from '../../src/server/util/id-gen.ts';
+import { expectFailsClosed, probeIccOff } from './icc-probe.ts';
 import { EGRESS_PROBE, NO_IFACE_CHECK } from './net-probes.ts';
 
 const uid = process.getuid?.() ?? 1000;
 const gid = process.getgid?.() ?? 1000;
 const PREVIEW_PORT = 3000;
 const PREVIEW_BODY = 'hello from a vibecode preview';
+/** Whether this daemon can create the ICC-off egress network (needs br_netfilter); see icc-probe. */
+const ICC_OFF = await probeIccOff();
 
 /**
  * The project's check (argv, run with network none). It fails unless the container has no
@@ -228,86 +231,143 @@ async function checkLog(issueId: IssueId): Promise<string> {
 }
 
 describe('pipeline against a real Docker daemon', () => {
-  it(
-    'commits work done in containers, checks it with network none and merges it to main',
-    async () => {
-      const probe = newIssue('Probe the sandbox');
-      await attempt(probe);
-      const web = newIssue('Hello page');
-      await attempt(web);
+  // These two need the networks (agents run on egress, previews on preview; ensureNetworks
+  // creates both). On a daemon that cannot create the ICC-off egress network (no
+  // br_netfilter) the same slots prove the pipeline fails closed instead (icc-probe.ts).
+  if (ICC_OFF.ok) {
+    it(
+      'commits work done in containers, checks it with network none and merges it to main',
+      async () => {
+        const probe = newIssue('Probe the sandbox');
+        await attempt(probe);
+        const web = newIssue('Hello page');
+        await attempt(web);
 
-      for (const id of [probe, web]) {
-        const issue = store.q.issue(id);
-        const ended = store.q.attemptsByIssue(id).at(-1);
-        const outcome = { status: ended?.status, feedback: ended?.feedback };
-        expect(outcome, `attempt for ${issue?.title ?? id}`).toEqual({
-          status: 'merged',
-          feedback: null,
+        for (const id of [probe, web]) {
+          const issue = store.q.issue(id);
+          const ended = store.q.attemptsByIssue(id).at(-1);
+          const outcome = { status: ended?.status, feedback: ended?.feedback };
+          expect(outcome, `attempt for ${issue?.title ?? id}`).toEqual({
+            status: 'merged',
+            feedback: null,
+          });
+          expect(issue?.status).toBe('completed');
+        }
+
+        // Commit-in-container: the file was written by a shell in the implementer's container
+        // (Docker marker present, /workspace cwd, no socket, .git masked) and merged to main.
+        expect(await git.readFileAtMain(P, 'probe.txt')).toBe(EXPECTED_PROBE);
+        expect(await git.readFileAtMain(P, 'server.js')).toBe(SERVER_JS);
+        expect(store.q.issue(web)?.mergeSha).toBe(await git.mainSha(P));
+        expect(store.q.issue(probe)?.mergedOrder).toBe(1);
+        expect(store.q.issue(web)?.mergedOrder).toBe(2);
+
+        // The check ran with network none: only loopback, outbound failed, no socket, .git masked.
+        // The interface check is the evidence that holds even on a host without internet.
+        for (const id of [probe, web]) {
+          const log = await checkLog(id);
+          expect(log).toContain('check:no-iface');
+          expect(log).not.toContain('check:iface-OPEN');
+          expect(log).toContain('check:egress-blocked');
+          expect(log).not.toContain('check:egress-OPEN');
+          expect(log).toContain('check:no-docker-sock');
+          expect(log).toContain('check:git-masked');
+        }
+
+        // Every attempt container was removed again.
+        const left = await scoped(rt, P).listManaged();
+        expect(left).toEqual([]);
+      },
+      15 * 60_000,
+    );
+
+    it(
+      'previews current main of the web product on 127.0.0.1 and removes it on stop',
+      async () => {
+        // Its own product, whose main already holds the web server: no other test's merge needed.
+        const W = await createProduct('dockerprev', 'Hello preview');
+        await git.commitFilesOnMain(W, { 'server.js': SERVER_JS }, 'Add hello web server');
+        expect(await git.readFileAtMain(W, 'server.js')).toBe(SERVER_JS);
+        const previews = createPreviews({
+          store,
+          ids,
+          clock: systemClock,
+          git,
+          runtime: rt,
+          redactor: new Redactor(),
+          dataDir,
         });
-        expect(issue?.status).toBe('completed');
-      }
+        try {
+          const started = await previews.startPreview(W);
+          if (!started.ok) throw new Error(`preview failed: ${started.reason}`);
+          expect(started.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+          const res = await fetch(started.url);
+          expect(await res.text()).toBe(PREVIEW_BODY);
+          const running = await scoped(rt, W).listManaged();
+          expect(running.map((c) => c.labels['vibecode.role'])).toEqual(['preview']);
 
-      // Commit-in-container: the file was written by a shell in the implementer's container
-      // (Docker marker present, /workspace cwd, no socket, .git masked) and merged to main.
-      expect(await git.readFileAtMain(P, 'probe.txt')).toBe(EXPECTED_PROBE);
-      expect(await git.readFileAtMain(P, 'server.js')).toBe(SERVER_JS);
-      expect(store.q.issue(web)?.mergeSha).toBe(await git.mainSha(P));
-      expect(store.q.issue(probe)?.mergedOrder).toBe(1);
-      expect(store.q.issue(web)?.mergedOrder).toBe(2);
+          const stopped = await previews.stopPreview(W);
+          expect(stopped).toEqual({ ok: true });
+          expect(await scoped(rt, W).listManaged()).toEqual([]);
+        } finally {
+          await previews.stopAll();
+        }
+      },
+      15 * 60_000,
+    );
+  } else {
+    it(
+      'fails an attempt closed with the actionable br_netfilter error (host cannot turn ICC off)',
+      async (ctx) => {
+        await expectFailsClosed(rt);
+        // The owner sees it as the attempt's infrastructure error, like Docker not running (#96).
+        const issue = newIssue('Probe the sandbox');
+        await attempt(issue);
+        const ended = store.q.attemptsByIssue(issue).at(-1);
+        expect(ended?.status).toBe('error');
+        expect(ended?.feedback).toContain("Docker can't turn off inter-container traffic");
+        expect(ended?.feedback).toContain('sudo modprobe br_netfilter');
+        expect(store.q.issue(issue)?.status).toBe('open');
+        expect(await scoped(rt, P).listManaged()).toEqual([]);
+        await ctx.annotate(
+          'host cannot create an ICC-off bridge: "commits work done in containers, checks it with ' +
+            'network none and merges it to main" is replaced by this fail-closed assertion',
+        );
+      },
+      15 * 60_000,
+    );
 
-      // The check ran with network none: only loopback, outbound failed, no socket, .git masked.
-      // The interface check is the evidence that holds even on a host without internet.
-      for (const id of [probe, web]) {
-        const log = await checkLog(id);
-        expect(log).toContain('check:no-iface');
-        expect(log).not.toContain('check:iface-OPEN');
-        expect(log).toContain('check:egress-blocked');
-        expect(log).not.toContain('check:egress-OPEN');
-        expect(log).toContain('check:no-docker-sock');
-        expect(log).toContain('check:git-masked');
-      }
-
-      // Every attempt container was removed again.
-      const left = await scoped(rt, P).listManaged();
-      expect(left).toEqual([]);
-    },
-    15 * 60_000,
-  );
-
-  it(
-    'previews current main of the web product on 127.0.0.1 and removes it on stop',
-    async () => {
-      // Its own product, whose main already holds the web server: no other test's merge needed.
-      const W = await createProduct('dockerprev', 'Hello preview');
-      await git.commitFilesOnMain(W, { 'server.js': SERVER_JS }, 'Add hello web server');
-      expect(await git.readFileAtMain(W, 'server.js')).toBe(SERVER_JS);
-      const previews = createPreviews({
-        store,
-        ids,
-        clock: systemClock,
-        git,
-        runtime: rt,
-        redactor: new Redactor(),
-        dataDir,
-      });
-      try {
-        const started = await previews.startPreview(W);
-        if (!started.ok) throw new Error(`preview failed: ${started.reason}`);
-        expect(started.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
-        const res = await fetch(started.url);
-        expect(await res.text()).toBe(PREVIEW_BODY);
-        const running = await scoped(rt, W).listManaged();
-        expect(running.map((c) => c.labels['vibecode.role'])).toEqual(['preview']);
-
-        const stopped = await previews.stopPreview(W);
-        expect(stopped).toEqual({ ok: true });
-        expect(await scoped(rt, W).listManaged()).toEqual([]);
-      } finally {
-        await previews.stopAll();
-      }
-    },
-    15 * 60_000,
-  );
+    it(
+      'refuses a preview with the actionable br_netfilter error (host cannot turn ICC off)',
+      async (ctx) => {
+        await expectFailsClosed(rt);
+        const W = await createProduct('dockerprev', 'Hello preview');
+        await git.commitFilesOnMain(W, { 'server.js': SERVER_JS }, 'Add hello web server');
+        const previews = createPreviews({
+          store,
+          ids,
+          clock: systemClock,
+          git,
+          runtime: rt,
+          redactor: new Redactor(),
+          dataDir,
+        });
+        try {
+          const started = await previews.startPreview(W);
+          expect(started.ok).toBe(false);
+          expect(!started.ok && started.reason).toContain('sudo modprobe br_netfilter');
+          expect(await scoped(rt, W).listManaged()).toEqual([]);
+        } finally {
+          await previews.stopAll();
+        }
+        await ctx.annotate(
+          'host cannot create an ICC-off bridge: "previews current main of the web product on ' +
+            '127.0.0.1 and removes it on stop" is replaced by this fail-closed assertion',
+        );
+      },
+      15 * 60_000,
+    );
+  }
 
   it(
     'recovery removes orphan vibecode.managed containers',
