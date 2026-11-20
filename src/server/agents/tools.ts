@@ -1,7 +1,8 @@
 // Provider-agnostic agent tools (docs/ARCHITECTURE.md §4.6). Every tool runs through
 // `sandbox.exec`: file tools use the sandbox file-op protocol (with its path confinement), and `run`
 // executes inside the container only. Tools never throw: failures become tool-result text for the
-// model, and all output is truncated in the middle to TOOL_OUTPUT_LIMIT characters.
+// model, and all output is truncated in the middle to TOOL_OUTPUT_LIMIT characters. The caller's
+// AbortSignal reaches every exec, and output the sandbox cut short carries a TRUNCATION_NOTICE.
 import { z } from 'zod';
 import type { Role } from '../../shared/models.ts';
 import { redactor } from '../security/index.ts';
@@ -22,12 +23,20 @@ const FILE_OP_TIMEOUT_MS = 30_000;
 const RUN_DEFAULT_TIMEOUT_MS = 120_000;
 const RUN_MAX_TIMEOUT_MS = 1_800_000;
 
+/** Appended to the tool result when the sandbox reported `truncated` output for any exec. */
+const TRUNCATION_NOTICE = '\n[output truncated by sandbox]';
+
+export type ToolContext = {
+  /** Aborts the tool's sandbox execs; an aborted `run` returns promptly with an aborted result. */
+  signal?: AbortSignal | undefined;
+};
+
 export type AgentTool = {
   readonly name: ToolName;
   readonly description: string;
   readonly inputSchema: z.ZodType;
   /** Validates `input`, runs the tool and returns result text. Never rejects. */
-  execute(input: unknown, sandbox: Sandbox): Promise<string>;
+  execute(input: unknown, sandbox: Sandbox, ctx?: ToolContext): Promise<string>;
 };
 
 /** Thrown inside a tool body to end it with an error result for the model. */
@@ -43,18 +52,31 @@ function defineTool<S extends z.ZodType>(def: {
     name: def.name,
     description: def.description,
     inputSchema: def.inputSchema,
-    async execute(input, sandbox) {
+    async execute(input, sandbox, ctx = {}) {
       const parsed = def.inputSchema.safeParse(input);
       if (!parsed.success) {
         return truncateMiddle(`Error: invalid input: ${z.prettifyError(parsed.error)}`);
       }
+      let truncated = false;
+      const scoped: Sandbox = {
+        name: sandbox.name,
+        close: () => sandbox.close(),
+        exec: async (argv, o) => {
+          const r = await sandbox.exec(argv, { ...o, signal: ctx.signal });
+          if (r.truncated) truncated = true;
+          return r;
+        },
+      };
+      let text: string;
       try {
-        return truncateMiddle(await def.run(parsed.data, sandbox));
+        text = await def.run(parsed.data, scoped);
       } catch (err) {
         // Handled: the failure is reported to the model as the tool result; the run continues.
         const message = err instanceof Error ? err.message : String(err);
-        return truncateMiddle(`Error: ${redactor.redact(message)}`);
+        text = `Error: ${redactor.redact(message)}`;
       }
+      if (!truncated) return truncateMiddle(text);
+      return truncateMiddle(text, TOOL_OUTPUT_LIMIT - TRUNCATION_NOTICE.length) + TRUNCATION_NOTICE;
     },
   };
 }
@@ -78,6 +100,7 @@ async function fileOp(sandbox: Sandbox, op: FileOp, stdin?: string): Promise<Exe
 
 function failure(r: ExecResult): ToolError {
   if (r.timedOut) return new ToolError('timed out');
+  if (r.aborted) return new ToolError('aborted');
   const detail = r.stderr.trim() || r.stdout.trim() || `exit code ${String(r.code)}`;
   return new ToolError(detail);
 }
