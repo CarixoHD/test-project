@@ -1,8 +1,20 @@
 import { Redactor } from './redact.ts';
 
 export { Redactor, LAST4_MIN_LENGTH, MIN_SECRET_LENGTH, REDACTED } from './redact.ts';
-export { createSecrets, type SecretInfo, type Secrets, type SecretsDeps } from './secrets.ts';
-export { hashPassword, verifyPassword } from './password.ts';
+export {
+  createSecrets,
+  gitTokenSecret,
+  type SecretInfo,
+  type Secrets,
+  type SecretsDeps,
+} from './secrets.ts';
+export {
+  createPasswordHasher,
+  hashPassword,
+  productionPasswordHasher,
+  verifyPassword,
+  type PasswordHasher,
+} from './password.ts';
 export {
   createSessions,
   newSessionKey,

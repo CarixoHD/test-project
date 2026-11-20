@@ -4,14 +4,13 @@ import type { Clock } from '../../shared/ids.ts';
 import {
   createRateLimiter,
   createSessions,
-  hashPassword,
   newSessionKey,
+  productionPasswordHasher,
   SESSION_KEY_SECRET,
-  verifyPassword,
+  type PasswordHasher,
   type Secrets,
   type Sessions,
 } from '../security/index.ts';
-import type { PasswordHasher } from '../security/password.ts';
 import { writeSetting, type Store } from '../store/index.ts';
 
 // Owner access (ADR 9, ARCHITECTURE §4.10): the scrypt password hash in `settings`
@@ -53,13 +52,11 @@ export interface AccessDeps {
   passwords?: PasswordHasher;
 }
 
-const PRODUCTION_PASSWORDS: PasswordHasher = { hash: hashPassword, verify: verifyPassword };
-
 export function createAccess({
   store,
   secrets,
   clock,
-  passwords = PRODUCTION_PASSWORDS,
+  passwords = productionPasswordHasher,
 }: AccessDeps): Access {
   const limiter = createRateLimiter({ ...LOGIN_RATE_LIMIT, clock });
   const storedHash = (): string | undefined => {

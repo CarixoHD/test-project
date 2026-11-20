@@ -38,3 +38,10 @@ export {
   type AttemptDeps,
 } from './attempt.ts';
 export { implementerPrompt, reviewerPrompt, tailLines } from './attempt-prompt.ts';
+export {
+  INVALID_REMOTE_TITLE,
+  PUSH_FAILED_TITLE,
+  startRemotePusher,
+  type RemotePusher,
+  type RemotePusherDeps,
+} from './remote-push.ts';

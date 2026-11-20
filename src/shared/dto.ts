@@ -75,6 +75,17 @@ export type EditIssueResponse = z.infer<typeof EditIssueResponseSchema>;
 export const OkResponseSchema = z.object({ ok: z.literal(true) });
 export type OkResponse = z.infer<typeof OkResponseSchema>;
 
+/**
+ * `GET /api/backends/claude-code/login`: the one-time Claude Code setup as host shell commands
+ * (ADR 4), built by the server for its uid:gid and the current `vibecode/claude-code:<hash>`.
+ */
+export const ClaudeLoginResponseSchema = z.object({
+  build: z.string().min(1),
+  volume: z.string().min(1),
+  login: z.string().min(1),
+});
+export type ClaudeLoginResponse = z.infer<typeof ClaudeLoginResponseSchema>;
+
 /** `POST /api/products/:id/preview`: the running preview's URL (127.0.0.1). */
 export const StartPreviewResponseSchema = z.object({ url: z.url() });
 export type StartPreviewResponse = z.infer<typeof StartPreviewResponseSchema>;
@@ -125,6 +136,25 @@ const ApiKeySchema = z
   .min(API_KEY_MIN_LENGTH)
   .max(4096)
   .regex(/^\S+$/, 'An API key must not contain whitespace');
+
+/** `PUT /api/products/:id/git-token`: the git remote's access token (write-only); null removes it. */
+export const GitTokenUpdateRequestSchema = z.strictObject({
+  token: z
+    .string()
+    .min(API_KEY_MIN_LENGTH, `A token must be at least ${API_KEY_MIN_LENGTH} characters`)
+    .max(4096, 'A token must be at most 4096 characters')
+    .regex(/^\S+$/, 'A token must not contain whitespace')
+    .nullable(),
+});
+export type GitTokenUpdateRequest = z.infer<typeof GitTokenUpdateRequestSchema>;
+
+/** `GET|PUT /api/products/:id/git-token`: never the token, at most its last 4 characters. */
+export const GitTokenViewSchema = z.strictObject({
+  set: z.boolean(),
+  /** null when no token is set or it is too short to show any of it. */
+  last4: z.string().length(4).nullable(),
+});
+export type GitTokenView = z.infer<typeof GitTokenViewSchema>;
 
 /** `PUT /api/settings`: every section optional; keys are set (string) or cleared (null). */
 export const SettingsUpdateRequestSchema = z

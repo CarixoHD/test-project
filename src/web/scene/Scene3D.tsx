@@ -1,5 +1,5 @@
-import { ContactShadows } from '@react-three/drei';
-import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber';
+import { ContactShadows, Html } from '@react-three/drei';
+import { Canvas, useFrame, useLoader, useThree, type ThreeEvent } from '@react-three/fiber';
 import {
   Component,
   Suspense,
@@ -22,6 +22,7 @@ import {
   type Group,
 } from 'three';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import type { AgentId } from '../../shared/ids.ts';
 import type { Figure, PieceType, ScenePiece, SceneState } from '../../shared/scene.ts';
 import {
   BENCH_POS,
@@ -31,6 +32,7 @@ import {
   PIECE_TYPES,
   piecesByType,
   SITE_GATE,
+  workerName,
   workerPlacements,
   type Frameloop,
   type Scene3DProps,
@@ -91,7 +93,7 @@ function webglAvailable(): boolean {
   return typeof ResizeObserver !== 'undefined' && typeof WebGL2RenderingContext !== 'undefined';
 }
 
-export default function Scene3D({ scene, frameloop, reducedMotion }: Scene3DProps) {
+export default function Scene3D({ scene, frameloop, reducedMotion, onPickWorker }: Scene3DProps) {
   if (!webglAvailable()) {
     return <p className="scene-panel__loading">This browser cannot show the 3D view.</p>;
   }
@@ -114,8 +116,17 @@ export default function Scene3D({ scene, frameloop, reducedMotion }: Scene3DProp
       </WithModels>
       <DebrisPiles scene={scene} />
       <SiteProps />
-      <WithModels fallback={<Workers scene={scene} animate={animate} modelFor={primitiveFigure} />}>
-        <ModelWorkers scene={scene} animate={animate} />
+      <WithModels
+        fallback={
+          <Workers
+            scene={scene}
+            animate={animate}
+            modelFor={primitiveFigure}
+            onPick={onPickWorker}
+          />
+        }
+      >
+        <ModelWorkers scene={scene} animate={animate} onPick={onPickWorker} />
       </WithModels>
       <ContactShadows
         position={[0, 0.005, 0]}
@@ -424,12 +435,22 @@ interface ShownWorker {
 }
 
 type ModelFor = (figure: Figure) => FigureModel;
+/** Opens the agent's panel; picking is the only interaction the scene has (no agent control). */
+type OnPick = ((agentId: AgentId) => void) | undefined;
 
 const FIGURES = Object.keys(CHARACTER_URLS) as Figure[];
 const FIGURE_URLS = FIGURES.map((f) => CHARACTER_URLS[f]);
 
 /** Workers drawn as Kenney Mini Characters, one model per role. Suspends while loading. */
-function ModelWorkers({ scene, animate }: { scene: SceneState; animate: boolean }) {
+function ModelWorkers({
+  scene,
+  animate,
+  onPick,
+}: {
+  scene: SceneState;
+  animate: boolean;
+  onPick: OnPick;
+}) {
   const gltfs = useLoader(CHARACTER_LOADER, FIGURE_URLS);
   const modelFor = useMemo<ModelFor>(() => {
     const byFigure = new Map<Figure, FigureModel>();
@@ -439,7 +460,7 @@ function ModelWorkers({ scene, animate }: { scene: SceneState; animate: boolean 
     });
     return (f) => byFigure.get(f) ?? primitiveFigure(f);
   }, [gltfs]);
-  return <Workers scene={scene} animate={animate} modelFor={modelFor} />;
+  return <Workers scene={scene} animate={animate} modelFor={modelFor} onPick={onPick} />;
 }
 
 /** Departed workers walk back to the gate before they disappear (immediately with reduced motion). */
@@ -447,10 +468,12 @@ function Workers({
   scene,
   animate,
   modelFor,
+  onPick,
 }: {
   scene: SceneState;
   animate: boolean;
   modelFor: ModelFor;
+  onPick: OnPick;
 }) {
   const placements = useMemo(() => workerPlacements(scene), [scene]);
   const [prev, setPrev] = useState(placements);
@@ -480,6 +503,7 @@ function Workers({
           placement={placement}
           leaving={isLeaving}
           animate={animate}
+          onPick={onPick}
         />
       ))}
     </>
@@ -499,11 +523,13 @@ function WorkerFigure({
   placement,
   leaving,
   animate,
+  onPick,
 }: {
   model: FigureModel;
   placement: WorkerPlacement;
   leaving: boolean;
   animate: boolean;
+  onPick: OnPick;
 }) {
   const rig = useMemo(() => cloneSkinned(model.object), [model]);
   const mixer = useMemo(() => new AnimationMixer(rig), [rig]);
@@ -512,6 +538,9 @@ function WorkerFigure({
   const invalidate = useThree((s) => s.invalidate);
   const target = leaving ? SITE_GATE : placement.target;
   const facing = placement.facing;
+  const hover = usePickable(
+    onPick === undefined ? undefined : () => onPick(placement.worker.agentId),
+  );
 
   useLayoutEffect(() => {
     const g = root.current;
@@ -571,11 +600,48 @@ function WorkerFigure({
   });
 
   return (
-    <group ref={root}>
+    <group ref={root} {...hover.handlers}>
       <primitive object={rig} />
+      {hover.hovered && (
+        <Html position={[0, 1.9, 0]} center className="scene-panel__worker-label">
+          {workerName(placement.worker)}
+        </Html>
+      )}
       {placement.worker.bubble && !leaving && (
         <sprite material={questionBubbleMaterial()} position={[0, 1.45, 0]} scale={0.45} />
       )}
     </group>
   );
+}
+
+/**
+ * Click handling for a figure: a pointer cursor and `hovered` while the pointer is over it,
+ * and `pick` on click. Without `pick` the figure is not interactive.
+ */
+function usePickable(pick: (() => void) | undefined) {
+  const get = useThree((s) => s.get);
+  const [hovered, setHovered] = useState(false);
+  useEffect(() => {
+    if (!hovered) return;
+    const { style } = get().gl.domElement;
+    style.cursor = 'pointer';
+    return () => {
+      style.cursor = '';
+    };
+  }, [hovered, get]);
+  if (pick === undefined) return { hovered: false, handlers: {} };
+  return {
+    hovered,
+    handlers: {
+      onClick: (e: ThreeEvent<MouseEvent>) => {
+        e.stopPropagation();
+        pick();
+      },
+      onPointerOver: (e: ThreeEvent<PointerEvent>) => {
+        e.stopPropagation();
+        setHovered(true);
+      },
+      onPointerOut: () => setHovered(false),
+    },
+  };
 }

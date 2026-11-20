@@ -9,6 +9,8 @@ const SCENE_STATS_FLAG = 'vibecode.debug.sceneStats';
 const SCENE_COLLAPSED_KEY = 'vibecode.scene.collapsed';
 const DRAW_CALL_BUDGET = 60;
 const PIPELINE_TIMEOUT_MS = 120_000;
+/** rAF ticks the collapsed view must stay still for: a running render loop draws on each one. */
+const IDLE_FRAMES = 30;
 
 /** Shape of the probe in src/web/scene/Scene3D.tsx (StatsProbe). */
 interface SceneStats {
@@ -35,6 +37,22 @@ declare global {
 const readStats = (page: Page): Promise<SceneStats | null> =>
   page.evaluate(() =>
     window.__vibecodeScene === undefined ? null : { ...window.__vibecodeScene },
+  );
+
+/** Resolves after the page has run `count` requestAnimationFrame callbacks in a row. */
+const animationFrames = (page: Page, count: number): Promise<void> =>
+  page.evaluate(
+    (n) =>
+      new Promise<void>((resolve) => {
+        let left = n;
+        const tick = (): void => {
+          left -= 1;
+          if (left <= 0) resolve();
+          else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }),
+    count,
   );
 
 /** Frames drawn so far (0 before the first frame). */
@@ -109,7 +127,8 @@ test('the 3D view renders under the draw-call budget and stops when collapsed', 
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(canvas).toBeHidden();
   const collapsedAt = await frames(page);
-  await page.waitForTimeout(1_000);
+  // Proving frames stopped needs time to pass: wait for the page's own rAF ticks, not a clock.
+  await animationFrames(page, IDLE_FRAMES);
   expect(await frames(page)).toBe(collapsedAt);
 
   // Expanding again resumes rendering on the same, still-mounted canvas.

@@ -1,4 +1,9 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { ClaudeLoginResponseSchema } from '../../../shared/dto.ts';
+import { FakeContainerRuntime } from '../../sandbox/index.ts';
 import { expectSnapshotMatchesReplay } from '../../store/testing.ts';
 import { createApp } from '../app.ts';
 import { setupStore } from '../testing.ts';
@@ -27,7 +32,7 @@ function setup() {
       },
     ]);
   const types = () => base.store.eventsSince(0).map((e) => e.type);
-  return { ...base, clear, limited, types };
+  return { ...base, app, clear, limited, types };
 }
 
 describe('POST /api/backends/:backend/clear', () => {
@@ -59,5 +64,43 @@ describe('POST /api/backends/:backend/clear', () => {
     const res = await h.clear('not-a-backend');
     expect(res.status).toBe(400);
     expect(h.types()).not.toContain('backend.cleared');
+  });
+});
+
+describe('GET /api/backends/claude-code/login', () => {
+  it("answers the runtime's login commands: host uid:gid and the current Claude image", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'vibecode-login-'));
+    try {
+      const base = setupStore();
+      const runtime = new FakeContainerRuntime({ dataDir, uid: 1501, gid: 20 });
+      const app = createApp({
+        store: base.store,
+        ids: base.ids,
+        git: base.git,
+        redactor: base.redactor,
+        claudeLogin: runtime,
+      });
+
+      const res = await app.request('/api/backends/claude-code/login');
+
+      expect(res.status).toBe(200);
+      const body = ClaudeLoginResponseSchema.parse(await res.json());
+      const image = await runtime.ensureImage({
+        productId: 'p1',
+        contextDir: dataDir,
+        claude: true,
+      });
+      expect(body).toEqual(await runtime.claudeLoginCommands());
+      expect(body.login).toContain('--user 1501:20 ');
+      expect(body.login).toContain(` ${image} claude auth login`);
+      expect(body.volume).toBe('docker volume create vibecode-claude-config');
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('is absent without a runtime', async () => {
+    const h = setup();
+    expect((await h.app.request('/api/backends/claude-code/login')).status).toBe(404);
   });
 });
