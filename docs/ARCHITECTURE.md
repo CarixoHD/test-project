@@ -183,7 +183,7 @@ interface Store {
 ```ts
 interface Tx { q: Queries; db: Db }   // db: same connection, inside the transaction; write only tables without events (settings, secrets)
 interface Queries { product(id); issuesByProduct(productId) /* by number */; issue(id); attemptsByIssue(issueId) /* by n */;
-                    attempt(id); productUsage(productId); issueUsage(issueId); inboxItem(id);
+                    attempt(id); productUsage(productId); issueUsage(issueId); inboxItem(id); agent(id) /* or null */;
                     sparMessages(productId) /* seq order */; prdDraft(productId) /* or null */;
                     setting(key) /* raw JSON or undefined; callers validate */ }   // ClientState shapes; usage zero when none
 type CommitHook = (committed: readonly Event[], tx: Tx) => EventDraft[];  // derived drafts, same transaction

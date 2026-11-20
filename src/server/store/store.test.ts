@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Event, EventDraft } from '../../shared/events.ts';
-import { ProductIdSchema } from '../../shared/ids.ts';
+import { AgentIdSchema, ProductIdSchema } from '../../shared/ids.ts';
 import { open, schema } from '../db/index.ts';
 import { Redactor } from '../security/index.ts';
 import { FakeClock } from '../util/clock.ts';
@@ -240,5 +240,35 @@ describe('store.q.sparMessages / prdDraft', () => {
       ['m-1', 'second'],
     ]);
     expect(store.q.prdDraft(P)).toMatchObject({ markdown: '# D', baseVersion: 0 });
+  });
+});
+
+describe('store.q.agent', () => {
+  it('returns the projected agent, or null when unknown', () => {
+    const { store } = setup();
+    store.commit(() => [productCreated()]);
+    expect(store.q.agent(AgentIdSchema.parse('a-1'))).toBeNull();
+
+    store.commit(() => [
+      {
+        type: 'agent.spawned',
+        productId: P,
+        entityId: 'a-1',
+        v: 1,
+        data: {
+          role: 'implementer',
+          model: { provider: 'fake', model: 'fake' },
+          issueId: null,
+          attemptId: null,
+        },
+      },
+    ]);
+
+    expect(store.q.agent(AgentIdSchema.parse('a-1'))).toMatchObject({
+      id: 'a-1',
+      role: 'implementer',
+      state: 'working',
+      endedAt: null,
+    });
   });
 });
