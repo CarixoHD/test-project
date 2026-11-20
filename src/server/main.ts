@@ -9,6 +9,7 @@ import { inboxHook } from './notify/index.ts';
 import { createScheduler, type Runners } from './scheduler/index.ts';
 import {
   budgetAfterUsage,
+  createAccess,
   createAccountSettings,
   createSparring,
   type SparTurnRunner,
@@ -23,7 +24,7 @@ import {
 } from './pipeline/index.ts';
 import { recover } from './recovery/index.ts';
 import { createPreviews, selectRuntime } from './sandbox/index.ts';
-import { createSecrets, redactor } from './security/index.ts';
+import { assertBindAllowed, createSecrets, redactor } from './security/index.ts';
 import { createStore, type Store } from './store/index.ts';
 import { systemClock, type Clock } from './util/clock.ts';
 import { createIdGen } from './util/id-gen.ts';
@@ -71,6 +72,14 @@ export async function start(
   const ids = createIdGen(clock);
   // inboxHook turns owner-relevant events into inbox.created in the same commit (§4.2).
   const store = createStore({ db, clock, redactor, hooks: [inboxHook({ ids })] });
+  // Owner password and sessions (ADR 9). Without a password only loopback may be bound.
+  const access = createAccess({ store, secrets, clock });
+  try {
+    assertBindAllowed(config.host, access.hasPassword());
+  } catch (err) {
+    db.$client.close();
+    throw err;
+  }
   const git = createGit({ dataDir: config.dataDir });
   // settings.modelDeps() is what agent runs pass to the LLM registry (keys read at call time).
   const settings = createAccountSettings({ store, db, secrets });
@@ -149,6 +158,7 @@ export async function start(
     git,
     redactor,
     webRoot,
+    access,
     settings,
     sparring,
     previews,

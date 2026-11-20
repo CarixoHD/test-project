@@ -217,7 +217,10 @@ describe('budget and settings changes', () => {
 
 describe('resume while the budget is exhausted', () => {
   const post = (app: ReturnType<typeof setup>['app'], action: string) =>
-    app.request(`/api/products/${TEST_PRODUCT}/${action}`, { method: 'POST' });
+    app.request(`/api/products/${TEST_PRODUCT}/${action}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
   const patch = (app: ReturnType<typeof setup>['app'], body: object) =>
     app.request(`/api/products/${TEST_PRODUCT}/settings`, {
       method: 'PATCH',

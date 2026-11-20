@@ -28,6 +28,15 @@ export {
   type IssueCommandFailure,
 } from './issues.ts';
 export {
+  createAccess,
+  PASSWORD_HASH_SETTING,
+  type Access,
+  type AccessDeps,
+  LOGIN_RATE_LIMIT,
+  type LoginResult,
+  type PasswordChangeResult,
+} from './access.ts';
+export {
   createAccountSettings,
   readModelDefaults,
   readPriceOverrides,

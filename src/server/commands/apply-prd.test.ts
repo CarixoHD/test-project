@@ -60,7 +60,10 @@ function saveDraft(deps: ApplyPrdDeps, productId: ProductId, markdown: string): 
 }
 
 const postApply = (h: Harness, id: string = h.productId) =>
-  h.app.request(`/api/products/${id}/apply-prd`, { method: 'POST' });
+  h.app.request(`/api/products/${id}/apply-prd`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+  });
 
 describe('applyPrd', () => {
   it('commits docs/PRD.md and emits prd.applied for the next version in one store commit', async () => {

@@ -12,7 +12,10 @@ function setup() {
     redactor: base.redactor,
   });
   const clear = (backend: string) =>
-    app.request(`/api/backends/${backend}/clear`, { method: 'POST' });
+    app.request(`/api/backends/${backend}/clear`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
   const limited = (needsLogin: boolean) =>
     base.store.commit(() => [
       {

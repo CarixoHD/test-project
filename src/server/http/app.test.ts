@@ -92,12 +92,18 @@ describe('POST /api/inbox/:id/read', () => {
       },
     ]);
 
-    const res = await app.request('/api/inbox/inbox-1/read', { method: 'POST' });
+    const res = await app.request('/api/inbox/inbox-1/read', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     expect(store.snapshot().state.inbox[InboxIdSchema.parse('inbox-1')]?.read).toBe(true);
 
-    const missing = await app.request('/api/inbox/nope/read', { method: 'POST' });
+    const missing = await app.request('/api/inbox/nope/read', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
     expect(missing.status).toBe(404);
     expect(await missing.json()).toMatchObject({ error: { code: 'not_found' } });
   });

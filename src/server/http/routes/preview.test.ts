@@ -47,14 +47,20 @@ describe('POST|DELETE /api/products/:id/preview', () => {
   it('starts a preview that serves on 127.0.0.1, then stops it', async () => {
     const { app, store, runtime } = await setup(true);
 
-    const res = await app.request('/api/products/product-1/preview', { method: 'POST' });
+    const res = await app.request('/api/products/product-1/preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
     expect(res.status).toBe(200);
     const { url } = StartPreviewResponseSchema.parse(await res.json());
     expect(new URL(url).hostname).toBe('127.0.0.1');
     expect((await fetch(url)).status).toBe(200);
     expect(store.snapshot().state.previews[TEST_PRODUCT]?.url).toBe(url);
 
-    const del = await app.request('/api/products/product-1/preview', { method: 'DELETE' });
+    const del = await app.request('/api/products/product-1/preview', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+    });
     expect(del.status).toBe(200);
     expect(await del.json()).toEqual({ ok: true });
     expect(await runtime.listManaged()).toEqual([]);
@@ -64,12 +70,21 @@ describe('POST|DELETE /api/products/:id/preview', () => {
   it('answers 409 without a preview config, and 404 for an unknown product', async () => {
     const { app } = await setup(false);
 
-    const res = await app.request('/api/products/product-1/preview', { method: 'POST' });
+    const res = await app.request('/api/products/product-1/preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: { code: 'conflict' } });
-    const stop = await app.request('/api/products/product-1/preview', { method: 'DELETE' });
+    const stop = await app.request('/api/products/product-1/preview', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+    });
     expect(stop.status).toBe(409);
-    const missing = await app.request('/api/products/nope/preview', { method: 'POST' });
+    const missing = await app.request('/api/products/nope/preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
     expect(missing.status).toBe(404);
   });
 });

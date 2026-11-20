@@ -22,7 +22,10 @@ function setup() {
 }
 
 const post = (app: ReturnType<typeof setup>['app'], action: string, id: string = TEST_PRODUCT) =>
-  app.request(`/api/products/${id}/${action}`, { method: 'POST' });
+  app.request(`/api/products/${id}/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+  });
 
 const pauseEvents = (store: ReturnType<typeof setup>['store']) =>
   store.eventsSince(0).filter((e) => e.type === 'product.paused' || e.type === 'product.resumed');

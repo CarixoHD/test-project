@@ -44,6 +44,8 @@ export const SETTINGS_SECTIONS = [
   'roleDefaults',
   'defaultModel',
   'priceOverrides',
+  /** The owner password was set or changed (POST /api/settings/password, set-password CLI). */
+  'password',
 ] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 

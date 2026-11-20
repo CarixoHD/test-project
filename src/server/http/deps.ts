@@ -1,5 +1,6 @@
+import type { Context } from 'hono';
 import type { IdGen, ProductId } from '../../shared/ids.ts';
-import type { AccountSettings, Sparring } from '../commands/index.ts';
+import type { Access, AccountSettings, Sparring } from '../commands/index.ts';
 import type { Git } from '../git/index.ts';
 import type { Previews } from '../sandbox/index.ts';
 import type { Store } from '../store/index.ts';
@@ -10,6 +11,13 @@ export interface AppDeps {
   ids: IdGen;
   git: Git;
   redactor: { redact(text: string): string };
+  /**
+   * Owner password and sessions; login/session/password routes exist only when given. Without
+   * it the server behaves as with no password set (loopback Host only, JSON + Origin checks).
+   */
+  access?: Access | undefined;
+  /** Client identity for the login rate limit; defaults to the socket's remote address. */
+  clientKey?: ((c: Context) => string) | undefined;
   /** Account settings (GET|PUT /api/settings); those routes exist only when given. */
   settings?: AccountSettings | undefined;
   /** The scheduler's per-product merge lock; apply-prd commits docs/PRD.md under it. */
