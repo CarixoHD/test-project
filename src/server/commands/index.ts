@@ -44,3 +44,4 @@ export {
   type SparringCommandDeps,
   type SparTurnRunner,
 } from './spar.ts';
+export { handoff, PRD_PATH, type HandoffDeps, type HandoffResult } from './handoff.ts';
