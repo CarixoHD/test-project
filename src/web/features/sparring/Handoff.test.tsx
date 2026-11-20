@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,10 +6,17 @@ import { EventSchema, type Event } from '../../../shared/events.ts';
 import { emptyState, reduce, type ClientState } from '../../../shared/state.ts';
 import { App } from '../../App.tsx';
 import { routes } from '../../routes.tsx';
-import { createAppStore } from '../../state/store.ts';
+import { createAppStore, type AppStore } from '../../state/store.ts';
 
 // Handoff from the Spec tab, end to end in the browser: real store, router and API client;
 // only the network (fetch + EventSource) is faked at the global boundary.
+//
+// The Build tab stays mounted (hidden) beside the Spec tab, so its 3D view would lazily import
+// the real WebGL scene (three.js + R3F). In jsdom that import takes seconds and lands in the
+// middle of the first test's render and key presses, racing findBy's 1 s timeout and the 5 s
+// test timeout under full-suite load. These tests are about the Spec tab, so the scene module
+// is a stand-in.
+vi.mock('../../scene/Scene3D.tsx', () => ({ default: () => null }));
 
 class FakeEventSource {
   static readonly CLOSED = 2;
@@ -76,6 +83,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount (stopping the store and its stream) while the fake network is still in place.
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -93,9 +102,25 @@ async function renderSpec(history: (() => Event | Event[])[]) {
     }),
   );
   const router = createMemoryRouter(routes, { initialEntries: [`/products/${P}/spec`] });
-  render(<App store={createAppStore()} router={router} />);
-  await screen.findByRole('heading', { level: 1, name: 'Todo app' });
+  const store = createAppStore();
+  render(<App store={store} router={router} />);
+  // Wait on the store's start itself (snapshot loaded or failed), not on a polling timeout.
+  await act(() => settled(store));
+  screen.getByRole('heading', { level: 1, name: 'Todo app' });
   return { user: userEvent.setup() };
+}
+
+/** Resolves once the store has loaded its snapshot or given up with an error. */
+function settled(store: AppStore): Promise<void> {
+  const done = () => store.getSnapshot().loaded || store.getSnapshot().error !== null;
+  return new Promise((resolve) => {
+    if (done()) return resolve();
+    const unsubscribe = store.subscribe(() => {
+      if (!done()) return;
+      unsubscribe();
+      resolve();
+    });
+  });
 }
 
 function push(...events: Event[]): void {
