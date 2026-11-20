@@ -4,6 +4,8 @@ import {
   CreateProductResponseSchema,
   EditIssueResponseSchema,
   OkResponseSchema,
+  SettingsResponseSchema,
+  SettingsUpdateResponseSchema,
   StateResponseSchema,
   type AddIssueRequest,
   type AddIssueResponse,
@@ -13,6 +15,9 @@ import {
   type EditIssueResponse,
   type OkResponse,
   type ProductSettingsUpdateRequest,
+  type SettingsResponse,
+  type SettingsUpdateRequest,
+  type SettingsUpdateResponse,
   type StateResponse,
 } from '../../shared/dto.ts';
 
@@ -170,6 +175,45 @@ export function handoffProduct(productId: string, signal?: AbortSignal): Promise
   return request(`/api/products/${encodeURIComponent(productId)}/handoff`, {
     method: 'POST',
     schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Pauses the product's build; 409 when it is already paused. */
+export function pauseProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/pause`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Resumes the product's build; 409 when it is not paused or its budget is still exhausted. */
+export function resumeProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/resume`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Account-wide settings; API keys appear only as provider + last 4 characters. */
+export function getSettings(signal?: AbortSignal): Promise<SettingsResponse> {
+  return request('/api/settings', {
+    schema: SettingsResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Updates the given settings sections; answers with the settings after the update. */
+export function updateSettings(
+  body: SettingsUpdateRequest,
+  signal?: AbortSignal,
+): Promise<SettingsUpdateResponse> {
+  return request('/api/settings', {
+    method: 'PUT',
+    body,
+    schema: SettingsUpdateResponseSchema,
     ...(signal ? { signal } : {}),
   });
 }

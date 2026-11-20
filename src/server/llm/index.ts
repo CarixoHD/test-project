@@ -3,6 +3,7 @@ export {
   fakeModel,
   FakeScriptSchema,
   FakeTurnSchema,
+  type FakeCallPrompt,
   type FakeModelOptions,
   type FakeScript,
   type FakeTurn,

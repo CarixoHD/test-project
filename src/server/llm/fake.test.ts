@@ -245,3 +245,20 @@ describe('fakeModel', () => {
     expect(() => fakeModel([{ error: { status: 500 } }] as never)).toThrow();
   });
 });
+
+describe('fakeModel onCall', () => {
+  it('reports the prompt of every call, generate and stream', async () => {
+    const prompts: string[] = [];
+    const model = fakeModel([{ text: 'a' }, { text: 'b' }], {
+      onCall: (prompt) => prompts.push(JSON.stringify(prompt)),
+    });
+
+    await generateText({ model, system: 'be brief', prompt: 'first call' });
+    await streamText({ model, prompt: 'second call' }).text;
+
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain('be brief');
+    expect(prompts[0]).toContain('first call');
+    expect(prompts[1]).toContain('second call');
+  });
+});

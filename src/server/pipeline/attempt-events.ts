@@ -85,10 +85,62 @@ export function completeAttempt(ref: AttemptRef, mergeSha: string, outcome: Atte
   });
 }
 
+/** Attempt statuses of counted failures (ADR 7); an empty diff and agent errors are `error`. */
+export type CountedStatus = 'check_failed' | 'rejected' | 'conflict' | 'error';
+
+/**
+ * A counted failure in one commit: attempt.ended{status, counted, feedback} and the shared
+ * `attempt_failed` transition, i.e. issue.status_changed{→open, attemptCount} while attempts
+ * remain, else issue.failed{attemptCount, reason = feedback} (an orchestrator trigger). The
+ * issue is left alone when it is no longer in progress or in review (e.g. cancelled).
+ */
+export function failAttempt(
+  ref: AttemptRef,
+  status: CountedStatus,
+  feedback: string,
+  outcome: AttemptOutcome,
+): void {
+  ref.store.commit((tx) => {
+    const issue = tx.q.issue(ref.issueId);
+    const ended = endedDraft(ref, status, feedback, outcome, true);
+    if (issue === null) return [ended];
+    return [ended, ...failureDrafts(tx, issue, feedback)];
+  });
+}
+
+function failureDrafts(tx: Tx, issue: IssueState, reason: string): EventDraft[] {
+  const from = issue.status;
+  if (from !== 'in_progress' && from !== 'in_review') return [];
+  const r = transition(issue, { type: 'attempt_failed', reason }, config(tx, issue));
+  if (!r.ok) throw new Error(`cannot count the failed attempt: ${r.reason}`);
+  const { next } = r;
+  if (next.status === 'failed') {
+    return [
+      {
+        type: 'issue.failed',
+        productId: issue.productId,
+        entityId: issue.id,
+        v: 1,
+        data: { from, attemptCount: next.attemptCount, reason },
+      },
+    ];
+  }
+  return [
+    {
+      type: 'issue.status_changed',
+      productId: issue.productId,
+      entityId: issue.id,
+      v: 1,
+      data: { from, to: next.status, attemptCount: next.attemptCount, runAfter: next.runAfter },
+    },
+  ];
+}
+
 /**
  * attempt.ended{error}, uncounted, and the issue back to open (not before `runAfter`) when it is
- * still in progress or in review. Counted failures with feedback are a follow-up; until then the
- * uncounted `interrupted` transition is the legal way back to open.
+ * still in progress or in review. For uncounted outcomes that are not yet proper interruptions
+ * (stop, rate limit, question, missing setup); the `interrupted` transition is the legal way back
+ * to open without counting.
  */
 export function endWithError(
   ref: AttemptRef,
@@ -130,14 +182,15 @@ function statusDraft(tx: Tx, issue: IssueState, ev: IssueTransitionEvent): Event
 
 function endedDraft(
   ref: AttemptRef,
-  status: 'merged' | 'error',
+  status: 'merged' | CountedStatus,
   feedback: string | null,
   outcome: AttemptOutcome,
+  counted = false,
 ): EventDraft {
   return attemptDraft(ref, 'attempt.ended', {
     issueId: ref.issueId,
     status,
-    counted: false,
+    counted,
     ...outcome,
     feedback,
     interruptReason: null,
