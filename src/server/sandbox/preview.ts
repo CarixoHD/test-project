@@ -35,6 +35,8 @@ export interface PreviewDeps {
   fetch?: PreviewFetch;
   /** Waits between polls; tests advance a fake clock instead. */
   sleep?: (ms: number) => Promise<void>;
+  /** Warnings (cleanup failures), already redacted; default console.warn. */
+  log?: (line: string) => void;
 }
 
 type Failure = { ok: false; code: 'not_found' | 'conflict'; reason: string };
@@ -44,7 +46,10 @@ export type StopPreviewResult = { ok: true } | Failure;
 export interface Previews {
   startPreview(productId: ProductId): Promise<StartPreviewResult>;
   stopPreview(productId: ProductId): Promise<StopPreviewResult>;
-  /** Stops every preview this process started (shutdown). */
+  /**
+   * Shutdown: waits for queued and in-flight starts and stops, then stops every preview this
+   * process started. Starts requested from then on are refused.
+   */
   stopAll(): Promise<void>;
 }
 
@@ -60,6 +65,8 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
 export function createPreviews(deps: PreviewDeps): Previews {
   const fetchFn: PreviewFetch = deps.fetch ?? ((url, init) => fetch(url, init));
   const sleep = deps.sleep ?? defaultSleep;
+  const log = deps.log ?? ((line: string) => console.warn(line));
+  let closing = false;
   const worktreesDir = path.join(deps.dataDir, 'worktrees');
   const running = new Map<ProductId, Running>();
   /** Per-product chain: start and stop of one product never interleave. */
@@ -94,6 +101,20 @@ export function createPreviews(deps: PreviewDeps): Previews {
     };
   }
 
+  /** Failure cleanup: a container that cannot be removed is logged, the worktree still goes. */
+  async function cleanUp(r: Running): Promise<void> {
+    try {
+      await deps.runtime.remove(r.container);
+    } catch (err) {
+      log(
+        deps.redactor.redact(
+          `Could not remove preview container ${r.container}: ${errorText(err)}`,
+        ),
+      );
+    }
+    if (r.worktree !== '') await deps.git.removeWorktree(r.worktree);
+  }
+
   async function teardown(r: Running): Promise<void> {
     try {
       await deps.runtime.remove(r.container);
@@ -102,12 +123,18 @@ export function createPreviews(deps: PreviewDeps): Previews {
     }
   }
 
-  /** Removes the running preview (if any) and commits preview.stopped when the store had one. */
-  async function stopRunning(productId: ProductId): Promise<boolean> {
+  /**
+   * Removes the running preview (if any) and commits preview.stopped when the store had one.
+   * `remove` is `teardown` (failures propagate) or, on shutdown, `cleanUp` (failures logged).
+   */
+  async function stopRunning(
+    productId: ProductId,
+    remove: (r: Running) => Promise<void> = teardown,
+  ): Promise<boolean> {
     const r = current(productId);
     if (r === null) return false;
     running.delete(productId);
-    await teardown(r);
+    await remove(r);
     deps.store.commit((tx) =>
       tx.q.product(productId) === null
         ? []
@@ -152,16 +179,13 @@ export function createPreviews(deps: PreviewDeps): Previews {
       code: 'conflict',
       reason: deps.redactor.redact(reason),
     });
-    const runDetached = deps.runtime.runDetached?.bind(deps.runtime);
-    if (runDetached === undefined) {
-      return fail('The container runtime cannot run previews; previews need the Docker runtime.');
-    }
     const runId = deps.ids.next('run');
     const wt = await deps.git.addWorktree(productId, runId, 'main', { detached: true });
-    let container: string | null = null;
+    // Docker may create the container even when `run` fails, so cleanup always removes it.
+    const created: Running = { container: containerName(runId), worktree: wt.dir };
     try {
       const image = await deps.runtime.ensureImage({ productId, contextDir: wt.dir });
-      const started = await runDetached(
+      const started = await deps.runtime.runDetached(
         {
           runId,
           productId,
@@ -174,35 +198,34 @@ export function createPreviews(deps: PreviewDeps): Previews {
         },
         config.command,
       );
-      container = started.name;
-      const url = `http://127.0.0.1:${String(started.hostPort)}/`;
-      if (!(await waitUntilServing(url))) {
-        await teardown({ container, worktree: wt.dir });
-        return fail(
-          `The preview did not answer on port ${String(config.port)} within ` +
-            `${String(PREVIEW_TIMEOUT_MS / 1000)} s. Check that \`${config.command.join(' ')}\` ` +
-            `starts a server listening on 0.0.0.0:${String(config.port)} ` +
-            '(.vibecode/project.json → preview).',
-        );
+      created.container = started.name;
+      const hostPort = await deps.runtime.publishedPort(started.name, config.port);
+      const url = `http://127.0.0.1:${String(hostPort)}/`;
+      if (await waitUntilServing(url)) {
+        running.set(productId, created);
+        deps.store.commit(() => [
+          {
+            type: 'preview.started',
+            productId,
+            entityId: null,
+            v: 1,
+            data: { url, container: created.container },
+          },
+        ]);
+        return { ok: true, url };
       }
-      const name = container;
-      running.set(productId, { container: name, worktree: wt.dir });
-      deps.store.commit(() => [
-        {
-          type: 'preview.started',
-          productId,
-          entityId: null,
-          v: 1,
-          data: { url, container: name },
-        },
-      ]);
-      return { ok: true, url };
     } catch (err) {
       running.delete(productId);
-      if (container !== null) await deps.runtime.remove(container).catch(() => undefined);
-      await deps.git.removeWorktree(wt.dir);
+      await cleanUp(created);
       return fail(`The preview could not start: ${errorText(err)}`);
     }
+    await cleanUp(created);
+    return fail(
+      `The preview did not answer on port ${String(config.port)} within ` +
+        `${String(PREVIEW_TIMEOUT_MS / 1000)} s. Check that \`${config.command.join(' ')}\` ` +
+        `starts a server listening on 0.0.0.0:${String(config.port)} ` +
+        '(.vibecode/project.json → preview).',
+    );
   }
 
   async function stop(productId: ProductId): Promise<StopPreviewResult> {
@@ -216,12 +239,33 @@ export function createPreviews(deps: PreviewDeps): Previews {
   }
 
   return {
-    startPreview: (productId) => serially(productId, () => start(productId)),
+    startPreview: (productId) =>
+      closing
+        ? Promise.resolve({
+            ok: false,
+            code: 'conflict',
+            reason: 'Vibecode is shutting down; start the preview again after the restart.',
+          })
+        : serially(productId, () => start(productId)),
     stopPreview: (productId) => serially(productId, () => stop(productId)),
     async stopAll() {
+      closing = true;
+      // Queued products include starts still waiting or polling: stop after they settle.
+      const products = new Set([...queues.keys(), ...running.keys()]);
       await Promise.all(
-        [...running.keys()].map((productId) =>
-          serially(productId, () => stopRunning(productId)).catch(() => false),
+        [...products].map((productId) =>
+          serially(productId, async () => {
+            if (!running.has(productId)) return;
+            try {
+              await stopRunning(productId, cleanUp);
+            } catch (err) {
+              log(
+                deps.redactor.redact(
+                  `Could not stop the preview of ${productId}: ${errorText(err)}`,
+                ),
+              );
+            }
+          }),
         ),
       );
     },

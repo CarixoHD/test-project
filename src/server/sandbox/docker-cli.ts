@@ -177,7 +177,10 @@ export class DockerCliRuntime implements ContainerRuntime {
   async runDetached(spec: SandboxSpec, argv: readonly string[]): Promise<DetachedContainer> {
     const args = await this.#prepare(spec);
     const name = containerName(spec.runId);
-    await this.#manageOk(['run', '--detach', ...args, ...argv], `Could not start container ${name}`);
+    await this.#manageOk(
+      ['run', '--detach', ...args, ...argv],
+      `Could not start container ${name}`,
+    );
     return { name };
   }
 
