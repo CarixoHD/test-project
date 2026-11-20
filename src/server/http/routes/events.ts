@@ -44,7 +44,6 @@ export function registerEventRoutes(app: Hono, { store, heartbeatMs }: AppDeps):
   app.get('/api/events', (c) => {
     const since = resumeAfter(c);
     c.header('X-Accel-Buffering', 'no');
-    c.header('Cache-Control', 'no-cache, no-transform');
 
     return streamSSE(c, async (stream) => {
       // Subscribe before reading the log: commits are synchronous, so nothing can slip between
