@@ -98,9 +98,11 @@ export async function sparTurn(
     return;
   }
   const { reply, prdMarkdown } = result.result;
+  // A blank draft is "no draft": it must not overwrite the owner's existing PRD draft.
+  const hasDraft = prdMarkdown !== undefined && prdMarkdown.trim() !== '';
   deps.store.commit(() => [
     agentMessage(deps, productId, reply),
-    ...(prdMarkdown === undefined
+    ...(!hasDraft
       ? []
       : [
           {
