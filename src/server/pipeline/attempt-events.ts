@@ -138,8 +138,9 @@ function failureDrafts(tx: Tx, issue: IssueState, reason: string): EventDraft[] 
 
 /**
  * attempt.ended{error}, uncounted, and the issue back to open (not before `runAfter`) when it is
- * still in progress or in review. Counted failures with feedback are a follow-up; until then the
- * uncounted `interrupted` transition is the legal way back to open.
+ * still in progress or in review. For uncounted outcomes that are not yet proper interruptions
+ * (stop, rate limit, question, missing setup); the `interrupted` transition is the legal way back
+ * to open without counting.
  */
 export function endWithError(
   ref: AttemptRef,
