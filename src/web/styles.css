@@ -1191,3 +1191,82 @@ a {
   color: var(--ink-muted);
   font-weight: 600;
 }
+
+/* ---- inbox ---------------------------------------------------------------------------------- */
+
+/* Unread count in the main nav; the link's aria-label carries the number for screen readers. */
+.app-nav__badge {
+  display: inline-block;
+  min-width: 1.5em;
+  margin-left: var(--space-2);
+  padding: 0 var(--space-1);
+  border-radius: 999px;
+  background: var(--header-ink);
+  color: var(--header-bg);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.inbox__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.inbox {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.inbox-item {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+
+/* Unread is also said in text ("Unread"); the bar and weight only reinforce it. */
+.inbox-item--unread {
+  border-left: 6px solid var(--accent);
+}
+
+.inbox-item--unread .inbox-item__title {
+  font-weight: 700;
+}
+
+.inbox-item__meta {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+}
+
+.inbox-item__unread {
+  color: var(--accent-strong);
+}
+
+.inbox-item__title {
+  margin: var(--space-1) 0;
+  font-size: 1.125rem;
+  font-weight: 500;
+}
+
+.inbox-item__body {
+  margin: 0 0 var(--space-2);
+  white-space: pre-wrap;
+}
+
+.question-answer {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 40rem;
+  margin-bottom: var(--space-2);
+}
+
+.question-answer > .ui-button {
+  justify-self: start;
+}

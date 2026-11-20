@@ -24,7 +24,15 @@ const event = (
   ts?: number,
 ): Event => {
   seq += 1;
-  return EventSchema.parse({ seq, ts: ts ?? T0 + seq * 60_000, type, productId, entityId, v: 1, data });
+  return EventSchema.parse({
+    seq,
+    ts: ts ?? T0 + seq * 60_000,
+    type,
+    productId,
+    entityId,
+    v: 1,
+    data,
+  });
 };
 
 const productCreated = () =>
@@ -48,7 +56,12 @@ const inboxCreated = (
     'inbox.created',
     extra.productId === undefined ? 'p1' : extra.productId,
     id,
-    { kind, title, body: extra.body ?? '', link: extra.link === undefined ? '/products/p1' : extra.link },
+    {
+      kind,
+      title,
+      body: extra.body ?? '',
+      link: extra.link === undefined ? '/products/p1' : extra.link,
+    },
     extra.ts,
   );
 
@@ -146,7 +159,14 @@ function push(...events: Event[]): void {
   });
 }
 
-const items = () => within(screen.getByRole('list', { name: 'Inbox items' })).getAllByRole('listitem');
+const items = () =>
+  within(screen.getByRole('list', { name: 'Inbox items' })).getAllByRole('listitem');
+/** The n-th inbox item (0 = newest). */
+const item = (n: number): HTMLElement => {
+  const el = items()[n];
+  if (el === undefined) throw new Error(`no inbox item ${String(n)}`);
+  return el;
+};
 const inboxNav = () => within(screen.getByRole('navigation', { name: 'Main' }));
 
 beforeEach(() => {
@@ -203,13 +223,12 @@ describe('Inbox: list', () => {
 
   it('links items to their issue or product', async () => {
     await renderApp();
-    const [, second, third] = items();
-    expect(within(third!).getByRole('link', { name: 'Issue #1 Login failed' })).toHaveAttribute(
+    expect(within(item(2)).getByRole('link', { name: 'Issue #1 Login failed' })).toHaveAttribute(
       'href',
       '/products/p1/issues/i1',
     );
     expect(
-      within(second!).getByRole('link', { name: 'Todo app reached 80% of its budget' }),
+      within(item(1)).getByRole('link', { name: 'Todo app reached 80% of its budget' }),
     ).toHaveAttribute('href', '/products/p1');
   });
 
@@ -232,11 +251,11 @@ describe('Inbox: marking read', () => {
     routeTable['POST /api/inbox/n3/read'] = ok;
     const { user } = await renderApp();
     await user.click(
-      within(items()[0]!).getByRole('button', { name: 'Mark read: Claude Code rate limited' }),
+      within(item(0)).getByRole('button', { name: 'Mark read: Claude Code rate limited' }),
     );
     expect(calls.map((c) => c.url)).toEqual(['/api/inbox/n3/read']);
     // Read items have no mark-read button.
-    expect(within(items()[1]!).queryByRole('button', { name: /Mark read/ })).toBeNull();
+    expect(within(item(1)).queryByRole('button', { name: /Mark read/ })).toBeNull();
   });
 
   it('marks every unread item read with "Mark all read"', async () => {
@@ -266,18 +285,21 @@ describe('Inbox: questions', () => {
       productCreated(),
       ...questionWithItem('q1', 'n9', 'Should todos sync across devices?'),
     ]);
-    const item = items()[0]!;
-    expect(item).toHaveTextContent('Question');
-    expect(item).toHaveTextContent('Should todos sync across devices?');
+    const entry = item(0);
+    expect(entry).toHaveTextContent('Question');
+    expect(entry).toHaveTextContent('Should todos sync across devices?');
 
-    await user.click(within(item).getByRole('button', { name: 'Send answer' }));
-    expect(within(item).getByRole('textbox', { name: 'Your answer' })).toHaveAccessibleDescription(
+    await user.click(within(entry).getByRole('button', { name: 'Send answer' }));
+    expect(within(entry).getByRole('textbox', { name: 'Your answer' })).toHaveAccessibleDescription(
       'An answer is required',
     );
     expect(calls).toEqual([]);
 
-    await user.type(within(item).getByRole('textbox', { name: 'Your answer' }), '  No, local only ');
-    await user.click(within(item).getByRole('button', { name: 'Send answer' }));
+    await user.type(
+      within(entry).getByRole('textbox', { name: 'Your answer' }),
+      '  No, local only ',
+    );
+    await user.click(within(entry).getByRole('button', { name: 'Send answer' }));
     expect(calls).toContainEqual({
       url: '/api/questions/q1/answer',
       method: 'POST',
@@ -289,8 +311,8 @@ describe('Inbox: questions', () => {
     });
 
     push(event('question.answered', 'p1', 'q1', { answer: 'No, local only' }));
-    expect(within(item).queryByRole('textbox')).toBeNull();
-    expect(item).toHaveTextContent('Your answer: No, local only');
+    expect(within(entry).queryByRole('textbox')).toBeNull();
+    expect(entry).toHaveTextContent('Your answer: No, local only');
   });
 
   it('shows the server error when the answer is refused', async () => {
@@ -328,7 +350,8 @@ describe('Inbox: browser notifications', () => {
       }),
     );
     expect(FakeNotification.shown).toHaveLength(1);
-    const shown = FakeNotification.shown[0]!;
+    const [shown] = FakeNotification.shown;
+    if (shown === undefined) throw new Error('no notification shown');
     expect(shown.title).toBe('Issue #2 Sync failed');
     expect(shown.options).toEqual({ body: 'Failed after 3 attempts' });
 

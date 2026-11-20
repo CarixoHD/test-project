@@ -520,7 +520,8 @@ Never a shell. The child runs in its own process group, and timeout or abort sig
   ```ts
   type ConnectionStatus = 'connecting' | 'live' | 'reconnecting' | 'offline';
   interface AppSnapshot { state: ClientState; lastSeq: number; status: ConnectionStatus; loaded: boolean; error: string | null }
-  interface AppStore { getSnapshot(): AppSnapshot; subscribe(listener): () => void; start(): () => void /* returns stop */ }
+  interface AppStore { getSnapshot(): AppSnapshot; subscribe(listener): () => void; start(): () => void /* returns stop */;
+                       onLiveEvent(listener: (e: Event) => void): () => void /* streamed events after the snapshot sync only */ }
   createAppStore({eventsUrl='/api/events', retryDelayMs=3000}?): AppStore   // store.ts
   <AppStoreProvider store={store}>                                         // AppStoreProvider.tsx: start() on mount, stop on unmount
   useApp(selector: (s: AppSnapshot) => T): T                               // store.ts; useSyncExternalStore; throws outside the provider
@@ -561,9 +562,9 @@ Never a shell. The child runs in its own process group, and timeout or abort sig
   - `/` products
   - `/products/:id` with the `Build` tab (board, agent list, cost bar, pause/resume, preview, collapsible Scene3D), the `Spec` tab (chat, PRD editor, handoff/apply) and the `Settings` tab
   - `/products/:id/issues/:issueId` issue detail, with attempts and their log, diff, check and review
-  - `/inbox`
+  - `/inbox`: items newest first (kind as text, title linking to the issue/product, body, time, Unread/Read as text); opening a link or "Mark read" posts `POST /api/inbox/:id/read`, "Mark all read" posts it for every unread item. Question items (matched to their `QuestionState` by product, timestamp and text, as the inbox rule creates them in the same commit) show `QuestionAnswer`, the shared answer form (`POST /api/questions/:id/answer`) that `IssuePage` also renders under a held question; answered questions show the answer. The nav link (`InboxNavLink`) shows the unread count (`aria-label` "Inbox, 3 unread").
   - `/settings`
-- Browser `Notification` fires on `inbox.created` once the owner has granted permission. This belongs to the inbox feature (`features/inbox`, #33), not to the store.
+- Browser `Notification` fires on `inbox.created` once the owner has granted permission ("Enable notifications" on `/inbox`). `InboxNotifier` (`features/inbox`, mounted in the layout) listens with `store.onLiveEvent`, so the snapshot load and the events buffered during it never notify; it also announces each new item in a polite live region. Clicking a notification focuses the window and navigates to the item's link.
 - Scene3D is `React.lazy`. It renders `sceneReduce` output, with one InstancedMesh per piece type and `SkeletonUtils.clone` for each worker. When collapsed or off-screen it keeps `frameloop="never"` and stays mounted. Clicking a worker opens the same `AgentPanel` that the agent list uses.
   - `ScenePanel` (`scene/ScenePanel.tsx`): a heading button with `aria-expanded` collapses the view; the choice is kept in `localStorage['vibecode.scene.collapsed']`. The scene chunk loads on the first expand and then stays mounted. `frameloop` comes from `sceneFrameloop({expanded, onScreen, reducedMotion})`: `never` when collapsed or off-screen (IntersectionObserver), `demand` with `prefers-reduced-motion` (no animations), else `always`. The canvas is `aria-hidden`; a note says the board and agent list carry the same information. The scene is `sceneFromState` of the live client state (≡ replaying `sceneReduce`), memoised so events without a scene effect don't re-render it.
   - `scene-model.ts` (pure, unit-tested): `instanceCounts`/`piecesByType`, `workerPlacements` (look by figure, spot at the site/desk/bench), `debrisPlacements`, `Scene3DProps {scene, frameloop, reducedMotion}`.
