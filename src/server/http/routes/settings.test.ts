@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createAccountSettings, SETTING_KEYS } from '../../commands/index.ts';
+import {
+  createAccountSettings,
+  readModelDefaults,
+  readPriceOverrides,
+  SETTING_KEYS,
+} from '../../commands/index.ts';
 import {
   API_KEY_MIN_LENGTH,
   SettingsResponseSchema,
   SettingsUpdateResponseSchema,
 } from '../../../shared/dto.ts';
 import { resolveModel, type Role, type RoleModels } from '../../../shared/models.ts';
-import { readSetting } from '../../store/index.ts';
+import { readSetting, writeSetting } from '../../store/index.ts';
 import { API_KEY_SECRETS, model, price, MissingProviderSetupError } from '../../llm/index.ts';
 import { createSecrets, MIN_SECRET_LENGTH } from '../../security/index.ts';
 import { expectSnapshotMatchesReplay } from '../../store/testing.ts';
@@ -290,6 +295,28 @@ describe('PUT /api/settings: models and prices', () => {
     expect(price(custom, overrides)).toEqual(override);
     expect(price(SONNET, overrides)).toMatchObject(override);
     expect(readSetting(db, SETTING_KEYS.priceOverrides)).toEqual(overrides);
+  });
+
+  it('the pipeline readers return the rows the settings API writes', async () => {
+    const { put, settings, store } = setup();
+    await put({
+      roleDefaults: { implementer: SONNET },
+      defaultModel: SONNET,
+      priceOverrides: { 'anthropic/claude-sonnet-4-5': { input: 1, output: 2 } },
+    });
+    const { roleDefaults, defaultModel, priceOverrides } = settings.read();
+    expect(readModelDefaults(store)).toEqual({ roleDefaults, defaultModel });
+    expect(readPriceOverrides(store)).toEqual(priceOverrides);
+  });
+
+  it('a malformed row fails the settings API and the pipeline reader alike, naming the key', () => {
+    const { settings, store } = setup();
+    store.commit((tx) => {
+      writeSetting(tx.db, SETTING_KEYS.priceOverrides, { 'x/y': { input: 'free' } });
+      return [];
+    });
+    expect(() => settings.read()).toThrow(SETTING_KEYS.priceOverrides);
+    expect(() => readPriceOverrides(store)).toThrow(SETTING_KEYS.priceOverrides);
   });
 
   it('leaves sections that are not in the update unchanged', async () => {

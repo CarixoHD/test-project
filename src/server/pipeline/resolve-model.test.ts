@@ -5,7 +5,8 @@ import { open, schema } from '../db/index.ts';
 import { Redactor } from '../security/index.ts';
 import { createStore, type Store } from '../store/index.ts';
 import { FakeClock } from '../util/clock.ts';
-import { resolveModel, SETTING_KEYS } from './index.ts';
+import { SETTING_KEYS } from '../commands/index.ts';
+import { resolveModel } from './index.ts';
 
 const P = ProductIdSchema.parse('product-1');
 const PRODUCT_MODEL: ModelRef = { provider: 'anthropic', model: 'claude-product' };

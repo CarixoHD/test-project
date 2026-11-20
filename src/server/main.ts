@@ -8,7 +8,8 @@ import { inboxHook } from './notify/index.ts';
 import { createScheduler, type Runners } from './scheduler/index.ts';
 import { createAccountSettings, createSparring, type SparTurnRunner } from './commands/index.ts';
 import type { FakeScript } from './llm/index.ts';
-import { sparTurn } from './pipeline/index.ts';
+import { createOrchestrator, sparTurn, type OrchestratorDeps } from './pipeline/index.ts';
+import { selectRuntime } from './sandbox/index.ts';
 import { createSecrets, redactor } from './security/index.ts';
 import { createStore, type Store } from './store/index.ts';
 import { systemClock } from './util/clock.ts';
@@ -29,13 +30,14 @@ export interface StartOptions {
   fakeScript?: FakeScript;
   /** Wraps each sparring turn (tests hold a turn in flight to observe shutdown). */
   wrapSparTurn?: (run: SparTurnRunner) => SparTurnRunner;
+  /** Orchestrator retry policy (tests shorten or lengthen the backoff). */
+  orchestratorBackoff?: OrchestratorDeps['backoff'];
+  /** Wraps each orchestrator run (tests observe when runs start and end). */
+  wrapRunOrchestrator?: (run: Runners['runOrchestrator']) => Runners['runOrchestrator'];
 }
 
-/** Placeholder runners until the pipeline is wired in (demo/integration issue): they do nothing. */
-const NO_OP_RUNNERS: Runners = {
-  runOrchestrator: () => Promise.resolve(),
-  runAttempt: () => Promise.resolve(),
-};
+/** Placeholder until the implementer/reviewer pipeline is wired in (#28/#31): does nothing. */
+const NO_OP_RUN_ATTEMPT: Runners['runAttempt'] = () => Promise.resolve();
 
 /** Composition root: config → data dir → DB → store → app → serve. */
 export async function start(
@@ -53,7 +55,13 @@ export async function start(
   const git = createGit({ dataDir: config.dataDir });
   // settings.modelDeps() is what agent runs pass to the LLM registry (keys read at call time).
   const settings = createAccountSettings({ store, db, secrets });
-  const { fakeScript, wrapSparTurn = (run) => run } = options;
+  const {
+    fakeScript,
+    wrapSparTurn = (run) => run,
+    wrapRunOrchestrator = (run) => run,
+    orchestratorBackoff,
+  } = options;
+  const logsDir = join(config.dataDir, 'logs');
   const modelDeps = () => ({
     ...settings.modelDeps(),
     ...(fakeScript === undefined ? {} : { fake: { script: fakeScript } }),
@@ -68,7 +76,7 @@ export async function start(
           ids,
           clock: systemClock,
           redactor,
-          logsDir: join(config.dataDir, 'logs'),
+          logsDir,
           modelDeps: modelDeps(),
           demo: config.demo,
         },
@@ -81,11 +89,34 @@ export async function start(
     },
   });
   const app = createApp({ store, ids, git, redactor, webRoot, settings, sparring });
+  const runtime = selectRuntime(config);
+  // The orchestrator merges under the scheduler's lock and the scheduler runs the orchestrator:
+  // the lock closure reads `scheduler` only during a run, after it has been created below.
+  const orchestrator = createOrchestrator({
+    store,
+    ids,
+    clock: systemClock,
+    redactor,
+    logsDir,
+    git,
+    runtime,
+    // A getter: every run reads the settings again (provider config and keys at call time).
+    get modelDeps() {
+      return modelDeps();
+    },
+    withMergeLock: (productId, fn) => scheduler.withMergeLock(productId, fn),
+    demo: config.demo,
+    ...(orchestratorBackoff === undefined ? {} : { backoff: orchestratorBackoff }),
+  });
   const scheduler = createScheduler({
     store,
     clock: systemClock,
     ids,
-    runners: NO_OP_RUNNERS,
+    runners: {
+      runOrchestrator: wrapRunOrchestrator(orchestrator.runOrchestrator),
+      runAttempt: NO_OP_RUN_ATTEMPT,
+    },
+    orchestratorNotBefore: orchestrator.orchestratorNotBefore,
     onError: (err) => {
       console.error(redactor.redact(`scheduler run failed: ${String(err)}`));
     },
@@ -106,6 +137,7 @@ export async function start(
     address,
     store,
     close: async () => {
+      // First: live orchestrator runs see shouldStop() and settle before anything closes.
       await scheduler.stop();
       // A sparring turn commits when its agent answers: let it finish before the DB closes.
       await sparring.idle();

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CreateProductResponseSchema, StateResponseSchema } from '../shared/dto.ts';
 import { parseEvent, type Event } from '../shared/events.ts';
-import { InboxIdSchema } from '../shared/ids.ts';
+import { InboxIdSchema, ProductIdSchema } from '../shared/ids.ts';
 import { parseConfig } from './config.ts';
 import { start, type Running } from './main.ts';
 
@@ -154,7 +154,154 @@ describe('start (composition root)', () => {
     const after = StateResponseSchema.parse(await (await fetch(`${base}/api/state`)).json());
     expect(after.state.inbox[inboxId]?.read).toBe(true);
   });
+  it('runs the orchestrator: a handed-off PRD is planned into issues (demo model, fake runtime)', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const config = {
+      ...parseConfig({
+        VIBECODE_DATA_DIR: join(root, 'data'),
+        VIBECODE_DEMO: '1',
+        VIBECODE_FAKE_DOCKER: '1',
+      }),
+      port: 0,
+    };
+    running = await start(config, join(root, 'no-web'), { fakeScript: [finish(PLAN)] });
+    const base = `http://127.0.0.1:${String(running.address.port)}`;
+    const productId = await createProduct(base);
+    const events = await fetch(`${base}/api/events?since=0`);
+
+    handOff(running, productId);
+
+    const created = (es: Event[]) => es.filter((e) => e.type === 'issue.created');
+    const streamed = await readEvents(events, (es) => created(es).length === 2, 10_000);
+    expect(created(streamed).map((e) => [e.productId, e.data.issue.title])).toEqual([
+      [productId, 'Scaffold'],
+      [productId, 'List todos'],
+    ]);
+  });
+
+  it('without fake Docker the orchestrator run fails with the actionable reason; the server stays up', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const config = {
+      ...parseConfig({ VIBECODE_DATA_DIR: join(root, 'data'), VIBECODE_DEMO: '1' }),
+      port: 0,
+    };
+    // One failure is enough for the orchestrator to tell the owner (and show the reason).
+    running = await start(config, join(root, 'no-web'), {
+      fakeScript: [finish(PLAN)],
+      orchestratorBackoff: { maxFailures: 1 },
+    });
+    const base = `http://127.0.0.1:${String(running.address.port)}`;
+    const productId = await createProduct(base);
+    const events = await fetch(`${base}/api/events?since=0`);
+
+    handOff(running, productId);
+
+    const isError = (e: Event) => e.type === 'inbox.created' && e.data.kind === 'error';
+    const streamed = await readEvents(events, (es) => es.some(isError), 10_000);
+    const error = streamed.find(isError);
+    expect(error?.type === 'inbox.created' && error.data.body).toContain(
+      'Docker runtime not available yet: set VIBECODE_FAKE_DOCKER=1',
+    );
+    expect(streamed.some((e) => e.type === 'issue.created')).toBe(false);
+    const state = await fetch(`${base}/api/state`);
+    expect(state.status).toBe(200);
+  });
+
+  it.each([
+    { name: 'is not restarted on the next tick while backing off', delaysMs: [60_000], runs: 1 },
+    { name: 'is restarted on the next tick once the backoff has passed', delaysMs: [0], runs: 2 },
+  ])('a failing orchestrator run $name', async ({ delaysMs, runs }) => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const config = {
+      ...parseConfig({ VIBECODE_DATA_DIR: join(root, 'data'), VIBECODE_DEMO: '1' }),
+      port: 0,
+    };
+    let started = 0;
+    let finished = 0;
+    running = await start(config, join(root, 'no-web'), {
+      fakeScript: [finish(PLAN)],
+      orchestratorBackoff: { delaysMs, maxFailures: 10 },
+      // Observes the real runs: they fail because Docker is not available.
+      wrapRunOrchestrator: (run) => async (productId, triggers, handle) => {
+        started += 1;
+        try {
+          await run(productId, triggers, handle);
+        } finally {
+          finished += 1;
+        }
+      },
+    });
+    const base = `http://127.0.0.1:${String(running.address.port)}`;
+    const productId = await createProduct(base);
+
+    handOff(running, productId);
+    await waitFor(() => finished >= 1);
+    // Any commit makes the scheduler tick.
+    nudge(running);
+    await new Promise((done) => setTimeout(done, 200));
+    nudge(running);
+    await new Promise((done) => setTimeout(done, 200));
+
+    expect(Math.min(started, 2)).toBe(runs);
+  });
 });
+
+const PLAN = {
+  issueOps: [
+    { op: 'create', key: 'scaffold', title: 'Scaffold', body: 'Set up the app.', dependsOn: [] },
+    {
+      op: 'create',
+      key: 'list',
+      title: 'List todos',
+      body: 'Show todos.',
+      dependsOn: ['scaffold'],
+    },
+  ],
+  questions: [],
+  summary: 'Two slices: scaffold, list.',
+};
+
+/** Applies a PRD and hands the product off, so the scheduler starts planning it. */
+function handOff(running: Running, productId: string): void {
+  const product = ProductIdSchema.parse(productId);
+  running.store.commit(() => [
+    {
+      type: 'prd.applied',
+      productId: product,
+      entityId: null,
+      v: 1,
+      data: { version: 1, markdown: '# Todo\n\nA todo app.', summary: null },
+    },
+    {
+      type: 'product.handed_off',
+      productId: product,
+      entityId: null,
+      v: 1,
+      data: { prdVersion: 1 },
+    },
+  ]);
+}
+
+/** Commits an unrelated event: every commit makes the scheduler tick. */
+function nudge(running: Running): void {
+  running.store.commit(() => [
+    {
+      type: 'settings.changed',
+      productId: null,
+      entityId: null,
+      v: 1,
+      data: { sections: ['defaultModel'], keys: [] },
+    },
+  ]);
+}
+
+async function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting');
+    await new Promise((done) => setTimeout(done, 10));
+  }
+}
 
 const finish = (input: object) => ({ toolCalls: [{ name: 'finish', input }] });
 const json = (body: unknown): RequestInit => ({
