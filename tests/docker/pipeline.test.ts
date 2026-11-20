@@ -28,27 +28,24 @@ import { Redactor } from '../../src/server/security/index.ts';
 import { createStore, type Store } from '../../src/server/store/index.ts';
 import { systemClock } from '../../src/server/util/clock.ts';
 import { createIdGen, type IdGen } from '../../src/server/util/id-gen.ts';
+import { EGRESS_PROBE, NO_IFACE_CHECK } from './net-probes.ts';
 
 const uid = process.getuid?.() ?? 1000;
 const gid = process.getgid?.() ?? 1000;
 const PREVIEW_PORT = 3000;
 const PREVIEW_BODY = 'hello from a vibecode preview';
 
-/** Exits 0 only if an outbound TCP connection succeeds. */
-const EGRESS_PROBE =
-  "require('net').connect({host:'1.1.1.1',port:53,timeout:5000})" +
-  ".on('connect',()=>process.exit(0)).on('error',()=>process.exit(3))" +
-  ".on('timeout',()=>process.exit(4))";
-
 /**
- * The project's check (argv, run with network none). It fails unless outbound traffic is
- * blocked, there is no Docker socket and /workspace/.git is an empty file; the markers it prints
- * end up in the attempt's check.log.
+ * The project's check (argv, run with network none). It fails unless the container has no
+ * interface but loopback (a structural check that holds without host internet), outbound traffic
+ * is blocked, there is no Docker socket and /workspace/.git is an empty file; the markers it
+ * prints end up in the attempt's check.log.
  */
 const CHECK_SCRIPT = [
   'set -e',
   'test ! -e /var/run/docker.sock && test ! -e /run/docker.sock && echo check:no-docker-sock',
   'test -f .git && test ! -s .git && echo check:git-masked',
+  NO_IFACE_CHECK,
   `if node -e "${EGRESS_PROBE}"; then echo check:egress-OPEN; exit 1; fi`,
   'echo check:egress-blocked',
 ].join('\n');
@@ -234,9 +231,12 @@ describe('pipeline against a real Docker daemon', () => {
       expect(store.q.issue(probe)?.mergedOrder).toBe(1);
       expect(store.q.issue(web)?.mergedOrder).toBe(2);
 
-      // The check ran with network none: outbound failed, no socket, .git masked.
+      // The check ran with network none: only loopback, outbound failed, no socket, .git masked.
+      // The interface check is the evidence that holds even on a host without internet.
       for (const id of [probe, web]) {
         const log = await checkLog(id);
+        expect(log).toContain('check:no-iface');
+        expect(log).not.toContain('check:iface-OPEN');
         expect(log).toContain('check:egress-blocked');
         expect(log).not.toContain('check:egress-OPEN');
         expect(log).toContain('check:no-docker-sock');
