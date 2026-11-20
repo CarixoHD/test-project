@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseEvent } from '../../shared/events.ts';
 import type { Store } from '../store/index.ts';
-import { FakeIdGen } from '../util/id-gen.ts';
 import { createApp, HEARTBEAT_MS } from './index.ts';
 import { productCreated, setupStore, sparMessage } from './testing.ts';
 
@@ -90,12 +89,7 @@ function setup(opts: { heartbeatMs?: number } = {}) {
       };
     },
   };
-  const app = createApp({
-    store,
-    redactor: deps.redactor,
-    ids: new FakeIdGen(),
-    heartbeatMs: opts.heartbeatMs,
-  });
+  const app = createApp({ ...deps, store, heartbeatMs: opts.heartbeatMs });
   return { ...deps, store, app, unsubscribed };
 }
 

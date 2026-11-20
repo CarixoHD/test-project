@@ -2,11 +2,13 @@ import { resolve } from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
 import { ensureDataDir, parseConfig, type Config } from './config.ts';
 import { open } from './db/index.ts';
+import { createGit } from './git/index.ts';
 import { createApp } from './http/index.ts';
+import { inboxHook } from './notify/index.ts';
 import { createScheduler, type Runners } from './scheduler/index.ts';
 import { createAccountSettings } from './commands/index.ts';
 import { createSecrets, redactor } from './security/index.ts';
-import { createStore } from './store/index.ts';
+import { createStore, type Store } from './store/index.ts';
 import { systemClock } from './util/clock.ts';
 import { createIdGen } from './util/id-gen.ts';
 
@@ -15,6 +17,8 @@ const DEFAULT_WEB_ROOT = resolve(import.meta.dirname, '../../dist/web');
 export interface Running {
   /** The address actually bound (port 0 resolves to a free port). */
   address: { host: string; port: number };
+  /** The live store (integration tests commit through it to drive hooks and SSE). */
+  store: Store;
   close(): Promise<void>;
 }
 
@@ -30,11 +34,13 @@ export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise
   const db = open(config.dbPath);
   // Registers every stored secret with the redactor before anything can log or emit.
   const secrets = createSecrets({ db, clock: systemClock, redactor });
-  const store = createStore({ db, clock: systemClock, redactor });
   const ids = createIdGen(systemClock);
+  // inboxHook turns owner-relevant events into inbox.created in the same commit (§4.2).
+  const store = createStore({ db, clock: systemClock, redactor, hooks: [inboxHook({ ids })] });
+  const git = createGit({ dataDir: config.dataDir });
   // settings.modelDeps() is what agent runs pass to the LLM registry (keys read at call time).
   const settings = createAccountSettings({ store, db, secrets });
-  const app = createApp({ store, redactor, ids, webRoot, settings });
+  const app = createApp({ store, ids, git, redactor, webRoot, settings });
   const scheduler = createScheduler({
     store,
     clock: systemClock,
@@ -58,6 +64,7 @@ export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise
 
   return {
     address,
+    store,
     close: async () => {
       await scheduler.stop();
       await new Promise<void>((done, fail) => {

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { PriceOverridesSchema } from './budget.ts';
+import { ProductIdSchema } from './ids.ts';
 import { IssueIdSchema } from './ids.ts';
 import {
   KEYED_PROVIDER_IDS,
@@ -20,6 +21,27 @@ export const StateResponseSchema = z.object({
 });
 export type StateResponse = z.infer<typeof StateResponseSchema>;
 
+export const PRODUCT_NAME_MAX = 80;
+export const PRODUCT_IDEA_MAX = 4000;
+
+/** `POST /api/products`. Surrounding whitespace is trimmed before the length checks. */
+export const CreateProductRequestSchema = z.object({
+  name: z
+    .string({ error: 'Name is required' })
+    .trim()
+    .min(1, 'Name is required')
+    .max(PRODUCT_NAME_MAX, `Name must be at most ${PRODUCT_NAME_MAX} characters`),
+  idea: z
+    .string({ error: 'Idea is required' })
+    .trim()
+    .min(1, 'Idea is required')
+    .max(PRODUCT_IDEA_MAX, `Idea must be at most ${PRODUCT_IDEA_MAX} characters`),
+});
+export type CreateProductRequest = z.input<typeof CreateProductRequestSchema>;
+
+/** `201` answer of `POST /api/products`. */
+export const CreateProductResponseSchema = z.object({ id: ProductIdSchema });
+export type CreateProductResponse = z.infer<typeof CreateProductResponseSchema>;
 /** `POST /api/products/:id/issues`: the owner adds an issue. */
 export const AddIssueRequestSchema = z.object({
   title: z.string().trim().min(1),
@@ -107,3 +129,24 @@ export type SettingsResponse = z.infer<typeof SettingsResponseSchema>;
 /** `PUT /api/settings`: the settings after the update. */
 export const SettingsUpdateResponseSchema = SettingsResponseSchema.extend({ ok: z.literal(true) });
 export type SettingsUpdateResponse = z.infer<typeof SettingsUpdateResponseSchema>;
+
+export const SPAR_MESSAGE_MAX = 8000;
+export const PRD_MARKDOWN_MAX = 200_000;
+
+/** `POST /api/products/:id/spar` (→ 202; the agent's reply arrives as a `spar.message` event). */
+export const SparRequestSchema = z.object({
+  message: z
+    .string({ error: 'Message is required' })
+    .trim()
+    .min(1, 'Message is required')
+    .max(SPAR_MESSAGE_MAX, `Message must be at most ${SPAR_MESSAGE_MAX} characters`),
+});
+export type SparRequest = z.input<typeof SparRequestSchema>;
+
+/** `PUT /api/products/:id/prd-draft`: the owner's edited draft (stored verbatim). */
+export const SavePrdDraftRequestSchema = z.object({
+  markdown: z
+    .string({ error: 'Markdown is required' })
+    .max(PRD_MARKDOWN_MAX, `The draft must be at most ${PRD_MARKDOWN_MAX} characters`),
+});
+export type SavePrdDraftRequest = z.input<typeof SavePrdDraftRequestSchema>;

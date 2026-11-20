@@ -6,6 +6,12 @@ export {
   type DependsOnContext,
 } from './issue-graph.ts';
 export {
+  createProduct,
+  DEFAULT_PRODUCT_SETTINGS,
+  type CreateProductDeps,
+  type CreateProductResult,
+} from './create-product.ts';
+export {
   addIssue,
   cancelIssue,
   editIssue,
@@ -23,3 +29,13 @@ export {
   type AccountSettingsDeps,
   type StoredSettings,
 } from './settings.ts';
+export {
+  createSparring,
+  nextSparMessageId,
+  savePrdDraft,
+  type SavePrdDraftResult,
+  type SendSparMessageResult,
+  type Sparring,
+  type SparringCommandDeps,
+  type SparTurnRunner,
+} from './spar.ts';

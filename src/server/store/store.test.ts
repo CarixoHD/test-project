@@ -199,3 +199,46 @@ describe('commit hooks', () => {
     expect(rowCount(db, 'products')).toBe(0);
   });
 });
+
+describe('store.q.setting', () => {
+  it('returns the stored JSON value, or undefined when the key is unset', () => {
+    const { store } = setup();
+    expect(store.q.setting('defaultModel')).toBeUndefined();
+
+    store.commit((tx) => {
+      tx.db
+        .insert(schema.settings)
+        .values({ key: 'defaultModel', value: { provider: 'fake', model: 'm' } })
+        .run();
+      return [];
+    });
+
+    expect(store.q.setting('defaultModel')).toEqual({ provider: 'fake', model: 'm' });
+  });
+});
+
+describe('store.q.sparMessages / prdDraft', () => {
+  it('returns the transcript in arrival order and the current draft', () => {
+    const { store } = setup();
+    store.commit(() => [productCreated()]);
+    expect(store.q.sparMessages(P)).toEqual([]);
+    expect(store.q.prdDraft(P)).toBeNull();
+
+    store.commit(() => [sparMessage('m-2', 'first'), sparMessage('m-1', 'second')]);
+    store.commit(() => [
+      {
+        type: 'prd.draft_saved',
+        productId: P,
+        entityId: null,
+        v: 1,
+        data: { markdown: '# D', baseVersion: 0 },
+      },
+    ]);
+
+    expect(store.q.sparMessages(P).map((m) => [m.id, m.text])).toEqual([
+      ['m-2', 'first'],
+      ['m-1', 'second'],
+    ]);
+    expect(store.q.prdDraft(P)).toMatchObject({ markdown: '# D', baseVersion: 0 });
+  });
+});

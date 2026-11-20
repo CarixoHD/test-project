@@ -26,6 +26,7 @@ function setup() {
     store: base.store,
     redactor: base.redactor,
     ids: new FakeIdGen(),
+    git: base.git,
     settings,
   });
   const get = async () => {

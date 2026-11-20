@@ -2,6 +2,7 @@ import type { Hono } from 'hono';
 import type { AppDeps } from '../deps.ts';
 import { registerEventRoutes } from './events.ts';
 import { registerHealthRoutes } from './health.ts';
+import { registerProductRoutes } from './products.ts';
 import { registerIssueRoutes } from './issues.ts';
 import { registerSettingsRoutes } from './settings.ts';
 import { registerStateRoutes } from './state.ts';
@@ -13,6 +14,7 @@ export function registerRoutes(app: Hono, deps: AppDeps): void {
   registerHealthRoutes(app);
   registerStateRoutes(app, deps);
   registerEventRoutes(app, deps);
+  registerProductRoutes(app, deps);
   registerIssueRoutes(app, deps);
   if (deps.settings !== undefined) registerSettingsRoutes(app, deps.settings);
 }

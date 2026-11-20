@@ -290,6 +290,120 @@ describe('run', () => {
     expect(out).toMatch(/timed out after 1000 ms/);
     expect(out).toContain('partial');
   });
+
+  /** A fake sandbox whose commands run until their timeout or until `signal` aborts. */
+  function slow(sb: Sandbox): Sandbox {
+    return {
+      name: sb.name,
+      close: () => sb.close(),
+      exec: (argv, o) =>
+        new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            sb.exec(argv, o).then(resolve, reject);
+          }, o.timeoutMs);
+          o.signal?.addEventListener('abort', () => {
+            clearTimeout(timer);
+            // The FakeContainerRuntime reports an aborted result for an aborted signal.
+            sb.exec(argv, o).then(resolve, reject);
+          });
+        }),
+    };
+  }
+
+  it('returns promptly with an aborted result when the signal aborts during a long run', async () => {
+    const { sb } = await open([{ match: ['bash', '-lc'], result: { code: 0, stdout: 'done' } }]);
+    const controller = new AbortController();
+    const pending = tool('run').execute({ command: 'sleep 600', timeoutMs: 600_000 }, slow(sb), {
+      signal: controller.signal,
+    });
+    setTimeout(() => {
+      controller.abort();
+    }, 10);
+    const out = await Promise.race([
+      pending,
+      new Promise<string>((resolve) => setTimeout(() => resolve('still running'), 2_000)),
+    ]);
+    expect(out).toMatch(/aborted/);
+    expect(out).not.toContain('done');
+  });
+
+  it('forwards the signal to file operations', async () => {
+    await writeFile(path.join(wt, 'a.txt'), 'x');
+    const { sb } = await open();
+    const rec = recording(sb);
+    const controller = new AbortController();
+    await tool('read_file').execute({ path: 'a.txt' }, rec.sb, { signal: controller.signal });
+    expect(rec.opts[0]?.signal).toBe(controller.signal);
+  });
+});
+
+describe('sandbox output truncation notice', () => {
+  function truncating(sb: Sandbox): Sandbox {
+    return {
+      name: sb.name,
+      close: () => sb.close(),
+      exec: async (argv, o) => ({ ...(await sb.exec(argv, o)), truncated: true }),
+    };
+  }
+
+  it('tells the model when successful run output was truncated by the sandbox', async () => {
+    const { sb } = await open([{ match: ['bash', '-lc'], result: { code: 0, stdout: 'head' } }]);
+    const out = await tool('run').execute({ command: 'yes' }, truncating(sb));
+    expect(out).toContain('exit code: 0');
+    expect(out).toContain('[output truncated by sandbox]');
+  });
+
+  it('tells the model when failing run output was truncated by the sandbox', async () => {
+    const { sb } = await open([{ match: ['bash', '-lc'], result: { code: 2, stderr: 'boom' } }]);
+    const out = await tool('run').execute({ command: 'yes >&2; exit 2' }, truncating(sb));
+    expect(out).toContain('exit code: 2');
+    expect(out).toContain('[output truncated by sandbox]');
+  });
+
+  it('tells the model when file-op output was truncated, on success and failure', async () => {
+    await writeFile(path.join(wt, 'a.txt'), 'content');
+    const { sb } = await open();
+    const ok = await tool('read_file').execute({ path: 'a.txt' }, truncating(sb));
+    expect(ok).toContain('content');
+    expect(ok).toContain('[output truncated by sandbox]');
+    const failed = await tool('read_file').execute({ path: 'missing.txt' }, truncating(sb));
+    expect(failed).toMatch(/^Error:/);
+    expect(failed).toContain('[output truncated by sandbox]');
+  });
+
+  it('edit_file refuses to write when the read was truncated, leaving the file unchanged', async () => {
+    const original = `start\n${'x'.repeat(100)}\nend\n`;
+    await writeFile(path.join(wt, 'big.txt'), original);
+    const { sb } = await open();
+    const writes: string[][] = [];
+    // Simulates the sandbox output cap: `cat` returns only the head of the file, flagged truncated.
+    const capped: Sandbox = {
+      name: sb.name,
+      close: () => sb.close(),
+      exec: async (argv, o) => {
+        const r = await sb.exec(argv, o);
+        if (argv[0] !== 'cat') {
+          writes.push([...argv]);
+          return r;
+        }
+        return { ...r, stdout: r.stdout.slice(0, 20), truncated: true };
+      },
+    };
+    const out = await tool('edit_file').execute(
+      { path: 'big.txt', old: 'start', new: 'begin' },
+      capped,
+    );
+    expect(out).toMatch(/^Error:/);
+    expect(out).toContain('truncated');
+    expect(out).toMatch(/write_file|run/);
+    expect(writes).toEqual([]);
+    expect(await file('big.txt')).toBe(original);
+  });
+
+  it('adds no notice when the output was not truncated', async () => {
+    const { sb } = await open([{ match: ['bash', '-lc'], result: { code: 0, stdout: 'ok' } }]);
+    expect(await tool('run').execute({ command: 'true' }, sb)).not.toContain('truncated');
+  });
 });
 
 describe('output truncation', () => {
