@@ -1,12 +1,16 @@
 # vibecode/claude-code: the pinned, unmodified Claude Code CLI layered on an image (ADR 4).
-# - BASE_IMAGE=vibecode/base gives `vibecode/claude-code:<hash>`, the image of the one-time login
-#   command. The hash covers this file, so bumping CLAUDE_CODE_VERSION yields a new tag and a rebuild.
+# BASE_IMAGE is a required build arg (no default, so a build without it fails instead of using a
+# stale image). DockerCliRuntime passes it, and `npm run -s docker:images` prints the build commands
+# with it filled in (pipe to `sh` to build).
+# - BASE_IMAGE=vibecode/base:<base-hash> gives `vibecode/claude-code:<hash>`, the image of the one-time
+#   login command. The hash covers this file, so bumping CLAUDE_CODE_VERSION yields a new tag and a rebuild.
 # - BASE_IMAGE=<product image> gives the derived image Claude-backed runs use; the product image
 #   must be Debian/glibc. DockerCliRuntime builds both on first use.
 # The CLI comes with its own Node, so it does not depend on (or change) the product's Node.
 # Login state lives only in the vibecode-claude-config volume at /home/agent/.claude, which
-# Vibecode mounts but never reads. Build by hand: copy the build command from Settings → Claude Code.
-ARG BASE_IMAGE=vibecode/base
+# Vibecode mounts but never reads. Build by hand: `npm run -s docker:images`, or copy the build
+# command from Settings → Claude Code.
+ARG BASE_IMAGE
 ARG CLAUDE_CODE_VERSION=2.1.329
 
 FROM node:22-bookworm-slim AS cli
