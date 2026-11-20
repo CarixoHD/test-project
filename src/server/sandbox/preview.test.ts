@@ -596,7 +596,9 @@ describe('stopAll', () => {
         settled = true;
       });
       // vi.waitFor polls on real timers, so the fake clock does not move while we wait.
+      // Wait for the first poll too: the real git work before it may hold timers of its own.
       await vi.waitFor(() => {
+        expect(fetched).toHaveLength(1);
         expect(vi.getTimerCount()).toBe(1);
       });
       // One poll done and the sleep timer pending: the start is waiting between polls.
