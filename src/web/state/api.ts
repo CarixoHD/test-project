@@ -2,10 +2,15 @@ import { z } from 'zod';
 import {
   CreateProductResponseSchema,
   OkResponseSchema,
+  SettingsResponseSchema,
+  SettingsUpdateResponseSchema,
   StateResponseSchema,
   type CreateProductRequest,
   type CreateProductResponse,
   type OkResponse,
+  type SettingsResponse,
+  type SettingsUpdateRequest,
+  type SettingsUpdateResponse,
   type StateResponse,
 } from '../../shared/dto.ts';
 
@@ -149,6 +154,27 @@ export function handoffProduct(productId: string, signal?: AbortSignal): Promise
   return request(`/api/products/${encodeURIComponent(productId)}/handoff`, {
     method: 'POST',
     schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Account-wide settings; API keys appear only as provider + last 4 characters. */
+export function getSettings(signal?: AbortSignal): Promise<SettingsResponse> {
+  return request('/api/settings', {
+    schema: SettingsResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Updates the given settings sections; answers with the settings after the update. */
+export function updateSettings(
+  body: SettingsUpdateRequest,
+  signal?: AbortSignal,
+): Promise<SettingsUpdateResponse> {
+  return request('/api/settings', {
+    method: 'PUT',
+    body,
+    schema: SettingsUpdateResponseSchema,
     ...(signal ? { signal } : {}),
   });
 }
