@@ -273,6 +273,7 @@ function commands(): EventDraft[][] {
       onProduct('budget.warned', { spentUsd: 0.8, budgetUsd: 1 }),
       onProduct('product.paused', { reason: 'budget' }),
     ],
+    [onProduct('product.settings_changed', { budgetUsd: 5, budgetWarned: false })],
     [onProduct('product.resumed', {})],
     // issue 2 fails, then is rewritten; issue 3 is cancelled
     [

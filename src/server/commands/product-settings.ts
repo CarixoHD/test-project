@@ -7,14 +7,17 @@ import type { Event } from '../../shared/events.ts';
 import type { ProductId } from '../../shared/ids.ts';
 import { ROLES, type RoleModels } from '../../shared/models.ts';
 import type { CommandDeps } from './apply-plan.ts';
+import { budgetDrafts, clearsBudgetWarning } from './budget.ts';
 
 // Owner command: change a product's budget, parallelism, attempts, model overrides or git
 // remote (ARCHITECTURE §4.3 PATCH /api/products/:id/settings) → product.settings_changed.
+// A budget change is checked in the same commit: back under 80 % clears the warning
+// (budgetWarned:false), at 80 % / 100 % of the new budget it warns / pauses (§6 flow 5).
 
 export type UpdateProductSettingsResult =
   { ok: true; events: Event[] } | { ok: false; reason: string; code: 'invalid' | 'not_found' };
 
-type SettingsChange = Partial<ProductSettings>;
+type SettingsChange = Partial<ProductSettings> & { budgetWarned?: false };
 
 /** The new per-role models: given roles replace the current entry, null removes it. */
 function mergeModels(
@@ -54,7 +57,15 @@ export function updateProductSettings(
     if (rest.maxAttempts !== undefined) change.maxAttempts = rest.maxAttempts;
     if (rest.gitRemote !== undefined) change.gitRemote = rest.gitRemote;
     if (models !== undefined) change.models = mergeModels(product.settings.models, models);
-    return [{ type: 'product.settings_changed', productId, entityId: null, v: 1, data: change }];
+    const spentUsd = tx.q.productUsage(productId).apiUsd;
+    const budgetUsd =
+      change.budgetUsd === undefined ? product.settings.budgetUsd : change.budgetUsd;
+    if (clearsBudgetWarning(product, spentUsd, budgetUsd)) change.budgetWarned = false;
+    const budgetWarned = change.budgetWarned ?? product.budgetWarned;
+    return [
+      { type: 'product.settings_changed', productId, entityId: null, v: 1, data: change },
+      ...budgetDrafts({ id: productId, paused: product.paused, budgetWarned, budgetUsd }, spentUsd),
+    ];
   });
   if (!found) return { ok: false, code: 'not_found', reason: `No product ${productId}` };
   return { ok: true, events };
