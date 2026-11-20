@@ -123,3 +123,11 @@ export function debrisPlacements(scene: SceneState): DebrisPlacement[] {
     pos: [x - Math.floor(i / 6) * 1.2, 0, -3 + (i % 6) * 1.2] as const,
   }));
 }
+
+/** Props of the lazily loaded WebGL scene (Scene3D.tsx). */
+export interface Scene3DProps {
+  scene: SceneState;
+  frameloop: Frameloop;
+  /** prefers-reduced-motion: no placement, walk or work animations. */
+  reducedMotion: boolean;
+}
