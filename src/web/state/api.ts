@@ -174,6 +174,24 @@ export function handoffProduct(productId: string, signal?: AbortSignal): Promise
   });
 }
 
+/** Pauses the product's build; 409 when it is already paused. */
+export function pauseProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/pause`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Resumes the product's build; 409 when it is not paused or its budget is still exhausted. */
+export function resumeProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/resume`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
 /** Adds an owner issue to the product; the card arrives later as `issue.created`. */
 export function addIssue(
   productId: string,
