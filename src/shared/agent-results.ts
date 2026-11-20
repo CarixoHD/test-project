@@ -49,6 +49,7 @@ export const IssueOpSchema = z.discriminatedUnion('op', [
     title: Text.optional(),
     body: Text.optional(),
     dependsOn: z.array(Text).optional(),
+    priority: z.int().optional(),
   }),
   z.object({ op: z.literal('cancel'), id: Text, reason: Text }),
   /** failed → open with the attempt count reset. */

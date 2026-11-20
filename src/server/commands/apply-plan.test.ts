@@ -218,6 +218,23 @@ describe('applyPlan: valid plans', () => {
     expect(store.q.issue(a)).toMatchObject({ body: 'clearer', rev: 2, status: 'failed' });
   });
 
+  it('edits only the priority of an open issue', () => {
+    const { store, deps } = setup();
+    const { a } = seedIssues(deps);
+    const before = store.q.issue(a);
+    const r = applyPlan(deps, P, plan([{ op: 'edit', id: a, priority: 2 }]), 2);
+    expect(r.ok).toBe(true);
+    expect(store.q.issue(a)).toMatchObject({
+      priority: 2,
+      rev: 2,
+      title: before?.title,
+      body: before?.body,
+    });
+    const edited = store.eventsSince(0).filter((e) => e.type === 'issue.edited');
+    expect(edited.at(-1)?.data).toEqual({ rev: 2, priority: 2 });
+    expectSnapshotMatchesReplay(store);
+  });
+
   it('rewrite moves a failed issue back to open and resets attempts', () => {
     const { store, deps } = setup();
     const { a } = seedIssues(deps);

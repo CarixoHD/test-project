@@ -4,7 +4,7 @@ import { ApiError, editIssue } from '../../state/api.ts';
 import { useApp, type AppSnapshot } from '../../state/store.ts';
 import { Button, Dialog, Markdown } from '../../ui/index.ts';
 import { ISSUE_STATUS_BADGE } from './issue-status.ts';
-import { IssueFields, TITLE_REQUIRED, type IssueDraft } from './IssueFields.tsx';
+import { IssueFields, PriorityField, TITLE_REQUIRED, type IssueDraft } from './IssueFields.tsx';
 
 export interface EditIssueDialogProps {
   /** The live issue from the store; its latest values are shown when an edit is stale. */
@@ -20,7 +20,7 @@ export function isEditable(issue: IssueState): boolean {
   return issue.status !== 'completed' && issue.status !== 'cancelled';
 }
 
-/** "Edit issue #n": edits title, body and dependencies, guarded by the issue's `rev`. */
+/** "Edit issue #n": edits title, body, dependencies and priority, guarded by the issue's `rev`. */
 export function EditIssueDialog({ issue, open, onClose }: EditIssueDialogProps) {
   return (
     <Dialog open={open} onClose={onClose} title={`Edit issue #${String(issue.number)}`}>
@@ -41,6 +41,9 @@ function EditIssueForm({ issue, onDone }: { issue: IssueState; onDone: () => voi
   // The form edits a copy taken at open (or reload) time; `baseRev` is that copy's revision.
   const [draft, setDraft] = useState<IssueDraft>(() => draftOf(issue));
   const [baseRev, setBaseRev] = useState(issue.rev);
+  // `basePriority` is the priority the form opened with; priority is sent only when it changed.
+  const [priority, setPriority] = useState(issue.priority);
+  const [basePriority, setBasePriority] = useState(issue.priority);
   const [titleError, setTitleError] = useState<string | null>(null);
   const [problem, setProblem] = useState<Problem>(null);
   const [isSubmitting, setSubmitting] = useState(false);
@@ -49,6 +52,8 @@ function EditIssueForm({ issue, onDone }: { issue: IssueState; onDone: () => voi
   function reload() {
     setDraft(draftOf(issue));
     setBaseRev(issue.rev);
+    setPriority(issue.priority);
+    setBasePriority(issue.priority);
     setProblem(null);
     titleRef.current?.focus();
   }
@@ -70,6 +75,7 @@ function EditIssueForm({ issue, onDone }: { issue: IssueState; onDone: () => voi
         title,
         body: draft.body,
         dependsOn: draft.dependsOn,
+        ...(priority === basePriority ? {} : { priority }),
         rev: baseRev,
       });
       onDone();
@@ -96,6 +102,7 @@ function EditIssueForm({ issue, onDone }: { issue: IssueState; onDone: () => voi
         titleError={titleError}
         titleRef={titleRef}
       />
+      <PriorityField value={priority} onChange={setPriority} />
       {problem?.kind === 'error' ? (
         <p role="alert" className="ui-field__error">
           {problem.message}

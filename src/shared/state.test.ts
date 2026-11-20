@@ -471,7 +471,16 @@ const ISSUE_CASES: Case[] = [
     then: (s) => {
       expect(issue(s)).toMatchObject({ rev: 2, title: 'Add login page', dependsOn: [] });
       expect(issue(s).body).toBe(ISSUE_VIEW.body);
+      expect(issue(s).priority).toBe(ISSUE_VIEW.priority);
     },
+  },
+  {
+    name: 'issue.edited changes only the priority when that is all it carries',
+    given: () => withIssue(),
+    when: () =>
+      ev({ type: 'issue.edited', productId: P, entityId: I, v: 1, data: { rev: 2, priority: 3 } }),
+    then: (s, before) =>
+      expect(issue(s)).toEqual({ ...must(before.issues[I]), rev: 2, priority: 3 }),
   },
   {
     name: 'issue.status_changed sets status, attempt count and runAfter',
