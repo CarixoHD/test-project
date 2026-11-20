@@ -253,7 +253,7 @@ describe('store.q.agent', () => {
       {
         type: 'agent.spawned',
         productId: P,
-        entityId: 'a-1',
+        entityId: AgentIdSchema.parse('a-1'),
         v: 1,
         data: {
           role: 'implementer',

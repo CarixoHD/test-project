@@ -2,13 +2,15 @@ import type { Role } from '../../../shared/models.ts';
 import type { AgentView } from '../../../shared/state.ts';
 
 // Words for agents, shared by the agent list, the agent panel and the 3D view, so every place
-// names a worker the same way (PRD: foreman, builder, inspector, drafter).
+// names a worker the same way (PRD: foreman, builder, inspector, drafter;
+// utility runs have no figure in the PRD and are called helpers).
 
 export const ROLE_FIGURE = {
   orchestrator: 'Foreman',
   implementer: 'Builder',
   reviewer: 'Inspector',
   sparring: 'Drafter',
+  utility: 'Helper',
 } as const satisfies Record<Role, string>;
 
 /** "Builder (implementer)": the worker figure's name plus the technical role. */

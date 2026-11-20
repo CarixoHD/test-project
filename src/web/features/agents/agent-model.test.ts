@@ -25,6 +25,7 @@ describe('roleLabel', () => {
     expect(roleLabel('implementer')).toBe('Builder (implementer)');
     expect(roleLabel('reviewer')).toBe('Inspector (reviewer)');
     expect(roleLabel('sparring')).toBe('Drafter (sparring)');
+    expect(roleLabel('utility')).toBe('Helper (utility)');
   });
 });
 
