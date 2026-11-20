@@ -100,7 +100,12 @@ const productEvents = [
     'product.settings_changed',
     PRODUCT,
     ProductSettingsSchema.partial()
-      .extend({ project: ProjectConfigSchema.optional() })
+      .extend({
+        project: ProjectConfigSchema.optional(),
+        // Set when a settings change takes API spend back under 80 % of the budget: the next
+        // crossing warns again.
+        budgetWarned: z.literal(false).optional(),
+      })
       .refine((d) => Object.keys(d).length > 0, 'settings_changed must change something'),
   ),
   defineEvent('product.handed_off', PRODUCT, z.object({ prdVersion: Positive })),

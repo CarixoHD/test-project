@@ -220,7 +220,7 @@ POST /api/settings/password             {current?, next}
 POST /api/login {password} · POST /api/logout · GET /api/session
 ```
 
-**Product settings** (`routes/product-settings.ts`, `commands/product-settings.ts`): `PATCH /api/products/:id/settings` takes `ProductSettingsUpdateRequestSchema` (`shared/dto.ts`, strict, at least one field): `budgetUsd` null or > 0, `maxParallel` and `maxAttempts` integers 1–10, `models` a partial `Record<Role, ModelRef|null>` (null = back to the global default; other roles keep their override), `gitRemote` `{url}`|null. `updateProductSettings({store, ids}, productId, input)` → `{ok; events}` | `{ok:false; code:'invalid'|'not_found'; reason}` commits one `product.settings_changed` with the given fields (`models` = the merged map). Invalid → 400, unknown product → 404, else `{ok:true}`.
+**Product settings** (`routes/product-settings.ts`, `commands/product-settings.ts`): `PATCH /api/products/:id/settings` takes `ProductSettingsUpdateRequestSchema` (`shared/dto.ts`, strict, at least one field): `budgetUsd` null or > 0, `maxParallel` and `maxAttempts` integers 1–10, `models` a partial `Record<Role, ModelRef|null>` (null = back to the global default; other roles keep their override), `gitRemote` `{url}`|null. `updateProductSettings({store, ids}, productId, input)` → `{ok; events}` | `{ok:false; code:'invalid'|'not_found'; reason}` commits one `product.settings_changed` with the given fields (`models` = the merged map). In the same commit the budget is re-checked against the new value: a warned product back under 80 % gets `budgetWarned:false` on the event (the next crossing warns again), and `budgetDrafts` adds `budget.warned` / `product.paused{budget}` when the new budget is already 80 % / 100 % spent. Invalid → 400, unknown product → 404, else `{ok:true}`.
 
 **Settings** (DTOs in `shared/dto.ts`; `commands/settings.ts`, `createAccountSettings({store, db, secrets})` → `{read, view, update, modelDeps}`; mounted when `AppDeps.settings` is given):
 - `GET /api/settings` → `{providers: [{id, name, enabled, needsKey, baseURL|null}], providerConfig, keys: [{provider, last4|null}], roleDefaults, defaultModel|null, priceOverrides}`. Keys never appear in full; `last4` is null for keys shorter than 16 chars.
@@ -290,6 +290,11 @@ handoff({store, ids, git}, productId): Promise<{ok; events}>   // flow 2; phase 
 // SparRequestSchema / SavePrdDraftRequestSchema in shared/dto.ts. Spar message ids: nextSparMessageId(deps).
 pauseProduct({store, ids}, productId) → {ok; events}    // flow 5; product.paused{owner}; already paused → conflict
 resumeProduct({store, ids}, productId) → {ok; events}   // product.resumed; not paused, or budget still exhausted → conflict
+//   ('Budget exhausted: raise the budget in Settings')
+checkBudget({store, ids}, productId) → {ok:true; level; spentUsd; unpriced; events} | {ok:false; code:'not_found'}
+//   commands/budget.ts. API spend only (subscription never counts; unpriced usage is not counted, `unpriced` flags it).
+//   >= 80 % and !budgetWarned → budget.warned{spentUsd, budgetUsd}; >= 100 % and not paused → product.paused{budget}.
+//   budgetAfterUsage({store, ids}) is the agent-run afterUsage hook (wired in main.ts for every RecordedRunContext).
 //   POST /api/products/:id/pause | resume → 200 {ok:true}. The scheduler reacts through the store bus.
 createProduct({store, ids, git}, {name, idea}): Promise<{ok:true; id: ProductId} | {ok:false; reason}>;
 // CreateProductRequestSchema (shared/dto.ts): trimmed name 1–80, idea 1–4000. git.initRepo(id) runs first,
@@ -579,7 +584,7 @@ Product repository contract, which the orchestrator writes:
    9. Failure handling. A counted failure increments `attempt_count`. If attempts are left, the issue goes back to `open` and the next attempt gets the feedback. Otherwise it emits `issue.failed`, which becomes an orchestrator trigger, `inbox{failed}` and scene debris.
 5. **Pause, budget and rate limits.**
    - `shouldStop()` makes each run finish its current step and return `stopped`. The attempt becomes `interrupted` (not counted) and the issue returns to `open`.
-   - After every `usage.recorded`, `budgetLevel` is computed over API spend. At 80% it emits `budget.warned` and `inbox` once. At 100% it emits `product.paused{budget}` and `inbox`. Resume is refused (409) while the budget is still exhausted.
+   - After every `usage.recorded` (the `afterUsage` hook → `checkBudget`) and after every settings change, `budgetLevel` is computed over API spend. At 80% it emits `budget.warned` and `inbox` once. At 100% it emits `product.paused{budget}` and `inbox`. Resume is refused (409) while the budget is still exhausted. Raising the budget so spend is back under 80% clears the warning (`product.settings_changed{budgetWarned:false}`).
    - A `rate_limited` result emits `backend.limited{until}`, which applies to the whole account, and the agent state goes to `rate_limited`, which the scene shows as the bench. The scheduler skips that backend until `until`.
 6. **Apply changes.** The owner edits the draft while the build continues. `apply-prd` creates version N+1, commits `docs/PRD.md` and emits `prd.applied`, which becomes a trigger. The orchestrator gets both PRD versions plus all issues. It may create, edit or cancel open issues, and it creates follow-ups for merged work. Its summary goes to the inbox.
 7. **Owner issue ops.** Add, edit and cancel go through `shared/issues.transition` guards. An edit bumps `rev`, which makes any in-flight attempt discard itself at merge time.

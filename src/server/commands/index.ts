@@ -50,3 +50,10 @@ export {
 export { updateProductSettings, type UpdateProductSettingsResult } from './product-settings.ts';
 export { handoff, PRD_PATH, type HandoffDeps, type HandoffResult } from './handoff.ts';
 export { pauseProduct, resumeProduct, type PauseCommandResult } from './pause.ts';
+export {
+  budgetAfterUsage,
+  budgetDrafts,
+  checkBudget,
+  clearsBudgetWarning,
+  type CheckBudgetResult,
+} from './budget.ts';
