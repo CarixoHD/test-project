@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -127,6 +127,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount while the fake network and timers are still in place.
+  cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
