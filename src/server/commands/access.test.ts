@@ -32,7 +32,9 @@ describe('access (owner password and sessions)', () => {
     await access.changePassword({ next: PW }, 'c');
 
     expect(await access.changePassword({ next: PW2 }, 'c')).toMatchObject({ ok: false });
-    expect(await access.changePassword({ current: PW2, next: PW2 }, 'c')).toMatchObject({ ok: false });
+    expect(await access.changePassword({ current: PW2, next: PW2 }, 'c')).toMatchObject({
+      ok: false,
+    });
     expect(await access.checkPassword(PW)).toBe(true);
 
     expect(await access.changePassword({ current: PW, next: PW2 }, 'c')).toEqual({ ok: true });

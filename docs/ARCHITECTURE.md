@@ -199,7 +199,7 @@ Hooks run inside the transaction after the builder's drafts are appended and pro
 **Invariant (tested):** `events.reduce(reduce, emptyState)` equals `snapshot().state` after any command sequence. Tests call `expectSnapshotMatchesReplay(store)` from `store/testing.ts`.
 
 ### 4.3 server/http
-These are thin routes. Each one validates with zod, calls a command, and returns `{ok}` or a typed error. `createApp({store, ids, git, redactor, sparring?, webRoot?, heartbeatMs?})` gets the command dependencies from the composition root (`main.ts`).
+These are thin routes. Each one validates with zod, calls a command, and returns `{ok}` or a typed error. `createApp({store, ids, git, redactor, access?, clientKey?, settings?, sparring?, previews?, webRoot?, heartbeatMs?})` gets the command dependencies from the composition root (`main.ts`).
 
 ```
 GET  /api/state                         → {state, lastSeq}
@@ -221,6 +221,14 @@ GET|PUT /api/settings                   providers, keys (write-only, masked on r
 POST /api/settings/password             {current?, next}
 POST /api/login {password} · POST /api/logout · GET /api/session
 ```
+
+**Access control** (`http/auth.ts`, ADR 9; `createApp({..., access?, clientKey?})`). `installAccessControl` runs before every route, the SPA included:
+- No password (or no `access` wired): a `Host` header that is not loopback → 403 `forbidden` (DNS rebinding).
+- Every POST/PUT/PATCH/DELETE: a Content-Type other than `application/json` → 415 `unsupported_media_type`; an `Origin` (when present) whose host is not the request `Host` → 403 `forbidden`. The web client sends `Content-Type: application/json` on every mutation, bodyless ones included.
+- Password set: every `/api` path except `/api/login` and `/api/session` (SSE included) needs a valid `vibecode_session` cookie → else 401 `unauthorized`.
+- Routes (mounted when `access` is given; DTOs `LoginRequestSchema`, `PasswordChangeRequestSchema`, `SessionResponseSchema` in `shared/dto.ts`): `POST /api/login` sets the cookie (401 wrong password, 409 no password set, 429 `rate_limited` after 5 attempts per minute per `clientKey`, by default the socket's remote address). `POST /api/logout` clears it. `GET /api/session` → `{passwordSet, authenticated}` (authenticated is always true without a password). `POST /api/settings/password` `{current?, next}`: `next` 12–1024 chars, and `current` is required and checked (rate-limited) once a password is set (400 when missing or wrong). It answers with a fresh session cookie, because the change ends every other session.
+- `commands/access.ts`: `createAccess({store, secrets, clock})` → `{hasPassword(), checkPassword(pw), login(pw, client), changePassword(input, client), resetPassword(next), sessions}`. The scrypt hash is the `passwordHash` row of `settings`, read on every call, so a password set by `npm run set-password` (`scripts/set-password.ts`, which uses `resetPassword` and needs no current password) applies to a running server. Setting it rotates the session key and commits `settings.changed{sections:['password'], keys:[]}`.
+- Boot (`main.ts`): `assertBindAllowed(config.host, access.hasPassword())` runs before recovery and listen.
 
 **Product settings** (`routes/product-settings.ts`, `commands/product-settings.ts`): `PATCH /api/products/:id/settings` takes `ProductSettingsUpdateRequestSchema` (`shared/dto.ts`, strict, at least one field): `budgetUsd` null or > 0, `maxParallel` and `maxAttempts` integers 1–10, `models` a partial `Record<Role, ModelRef|null>` (null = back to the global default; other roles keep their override), `gitRemote` `{url}`|null. `updateProductSettings({store, ids}, productId, input)` → `{ok; events}` | `{ok:false; code:'invalid'|'not_found'; reason}` commits one `product.settings_changed` with the given fields (`models` = the merged map). In the same commit the budget is re-checked against the new value: a warned product back under 80 % gets `budgetWarned:false` on the event (the next crossing warns again), and `budgetDrafts` adds `budget.warned` / `product.paused{budget}` when the new budget is already 80 % / 100 % spent. Invalid → 400, unknown product → 404, else `{ok:true}`.
 
@@ -456,9 +464,15 @@ secrets.get(key) / secrets.set(key, value) / secrets.delete(key) / secrets.list(
 redactor.register(value); redactor.redact(text)            // all secret values ≥ 8 chars; applied in store.commit, log writer, errors
                                                            // literal, longest first; ≥16 chars → `***`+last4, 8–15 chars → `[REDACTED]`
 redactor.safeBoundary(text)                                // where continued/cut text may be split without splitting a secret
-password.hash(pw) / password.verify(pw, hash)              // node:crypto scrypt N=2^15, 16-byte salt
-session.issue() / session.verify(cookie)                   // HMAC-SHA256 signed, 30-day expiry, HttpOnly SameSite=Strict
-assertBindAllowed(host, hasPassword)                       // throws unless loopback or password set
+hashPassword(pw) / verifyPassword(pw, hash): Promise       // node:crypto scrypt N=2^15 r=8 p=1, 16-byte salt, timingSafeEqual;
+                                                           // stored `scrypt$N$r$p$salt$hash` (base64url)
+createSessions({key: () => string, clock}) → {issue(), verify(token)}
+                                                           // `<expMs>.<nonce>.<HMAC-SHA256>`, 30-day expiry; key in secrets
+                                                           // `sessionKey` (SESSION_KEY_SECRET), rotated on password change
+sessionCookieOptions(secure)                               // HttpOnly, SameSite=Strict, Path=/, Max-Age 30 d, Secure over HTTPS
+assertBindAllowed(host, hasPassword)                       // throws (actionable message) unless loopback or password set
+isLoopbackHost(host) / isLoopbackHostHeader(header)        // localhost, 127.0.0.0/8, ::1
+createRateLimiter({limit, windowMs, clock}).attempt(client) // in-memory sliding window; false = over the limit
 ```
 
 **server/util/exec.ts** is the only importer of `node:child_process` (ESLint enforces this):
@@ -552,7 +566,7 @@ backend_limits(backend PK /* e.g. 'claude-code', 'anthropic' */, until INT NULL,
 usage_totals(scope 'product'|'issue', scope_id, api_usd REAL, api_unpriced INT, sub_input, sub_output, sub_cache_read, sub_cache_write,
              sub_reasoning, sub_calls)  PK(scope, scope_id)   -- running totals, added in commit order (snapshot ≡ replay)
 previews(product_id PK, container, url, started_at)
-settings(key PK, value JSON)      -- host-independent prefs, role defaults, provider configs (no secrets), price overrides, password_hash
+settings(key PK, value JSON)      -- host-independent prefs, role defaults, provider configs (no secrets), price overrides, passwordHash
 secrets(key PK, value, updated_at) -- api keys, git tokens, session HMAC key; never in events, never sent to the client in full
 ```
 On-disk layout under `VIBECODE_DATA_DIR`:

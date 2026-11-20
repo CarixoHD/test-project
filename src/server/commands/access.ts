@@ -24,8 +24,7 @@ export const LOGIN_RATE_LIMIT = { limit: 5, windowMs: 60_000 } as const;
 const RATE_LIMITED = 'Too many attempts; try again in a minute';
 
 export type PasswordChangeResult =
-  | { ok: true }
-  | { ok: false; code: 'invalid' | 'rate_limited'; reason: string };
+  { ok: true } | { ok: false; code: 'invalid' | 'rate_limited'; reason: string };
 
 export type LoginResult =
   | { ok: true; token: string }
@@ -106,7 +105,8 @@ export function createAccess({ store, secrets, clock }: AccessDeps): Access {
       if (storedHash() === undefined) {
         return { ok: false, code: 'conflict', reason: 'No password is set' };
       }
-      if (!limiter.attempt(client)) return { ok: false, code: 'rate_limited', reason: RATE_LIMITED };
+      if (!limiter.attempt(client))
+        return { ok: false, code: 'rate_limited', reason: RATE_LIMITED };
       if (!(await checkPassword(password))) {
         return { ok: false, code: 'unauthorized', reason: 'Wrong password' };
       }

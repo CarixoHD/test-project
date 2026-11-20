@@ -25,7 +25,11 @@ function setup() {
   });
   const req = (path: string, init: RequestInit = {}) => app.request(`${LOCAL}${path}`, init);
   const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
-    req(path, { method: 'POST', headers: { ...JSON_HEADERS, ...headers }, body: JSON.stringify(body) });
+    req(path, {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, ...headers },
+      body: JSON.stringify(body),
+    });
   const login = async (password = PW, headers: Record<string, string> = {}) => {
     const res = await post('/api/login', { password }, headers);
     return { res, cookie: sessionCookie(res) };
@@ -79,8 +83,15 @@ describe('access control without a password (loopback only)', () => {
 
   it('applies the Host check even when no access control is wired', async () => {
     const base = setupStore();
-    const app = createApp({ store: base.store, ids: base.ids, git: base.git, redactor: base.redactor });
-    expect((await app.request('/api/state', { headers: { host: 'evil.example' } })).status).toBe(403);
+    const app = createApp({
+      store: base.store,
+      ids: base.ids,
+      git: base.git,
+      redactor: base.redactor,
+    });
+    expect((await app.request('/api/state', { headers: { host: 'evil.example' } })).status).toBe(
+      403,
+    );
   });
 });
 
@@ -125,9 +136,13 @@ describe('mutations must be same-origin JSON', () => {
   it('accepts JSON with a charset parameter', async () => {
     const { post, store } = setup();
     store.commit(() => [productCreated()]);
-    const res = await post(`/api/products/${TEST_PRODUCT}/pause`, {}, {
-      'content-type': 'Application/JSON; charset=utf-8',
-    });
+    const res = await post(
+      `/api/products/${TEST_PRODUCT}/pause`,
+      {},
+      {
+        'content-type': 'Application/JSON; charset=utf-8',
+      },
+    );
     expect(res.status).toBe(200);
   });
 });

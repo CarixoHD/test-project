@@ -9,12 +9,16 @@ describe('bind policy', () => {
     },
   );
 
-  it.each(['0.0.0.0', '::', '192.168.1.5', 'example.com', 'localhost.evil.com', '127.0.0.1.nip.io'])(
-    '%s is not loopback',
-    (host) => {
-      expect(isLoopbackHost(host)).toBe(false);
-    },
-  );
+  it.each([
+    '0.0.0.0',
+    '::',
+    '192.168.1.5',
+    'example.com',
+    'localhost.evil.com',
+    '127.0.0.1.nip.io',
+  ])('%s is not loopback', (host) => {
+    expect(isLoopbackHost(host)).toBe(false);
+  });
 
   it('refuses remote bind without a password, with an actionable message', () => {
     expect(() => {
