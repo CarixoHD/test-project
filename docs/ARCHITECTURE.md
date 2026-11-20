@@ -214,8 +214,15 @@ POST /api/login {password} · POST /api/logout · GET /api/session
 
 ### 4.4 server/scheduler
 ```ts
-interface Scheduler { start(): void; stop(): Promise<void>; kick(): void; }
+createScheduler({store, clock, runners: {runOrchestrator(productId, triggers, run), runAttempt(issueId, run)},
+  isBackendBlocked?(productId, role) /* default: backendBlockedByLimits(store, clock) */,
+  orchestratorNotBefore?(productId): epochMs, ids?, timer?, tickMs? /* 2000 */, onError?}): Scheduler
+interface Scheduler { start(): void; stop(): Promise<void>; kick(): void;
+  shouldStop(runId): boolean; withMergeLock<T>(productId, fn: () => Promise<T>): Promise<T>;
+  liveRuns(): ReadonlyMap<RunId, {abort: AbortController, productId, kind: 'orchestrator'|'attempt', issueId?}>; }
+RunHandle = {runId, signal /* aborted on stop() */, shouldStop()}
 ```
+Issue `priority` is an integer; higher is more urgent (urgent > high > normal > low), ties by lower number. Runners are called synchronously; a run that settles does not re-tick by itself (its end events or the 2 s timer do), so a run that ends without committing cannot hot-loop. The orchestrator counts against `maxParallel`. The default backend check resolves the role's backend from `settings.models[role].provider` and treats a `backendLimits` entry as active while it needs login, has no `until`, or `until` is in the future.
 It ticks on every bus event and every 2 s. A product is skipped if it is not `building`, if it is paused, or if its budget is exhausted. For each remaining product it does three things. (1) If `pendingTriggers` is non-empty and no orchestrator run is live, it starts one. (2) While running agents (orchestrator plus attempts) is below `maxParallel`, it starts `runAttempt` for the next ready issue, ordered by priority and then number. (3) It skips roles whose backend is rate-limited or needs login. Live runs are kept in an in-memory `Map<runId, {abort, productId}>`. `shouldStop(runId)` returns true when the product is paused, the budget is exhausted, or the server is shutting down. It also owns `withMergeLock(productId, fn)`, a per-product async mutex.
 
 ### 4.5 server/pipeline

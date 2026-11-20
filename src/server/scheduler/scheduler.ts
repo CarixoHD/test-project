@@ -166,9 +166,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         onError(err, { runId, kind, productId });
       })
       .finally(() => {
+        // No immediate re-tick: a run that ends without committing anything (e.g. a failing
+        // orchestrator) would otherwise restart in a hot loop. Its end events or the timer tick.
         live.delete(runId);
         settled.delete(runId);
-        if (running && !stopping) kick();
       });
     settled.set(runId, done);
   }

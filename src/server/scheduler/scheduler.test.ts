@@ -18,7 +18,7 @@ const draft = (type: string, productId: ProductId | null, entityId: string | nul
 
 type Deferred = { resolve(): void; reject(err: unknown): void };
 type Call =
-  | { kind: 'orchestrator'; productId: ProductId; triggers: Event[]; run: RunHandle } & Deferred
+  | ({ kind: 'orchestrator'; productId: ProductId; triggers: Event[]; run: RunHandle } & Deferred)
   | ({ kind: 'attempt'; issueId: IssueId; run: RunHandle } & Deferred);
 
 /** Runners that never finish until the test resolves them. */
@@ -37,6 +37,20 @@ function fakeRunners() {
   const attempts = () => calls.filter((c) => c.kind === 'attempt');
   const orchestrators = () => calls.filter((c) => c.kind === 'orchestrator');
   return { calls, runners, attempts, orchestrators };
+}
+
+/** `xs[i]`, failing the test when it is missing. */
+function nth<T>(xs: readonly T[], i: number): T {
+  const x = xs.at(i);
+  if (x === undefined) throw new Error(`no element at ${String(i)}`);
+  return x;
+}
+
+/** The id created for `key`. */
+function idOf(ids: Record<string, IssueId>, key: string): IssueId {
+  const id = ids[key];
+  if (id === undefined) throw new Error(`no issue for key ${key}`);
+  return id;
 }
 
 class FakeTimer implements Timer {
@@ -108,16 +122,35 @@ function setup(
 
   /** Applies a plan (consuming all triggers so far, so no orchestrator wakes) → ids by key. */
   function plan(ops: PlanResult['issueOps'], productId = P): Record<string, IssueId> {
-    const r = applyPlan({ store, ids }, productId, { issueOps: ops, questions: [], summary: 's' }, store.snapshot().lastSeq);
+    const r = applyPlan(
+      { store, ids },
+      productId,
+      { issueOps: ops, questions: [], summary: 's' },
+      store.snapshot().lastSeq,
+    );
     if (!r.ok) throw new Error(r.reason);
     return r.createdIds;
   }
 
   function complete(id: IssueId, productId = P) {
     store.commit(() => [
-      draft('issue.status_changed', productId, id, { from: 'open', to: 'in_progress', attemptCount: 0, runAfter: 0 }),
-      draft('issue.status_changed', productId, id, { from: 'in_progress', to: 'in_review', attemptCount: 0, runAfter: 0 }),
-      draft('issue.completed', productId, id, { attemptId: 'attempt-x', mergedOrder: 1, mergeSha: 'c'.repeat(40) }),
+      draft('issue.status_changed', productId, id, {
+        from: 'open',
+        to: 'in_progress',
+        attemptCount: 0,
+        runAfter: 0,
+      }),
+      draft('issue.status_changed', productId, id, {
+        from: 'in_progress',
+        to: 'in_review',
+        attemptCount: 0,
+        runAfter: 0,
+      }),
+      draft('issue.completed', productId, id, {
+        attemptId: 'attempt-x',
+        mergedOrder: 1,
+        mergeSha: 'c'.repeat(40),
+      }),
     ]);
   }
 
@@ -132,7 +165,7 @@ function setup(
 }
 
 describe('scheduler: attempts', () => {
-  it('starts at most maxParallel (default 3) attempts and fills a slot when one ends', async () => {
+  it('starts at most maxParallel (default 3) attempts and fills a freed slot on the next tick', async () => {
     const t = setup();
     t.plan(['a', 'b', 'c', 'd', 'e'].map((k) => create(k)));
     t.scheduler.start();
@@ -143,8 +176,9 @@ describe('scheduler: attempts', () => {
     t.scheduler.kick();
     expect(t.attempts()).toHaveLength(3); // live issues are not started twice
 
-    t.attempts()[0]!.resolve();
+    nth(t.attempts(), 0).resolve();
     await flush();
+    t.timer.fire();
     expect(t.attempts()).toHaveLength(4);
     expect(t.scheduler.liveRuns().size).toBe(3);
     await t.shutdown();
@@ -169,12 +203,12 @@ describe('scheduler: attempts', () => {
     t.scheduler.start();
     const order: IssueId[] = [];
     for (let i = 0; i < 5; i++) {
-      const last = t.attempts().at(-1)!;
+      const last = nth(t.attempts(), -1);
       if (last.kind !== 'attempt') throw new Error('expected attempt');
       order.push(last.issueId);
-      t.complete(last.issueId);
       last.resolve();
       await flush();
+      t.complete(last.issueId); // the run's end events tick the scheduler
     }
     expect(order).toEqual([ids.urgent, ids.high, ids.normal1, ids.normal2, ids.low]);
   });
@@ -186,9 +220,10 @@ describe('scheduler: attempts', () => {
     const started = () => t.attempts().map((c) => (c.kind === 'attempt' ? c.issueId : null));
     expect(started()).toEqual([ids.a]);
 
-    t.complete(ids.a!);
-    t.attempts()[0]!.resolve();
+    nth(t.attempts(), 0).resolve();
     await flush();
+    expect(started()).toEqual([ids.a]);
+    t.complete(idOf(ids, 'a'));
     expect(started()).toEqual([ids.a, ids.b]);
     await t.shutdown();
   });
@@ -198,8 +233,18 @@ describe('scheduler: attempts', () => {
     const ids = t.plan([create('a')]);
     const runAfter = t.clock.now() + 10_000;
     t.store.commit(() => [
-      draft('issue.status_changed', P, ids.a!, { from: 'open', to: 'in_progress', attemptCount: 0, runAfter: 0 }),
-      draft('issue.status_changed', P, ids.a!, { from: 'in_progress', to: 'open', attemptCount: 0, runAfter }),
+      draft('issue.status_changed', P, idOf(ids, 'a'), {
+        from: 'open',
+        to: 'in_progress',
+        attemptCount: 0,
+        runAfter: 0,
+      }),
+      draft('issue.status_changed', P, idOf(ids, 'a'), {
+        from: 'in_progress',
+        to: 'open',
+        attemptCount: 0,
+        runAfter,
+      }),
     ]);
     t.scheduler.start();
     expect(t.attempts()).toHaveLength(0);
@@ -231,7 +276,9 @@ describe('scheduler: gating', () => {
     const t = setup();
     t.store.commit(() => [draft('product.paused', P, null, { reason: 'owner' })]);
     t.plan([create('a')]);
-    t.store.commit(() => [draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null })]);
+    t.store.commit(() => [
+      draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null }),
+    ]);
     t.scheduler.start();
     t.timer.fire();
     expect(t.calls).toHaveLength(0);
@@ -240,7 +287,9 @@ describe('scheduler: gating', () => {
   it('a budget-exhausted product starts nothing', () => {
     const t = setup({ budgetUsd: 0 });
     t.plan([create('a')]);
-    t.store.commit(() => [draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null })]);
+    t.store.commit(() => [
+      draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null }),
+    ]);
     t.scheduler.start();
     expect(t.calls).toHaveLength(0);
   });
@@ -255,7 +304,7 @@ describe('scheduler: gating', () => {
     const t = setup();
     t.plan([create('a')]);
     t.scheduler.start();
-    const run = t.attempts()[0]!.run;
+    const run = nth(t.attempts(), 0).run;
     expect(run.shouldStop()).toBe(false);
     expect(t.scheduler.shouldStop(run.runId)).toBe(false);
 
@@ -272,7 +321,7 @@ describe('scheduler: gating', () => {
     const t = setup({ budgetUsd: 1 });
     t.plan([create('a')]);
     t.scheduler.start();
-    const run = t.attempts()[0]!.run;
+    const run = nth(t.attempts(), 0).run;
     expect(run.shouldStop()).toBe(false);
     t.store.commit(() => [
       draft('usage.recorded', P, 'usage-1', {
@@ -298,17 +347,18 @@ describe('scheduler: gating', () => {
     const t = setup();
     t.plan([create('a'), create('b')]);
     t.scheduler.start();
-    const [a, b] = t.attempts();
+    const a = nth(t.attempts(), 0);
+    const b = nth(t.attempts(), 1);
     let stopped = false;
     const stopping = t.scheduler.stop().then(() => {
       stopped = true;
     });
-    expect(a!.run.signal.aborted).toBe(true);
-    expect(a!.run.shouldStop()).toBe(true);
+    expect(a.run.signal.aborted).toBe(true);
+    expect(a.run.shouldStop()).toBe(true);
     await flush();
     expect(stopped).toBe(false);
-    a!.resolve();
-    b!.reject(new Error('boom'));
+    a.resolve();
+    b.reject(new Error('boom'));
     await stopping;
     expect(t.scheduler.liveRuns().size).toBe(0);
     // Nothing new starts after stop.
@@ -327,18 +377,21 @@ describe('scheduler: orchestrator', () => {
     const t = setup();
     t.scheduler.start();
     expect(t.orchestrators()).toHaveLength(1);
-    const o = t.orchestrators()[0]!;
+    const o = nth(t.orchestrators(), 0);
     if (o.kind !== 'orchestrator') throw new Error('expected orchestrator');
     expect(o.productId).toBe(P);
     expect(o.triggers.map((e) => e.type)).toEqual(['prd.applied', 'product.handed_off']);
 
-    t.store.commit(() => [draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null })]);
+    t.store.commit(() => [
+      draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null }),
+    ]);
     t.timer.fire();
     expect(t.orchestrators()).toHaveLength(1);
 
     // It ends without consuming the triggers → the next tick starts a fresh one.
     o.resolve();
     await flush();
+    t.timer.fire();
     expect(t.orchestrators()).toHaveLength(2);
     await t.shutdown();
   });
@@ -346,17 +399,20 @@ describe('scheduler: orchestrator', () => {
   it('does not restart once the cursor consumed the triggers', async () => {
     const t = setup();
     t.scheduler.start();
-    const o = t.orchestrators()[0]!;
+    const o = nth(t.orchestrators(), 0);
     t.plan([]); // advances the cursor past every trigger
     o.resolve();
     await flush();
+    t.timer.fire();
     expect(t.orchestrators()).toHaveLength(1);
   });
 
   it('counts the orchestrator against maxParallel', () => {
     const t = setup({ maxParallel: 2 });
     t.plan([create('a'), create('b'), create('c')]);
-    t.store.commit(() => [draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null })]);
+    t.store.commit(() => [
+      draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null }),
+    ]);
     t.scheduler.start();
     expect(t.orchestrators()).toHaveLength(1);
     expect(t.attempts()).toHaveLength(1);
@@ -383,7 +439,12 @@ describe('scheduler: orchestrator', () => {
     const t = setup();
     createProduct(t.store, P2);
     t.scheduler.start();
-    expect(t.orchestrators().map((c) => (c.kind === 'orchestrator' ? c.productId : null)).sort()).toEqual([P, P2]);
+    expect(
+      t
+        .orchestrators()
+        .map((c) => (c.kind === 'orchestrator' ? c.productId : null))
+        .sort(),
+    ).toEqual([P, P2]);
   });
 });
 
