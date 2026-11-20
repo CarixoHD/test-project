@@ -312,21 +312,36 @@ describe('ensureImage with claude (derived Claude Code image)', () => {
       baseImageDir: dockerDir,
     });
 
-  it('builds vibecode/claude-code FROM vibecode/base when the product has no Dockerfile', async () => {
+  /** A docker stub with an image store: inspect finds what an earlier build loaded. */
+  function imageStore() {
+    const images = new Set<string>();
+    const stub = stubDocker((argv) => {
+      if (argv[0] === 'image') {
+        return images.has(argv.at(-1) ?? '') ? {} : { code: 1, stderr: 'No such image' };
+      }
+      if (argv[0] === 'buildx') images.add(argv[argv.indexOf('--tag') + 1] ?? '');
+      return {};
+    });
+    return { stub, images };
+  }
+  const builds = (stub: ReturnType<typeof stubDocker>) =>
+    stub.argvs().filter((a) => a[0] === 'buildx');
+  const CLAUDE_TAG = /^vibecode\/claude-code:[0-9a-f]{64}$/;
+
+  it('builds vibecode/claude-code:<hash> FROM vibecode/base when the product has no Dockerfile', async () => {
     const ctx = path.join(base, 'p');
     await mkdir(ctx, { recursive: true });
     const stub = stubDocker(missing);
-    expect(await rt(stub).ensureImage({ productId: '01PROD', contextDir: ctx, claude: true })).toBe(
-      'vibecode/claude-code',
-    );
+    const tag = await rt(stub).ensureImage({ productId: '01PROD', contextDir: ctx, claude: true });
+    expect(tag).toMatch(CLAUDE_TAG);
     expect(stub.argvs().slice(2)).toEqual([
-      ['image', 'inspect', '--format', '{{.Id}}', 'vibecode/claude-code'],
+      ['image', 'inspect', '--format', '{{.Id}}', tag],
       [
         'buildx',
         'build',
         '--load',
         '--tag',
-        'vibecode/claude-code',
+        tag,
         '--build-arg',
         'BASE_IMAGE=vibecode/base',
         '--file',
@@ -336,6 +351,47 @@ describe('ensureImage with claude (derived Claude Code image)', () => {
     ]);
   });
 
+  it('rebuilds the Claude image under a new tag when claude-code.Dockerfile changes (CLI pin bump)', async () => {
+    const ctx = path.join(base, 'p');
+    await mkdir(ctx, { recursive: true });
+    const { stub } = imageStore();
+    const p = { productId: '01PROD', contextDir: ctx, claude: true };
+    const before = await rt(stub).ensureImage(p);
+    await writeFile(
+      path.join(dockerDir, 'claude-code.Dockerfile'),
+      CLAUDE_DF.replace('install claude', 'install claude@2'),
+    );
+    const after = await rt(stub).ensureImage(p);
+
+    expect(after).toMatch(CLAUDE_TAG);
+    expect(after).not.toBe(before);
+    expect(builds(stub).map((a) => a[4])).toEqual(['vibecode/base', before, after]);
+  });
+
+  it('changes the Claude tag when base.Dockerfile changes', async () => {
+    const ctx = path.join(base, 'p');
+    await mkdir(ctx, { recursive: true });
+    const p = { productId: '01PROD', contextDir: ctx, claude: true };
+    const before = await rt(stubDocker()).ensureImage(p);
+    await writeFile(path.join(dockerDir, 'base.Dockerfile'), 'FROM debian:trixie\n');
+    expect(await rt(stubDocker()).ensureImage(p)).not.toBe(before);
+  });
+
+  it('reuses the Claude image without rebuilding while claude-code.Dockerfile is unchanged', async () => {
+    const ctx = path.join(base, 'p');
+    await mkdir(ctx, { recursive: true });
+    const { stub } = imageStore();
+    const p = { productId: '01PROD', contextDir: ctx, claude: true };
+    const first = await rt(stub).ensureImage(p);
+    const calls = stub.calls.length;
+    expect(await rt(stub).ensureImage(p)).toBe(first);
+    expect(stub.argvs().slice(calls)).toEqual([
+      ['image', 'inspect', '--format', '{{.Id}}', 'vibecode/base'],
+      ['image', 'inspect', '--format', '{{.Id}}', first],
+    ]);
+    expect(builds(stub)).toHaveLength(2);
+  });
+
   it('derives an image FROM the product image, tagged by product tag and Claude Dockerfile', async () => {
     const ctx = path.join(base, 'p');
     await mkdir(ctx, { recursive: true });
@@ -343,8 +399,7 @@ describe('ensureImage with claude (derived Claude Code image)', () => {
     const stub = stubDocker(missing);
     const productTag = await rt(stubDocker()).ensureImage({ productId: '01PROD', contextDir: ctx });
     const tag = await rt(stub).ensureImage({ productId: '01PROD', contextDir: ctx, claude: true });
-    const hash = createHash('sha256').update(`${productTag}\0${CLAUDE_DF}`).digest('hex');
-    expect(tag).toBe(`vibecode/p-01prod-claude:${hash}`);
+    expect(tag).toMatch(/^vibecode\/p-01prod-claude:[0-9a-f]{64}$/);
     expect(stub.argvs()).toEqual([
       ['image', 'inspect', '--format', '{{.Id}}', productTag],
       [
@@ -371,6 +426,15 @@ describe('ensureImage with claude (derived Claude Code image)', () => {
         dockerDir,
       ],
     ]);
+
+    await writeFile(path.join(dockerDir, 'claude-code.Dockerfile'), `${CLAUDE_DF}# bump\n`);
+    const bumped = await rt(stubDocker()).ensureImage({
+      ...{ productId: '01PROD' },
+      contextDir: ctx,
+      claude: true,
+    });
+    expect(bumped).toMatch(/^vibecode\/p-01prod-claude:[0-9a-f]{64}$/);
+    expect(bumped).not.toBe(tag);
   });
 
   it('reuses a derived image that already exists', async () => {
@@ -379,6 +443,50 @@ describe('ensureImage with claude (derived Claude Code image)', () => {
     const stub = stubDocker();
     await rt(stub).ensureImage({ productId: '01PROD', contextDir: ctx, claude: true });
     expect(stub.argvs().map((a) => a[0])).toEqual(['image', 'image']);
+  });
+});
+
+describe('claudeLoginCommands', () => {
+  let dockerDir: string;
+  beforeEach(async () => {
+    dockerDir = path.join(base, 'docker dir');
+    await mkdir(dockerDir, { recursive: true });
+    await writeFile(path.join(dockerDir, 'base.Dockerfile'), 'FROM debian\n');
+    await writeFile(path.join(dockerDir, 'claude-code.Dockerfile'), 'FROM ${BASE_IMAGE}\n');
+  });
+  const rt = (stub: ReturnType<typeof stubDocker>) =>
+    new DockerCliRuntime({
+      dataDir,
+      uid: 1234,
+      gid: 5678,
+      exec: stub.exec,
+      spawnStream: stub.spawnStream,
+      baseImageDir: dockerDir,
+    });
+
+  it('logs in as the host uid:gid with the current Claude image, on the same named volume', async () => {
+    const stub = stubDocker();
+    const ctx = path.join(base, 'p');
+    await mkdir(ctx, { recursive: true });
+    const tag = await rt(stubDocker()).ensureImage({
+      productId: '01PROD',
+      contextDir: ctx,
+      claude: true,
+    });
+    const c = await rt(stub).claudeLoginCommands();
+    expect(c.login).toBe(
+      'docker run -it --rm --pull never --user 1234:5678 ' +
+        `-v vibecode-claude-config:/home/agent/.claude ${tag} claude auth login`,
+    );
+    expect(c.volume).toBe('docker volume create vibecode-claude-config');
+    const q = (name: string) => `'${path.join(dockerDir, name)}'`;
+    const dir = `'${dockerDir}'`;
+    expect(c.build).toBe(
+      `docker buildx build --load --tag vibecode/base --file ${q('base.Dockerfile')} ${dir} && ` +
+        `docker buildx build --load --tag ${tag} --build-arg BASE_IMAGE=vibecode/base ` +
+        `--file ${q('claude-code.Dockerfile')} ${dir}`,
+    );
+    expect(stub.calls).toEqual([]);
   });
 });
 

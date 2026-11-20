@@ -1,4 +1,6 @@
 export type {
+  ClaudeLoginCommands,
+  ClaudeLoginSource,
   ContainerRuntime,
   DetachedContainer,
   EnsureImageParams,
@@ -42,6 +44,8 @@ export {
   BASE_IMAGE,
   CLAUDE_IMAGE,
   DOCKER_NOT_RUNNING,
+  claudeImageTag,
+  claudeLoginCommands,
   DockerCliRuntime,
   type DockerCliRuntimeOptions,
 } from './docker-cli.ts';
