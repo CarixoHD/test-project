@@ -48,6 +48,8 @@ export {
   CLAUDE_IMAGE,
   DOCKER_NOT_RUNNING,
   DEFAULT_BASE_IMAGE_DIR,
+  EGRESS_ICC_ENABLED,
+  EgressIccEnabledError,
   ICC_UNSUPPORTED,
   IccUnsupportedError,
   baseImageTag,

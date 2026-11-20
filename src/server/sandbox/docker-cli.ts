@@ -70,6 +70,34 @@ export class IccUnsupportedError extends Error {
   }
 }
 
+/** Stable code of EgressIccEnabledError. */
+export const EGRESS_ICC_ENABLED = 'DOCKER_EGRESS_ICC_ENABLED';
+const ICC_OPTION = 'com.docker.network.bridge.enable_icc';
+/** The values Docker reads as false for a bridge option (Go strconv.ParseBool). */
+const FALSE_VALUES = new Set(['false', '0', 'f']);
+/** Prefix of the throwaway ICC-off bridge ensureNetworks creates and removes on every run. */
+const ICC_PROBE_PREFIX = 'vibecode-icc-probe-';
+
+/**
+ * Thrown by ensureNetworks when an existing `vibecode-egress` network does not have
+ * `enable_icc=false` (created by hand or by an older build): containers on it could reach each
+ * other (ADR 6). Vibecode never alters or removes the network itself; the owner removes it.
+ */
+export class EgressIccEnabledError extends Error {
+  readonly code = EGRESS_ICC_ENABLED;
+
+  /** `found`: what the network's options say, already redacted. */
+  constructor(found: string) {
+    super(
+      `The Docker network ${NETWORKS.egress} exists but does not turn off inter-container ` +
+        `traffic (${ICC_OPTION} is not false), so Vibecode runs no networked containers on it. ` +
+        `Fix: run \`docker network rm ${NETWORKS.egress}\`, then restart Vibecode; it recreates ` +
+        `the network with ${ICC_OPTION}=false. Options found: ${found}`,
+    );
+    this.name = 'EgressIccEnabledError';
+  }
+}
+
 /** Repository of the fallback image, tagged `:<content hash>` (see baseImageTag). */
 export const BASE_IMAGE = 'vibecode/base';
 /**
@@ -292,15 +320,25 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
     }
   }
 
-  /** Creates the `vibecode-egress` (ICC off) and `vibecode-preview` bridges when missing. */
+  /**
+   * Creates the `vibecode-egress` (ICC off) and `vibecode-preview` bridges when missing. An
+   * existing egress network must have `enable_icc=false` (EgressIccEnabledError otherwise), and
+   * every run probes that the daemon can still create an ICC-off bridge (IccUnsupportedError
+   * otherwise, e.g. br_netfilter gone after a reboot). Never alters or removes vibecode-egress.
+   */
   async ensureNetworks(): Promise<void> {
+    const egressExists = await this.#checkEgressOptions();
+    await this.#probeIccOff();
     const nets = [
-      { name: NETWORKS.egress, opts: ['--opt', 'com.docker.network.bridge.enable_icc=false'] },
-      { name: NETWORKS.preview, opts: [] },
+      { name: NETWORKS.egress, opts: ['--opt', `${ICC_OPTION}=false`], exists: egressExists },
+      { name: NETWORKS.preview, opts: [], exists: undefined },
     ];
     for (const n of nets) {
-      const found = await this.#manage(['network', 'inspect', n.name]);
-      if (found.code === 0) continue;
+      if (n.exists === true) continue;
+      if (n.exists === undefined) {
+        const found = await this.#manage(['network', 'inspect', n.name]);
+        if (found.code === 0) continue;
+      }
       const r = await this.#manage(['network', 'create', '--driver', 'bridge', ...n.opts, n.name]);
       if (r.code === 0) continue;
       // Fail closed (ADR 6): never retry egress with ICC on, and stop before the next network.
@@ -309,6 +347,72 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
       }
       throw new Error(`Could not create the Docker network ${n.name}: ${detail(r)}`);
     }
+  }
+
+  /** Whether vibecode-egress exists; throws EgressIccEnabledError unless its ICC option is false. */
+  async #checkEgressOptions(): Promise<boolean> {
+    const r = await this.#manage([
+      'network',
+      'inspect',
+      '--format',
+      '{{json .Options}}',
+      NETWORKS.egress,
+    ]);
+    if (r.code !== 0) return false;
+    const raw = r.stdout.trim();
+    let value: unknown;
+    try {
+      const options: unknown = JSON.parse(raw);
+      if (typeof options === 'object' && options !== null) {
+        value = (options as Record<string, unknown>)[ICC_OPTION];
+      }
+    } catch {
+      value = undefined;
+    }
+    if (typeof value === 'string' && FALSE_VALUES.has(value.toLowerCase())) return true;
+    throw new EgressIccEnabledError(redactor.redact(raw.slice(0, MAX_ERROR_DETAIL) || '(none)'));
+  }
+
+  /**
+   * Creates and removes a throwaway ICC-off bridge with a unique name, so a leftover probe from a
+   * crashed run never collides. Removal is best effort: failures are logged, never thrown.
+   */
+  async #probeIccOff(): Promise<void> {
+    const name = `${ICC_PROBE_PREFIX}${randomUUID().replaceAll('-', '').slice(0, 12)}`;
+    let created = false;
+    try {
+      const r = await this.#manage([
+        'network',
+        'create',
+        '--driver',
+        'bridge',
+        '--opt',
+        `${ICC_OPTION}=false`,
+        name,
+      ]);
+      created = r.code === 0;
+      if (created) return;
+      if (ICC_UNSUPPORTED_RE.test(r.stderr)) throw new IccUnsupportedError(detail(r));
+      throw new Error(
+        `Could not verify that Docker can turn off inter-container traffic: creating the probe ` +
+          `network ${name} failed: ${detail(r)}`,
+      );
+    } finally {
+      await this.#removeProbe(name, created);
+    }
+  }
+
+  /** `docker network rm` of a probe; logs a failure unless the probe was never created. */
+  async #removeProbe(name: string, created: boolean): Promise<void> {
+    let why: string;
+    try {
+      const r = await this.#manage(['network', 'rm', name]);
+      if (r.code === 0 || !created) return;
+      why = detail(r);
+    } catch (err) {
+      why = redactor.redact(err instanceof Error ? err.message : String(err));
+    }
+    this.#log(`Could not remove the Docker network ${name} (harmless, remove it by hand): ${why}`);
   }
 
   async ensureImage(p: EnsureImageParams): Promise<string> {

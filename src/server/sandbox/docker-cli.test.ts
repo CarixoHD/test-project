@@ -25,6 +25,8 @@ import { redactor } from '../security/index.ts';
 import {
   DOCKER_NOT_RUNNING,
   DockerCliRuntime,
+  EGRESS_ICC_ENABLED,
+  EgressIccEnabledError,
   ICC_UNSUPPORTED,
   IccUnsupportedError,
   baseImageTag,
@@ -36,8 +38,24 @@ import {
 type Call = { argv: string[]; o: ExecOptions; streamed: boolean };
 type Reply = Partial<ExecResult> | Error;
 
+/** `docker network inspect --format {{json .Options}} vibecode-egress` of a correct network. */
+const EGRESS_OPTIONS_ARGV = [
+  'network',
+  'inspect',
+  '--format',
+  '{{json .Options}}',
+  'vibecode-egress',
+];
+const ICC_OFF_OPTIONS = { stdout: '{"com.docker.network.bridge.enable_icc":"false"}\n' };
+const isProbe = (argv: string[]) => argv.some((a) => a.startsWith('vibecode-icc-probe-'));
+
+/** Default daemon: every command succeeds and the existing egress network has ICC off. */
+function healthyDocker(argv: string[]): Reply {
+  return argv.join(' ') === EGRESS_OPTIONS_ARGV.join(' ') ? ICC_OFF_OPTIONS : {};
+}
+
 /** Stub for util/exec: records every docker invocation and answers from `respond`. */
-function stubDocker(respond: (argv: string[]) => Reply = () => ({})) {
+function stubDocker(respond: (argv: string[]) => Reply = healthyDocker) {
   const calls: Call[] = [];
   const answer = (argv: readonly string[]): ExecResult => {
     const r = respond([...argv]);
@@ -125,7 +143,10 @@ function spec(over: Partial<SandboxSpec> = {}): SandboxSpec {
   };
 }
 
-function runtime(stub = stubDocker(), over: { docker?: string; baseImageDir?: string } = {}) {
+function runtime(
+  stub = stubDocker(),
+  over: { docker?: string; baseImageDir?: string; log?: (line: string) => void } = {},
+) {
   return new DockerCliRuntime({
     dataDir,
     uid: 1000,
@@ -155,13 +176,33 @@ describe('available', () => {
 });
 
 describe('ensureNetworks', () => {
+  /** The argvs with the random probe suffix replaced by `<id>`. */
+  const normalized = (stub: ReturnType<typeof stubDocker>) =>
+    stub
+      .argvs()
+      .map((a) =>
+        a.map((x) => x.replace(/^vibecode-icc-probe-[0-9a-f]+$/, 'vibecode-icc-probe-<id>')),
+      );
+  const PROBE_CREATE = [
+    'network',
+    'create',
+    '--driver',
+    'bridge',
+    '--opt',
+    'com.docker.network.bridge.enable_icc=false',
+    'vibecode-icc-probe-<id>',
+  ];
+  const PROBE_RM = ['network', 'rm', 'vibecode-icc-probe-<id>'];
+
   it('creates missing networks: egress with ICC disabled, and preview', async () => {
     const stub = stubDocker((argv) =>
       argv[1] === 'inspect' ? { code: 1, stderr: 'network not found' } : {},
     );
     await runtime(stub).ensureNetworks();
-    expect(stub.argvs()).toEqual([
-      ['network', 'inspect', 'vibecode-egress'],
+    expect(normalized(stub)).toEqual([
+      EGRESS_OPTIONS_ARGV,
+      PROBE_CREATE,
+      PROBE_RM,
       [
         'network',
         'create',
@@ -176,13 +217,76 @@ describe('ensureNetworks', () => {
     ]);
   });
 
-  it('leaves existing networks alone', async () => {
+  it('leaves existing networks alone once egress has ICC off and the probe passes', async () => {
     const stub = stubDocker();
     await runtime(stub).ensureNetworks();
-    expect(stub.argvs()).toEqual([
-      ['network', 'inspect', 'vibecode-egress'],
+    expect(normalized(stub)).toEqual([
+      EGRESS_OPTIONS_ARGV,
+      PROBE_CREATE,
+      PROBE_RM,
       ['network', 'inspect', 'vibecode-preview'],
     ]);
+  });
+
+  it('uses a fresh probe name on every run, so a leftover probe network cannot break it', async () => {
+    const stub = stubDocker();
+    const rt = runtime(stub);
+    await rt.ensureNetworks();
+    await rt.ensureNetworks();
+    const names = stub
+      .argvs()
+      .filter((a) => a[1] === 'create')
+      .map((a) => a.at(-1));
+    expect(names).toHaveLength(2);
+    expect(names[0]).toMatch(/^vibecode-icc-probe-[0-9a-f]{12}$/);
+    expect(names[0]).not.toBe(names[1]);
+  });
+
+  it.each(['"false"', '"0"', '"FALSE"'])(
+    'accepts an existing egress network whose enable_icc is %s',
+    async (value) => {
+      const stub = stubDocker((argv) =>
+        argv.join(' ') === EGRESS_OPTIONS_ARGV.join(' ')
+          ? { stdout: `{"com.docker.network.bridge.enable_icc":${value}}\n` }
+          : {},
+      );
+      await expect(runtime(stub).ensureNetworks()).resolves.toBeUndefined();
+    },
+  );
+
+  it.each([
+    ['ICC on', '{"com.docker.network.bridge.enable_icc":"true"}'],
+    ['no options', '{}'],
+    ['null options', 'null'],
+    ['other options only', '{"com.docker.network.bridge.name":"br-x"}'],
+  ])(
+    'fails closed when the existing egress network has %s, and changes nothing',
+    async (_label, options) => {
+      const stub = stubDocker((argv) =>
+        argv.join(' ') === EGRESS_OPTIONS_ARGV.join(' ') ? { stdout: `${options}\n` } : {},
+      );
+      const err = await runtime(stub)
+        .ensureNetworks()
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(EgressIccEnabledError);
+      expect(err).toMatchObject({ code: EGRESS_ICC_ENABLED });
+      const message = err instanceof Error ? err.message : '';
+      expect(message).toContain('docker network rm vibecode-egress');
+      expect(message).toContain('restart Vibecode');
+      // Never altered or removed automatically, and nothing else created.
+      expect(stub.argvs()).toEqual([EGRESS_OPTIONS_ARGV]);
+    },
+  );
+
+  it('fails closed the same way when the egress options cannot be parsed', async () => {
+    const stub = stubDocker((argv) =>
+      argv.join(' ') === EGRESS_OPTIONS_ARGV.join(' ') ? { stdout: 'not json\n' } : {},
+    );
+    const err = await runtime(stub)
+      .ensureNetworks()
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(EgressIccEnabledError);
+    expect(stub.argvs()).toEqual([EGRESS_OPTIONS_ARGV]);
   });
 
   /** The daemon's stderr on a host without br_netfilter (Docker 29.10.0, captured in #177). */
@@ -212,8 +316,8 @@ describe('ensureNetworks', () => {
     expect(message).toContain('/etc/modules-load.d/br_netfilter.conf');
     expect(message).toContain('restart Vibecode');
     expect(message).toContain('bridge-nf-call-iptables: no such file or directory');
-    // Fail closed: exactly one create, the ICC-off one; no ICC-on egress retry, nothing after it.
-    const creates = stub.argvs().filter((a) => a[1] === 'create');
+    // Fail closed: exactly one egress create, the ICC-off one; no ICC-on retry, nothing after it.
+    const creates = stub.argvs().filter((a) => a[1] === 'create' && !isProbe(a));
     expect(creates).toEqual([
       [
         'network',
@@ -244,15 +348,17 @@ describe('ensureNetworks', () => {
   });
 
   it('keeps the generic error for other egress create failures', async () => {
-    const stub = stubDocker((argv) =>
-      argv[1] === 'inspect'
-        ? { code: 1, stderr: 'network not found' }
-        : {
-            code: 1,
-            stderr:
-              'Error response from daemon: all predefined address pools have been fully subnetted',
-          },
-    );
+    const stub = stubDocker((argv) => {
+      if (argv[1] === 'inspect') return { code: 1, stderr: 'network not found' };
+      if (argv[1] === 'create' && argv.includes('vibecode-egress')) {
+        return {
+          code: 1,
+          stderr:
+            'Error response from daemon: all predefined address pools have been fully subnetted',
+        };
+      }
+      return {};
+    });
     const err = await runtime(stub)
       .ensureNetworks()
       .catch((e: unknown) => e);
@@ -260,6 +366,84 @@ describe('ensureNetworks', () => {
     expect(err instanceof Error ? err.message : '').toContain(
       'Could not create the Docker network vibecode-egress: Error response from daemon: all predefined',
     );
+  });
+  it('rejects with IccUnsupportedError when egress exists but the probe hits br_netfilter', async () => {
+    const stub = stubDocker((argv) => {
+      if (argv[1] === 'create' && isProbe(argv)) return { code: 1, stderr: NO_BR_NETFILTER };
+      if (argv[1] === 'rm' && isProbe(argv)) {
+        return {
+          code: 1,
+          stderr: 'Error response from daemon: network vibecode-icc-probe-x not found',
+        };
+      }
+      return healthyDocker(argv);
+    });
+    const lines: string[] = [];
+    const err = await runtime(stub, { log: (l) => lines.push(l) })
+      .ensureNetworks()
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(IccUnsupportedError);
+    expect(err).toMatchObject({ code: ICC_UNSUPPORTED });
+    expect(err instanceof Error ? err.message : '').toContain('bridge-nf-call-iptables');
+    // The probe is still removed (best effort); egress is neither created nor removed.
+    const argvs = stub.argvs();
+    expect(argvs.filter((a) => a[1] === 'rm').map(isProbe)).toEqual([true]);
+    expect(argvs.filter((a) => a.includes('vibecode-egress'))).toEqual([EGRESS_OPTIONS_ARGV]);
+    expect(argvs).not.toContainEqual(['network', 'inspect', 'vibecode-preview']);
+    // A probe that never got created is not worth a warning.
+    expect(lines).toEqual([]);
+  });
+
+  it('fails closed with a generic error when the probe fails for another reason', async () => {
+    const stub = stubDocker((argv) =>
+      argv[1] === 'create' && isProbe(argv)
+        ? { code: 1, stderr: 'Error response from daemon: all predefined address pools' }
+        : healthyDocker(argv),
+    );
+    const err = await runtime(stub)
+      .ensureNetworks()
+      .catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(IccUnsupportedError);
+    expect(err instanceof Error ? err.message : '').toContain(
+      'Could not verify that Docker can turn off inter-container traffic',
+    );
+    expect(err instanceof Error ? err.message : '').toContain('all predefined address pools');
+    expect(
+      stub
+        .argvs()
+        .filter((a) => a[1] === 'rm')
+        .map(isProbe),
+    ).toEqual([true]);
+    expect(stub.argvs()).not.toContainEqual(['network', 'inspect', 'vibecode-preview']);
+  });
+
+  it('logs, but does not throw, when removing the probe network fails', async () => {
+    const secret = 'sk-ant-api03-probe-rm-redaction-secret-0123456789';
+    redactor.register(secret);
+    const stub = stubDocker((argv) =>
+      argv[1] === 'rm' && isProbe(argv)
+        ? { code: 1, stderr: `Error response from daemon: error while removing network ${secret}` }
+        : healthyDocker(argv),
+    );
+    const lines: string[] = [];
+    await runtime(stub, { log: (l) => lines.push(l) }).ensureNetworks();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/Could not remove the Docker network vibecode-icc-probe-[0-9a-f]+/);
+    expect(lines[0]).toContain('error while removing network');
+    expect(lines[0]).not.toContain(secret);
+    expect(stub.argvs()).toContainEqual(['network', 'inspect', 'vibecode-preview']);
+  });
+
+  it('logs, but does not throw, when the daemon stops before the probe is removed', async () => {
+    const stub = stubDocker((argv) =>
+      argv[1] === 'rm' && isProbe(argv)
+        ? new ExecError('Could not run "docker": ENOENT', 'ENOENT')
+        : healthyDocker(argv),
+    );
+    const lines: string[] = [];
+    await runtime(stub, { log: (l) => lines.push(l) }).ensureNetworks();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(DOCKER_NOT_RUNNING);
   });
 });
 
@@ -740,6 +924,8 @@ describe('open and Sandbox', () => {
     await runtime(stub).open(spec({ network: 'egress' }));
     expect(stub.argvs().map((a) => a.slice(0, 2))).toEqual([
       ['network', 'inspect'],
+      ['network', 'create'],
+      ['network', 'rm'],
       ['network', 'inspect'],
       ['run', '--detach'],
     ]);
@@ -1454,6 +1640,8 @@ describe('runDetached', () => {
     await runtime(stub).runDetached(previewSpec(), ['npm', 'start']);
     expect(stub.argvs().map((a) => a.slice(0, 2))).toEqual([
       ['network', 'inspect'],
+      ['network', 'create'],
+      ['network', 'rm'],
       ['network', 'inspect'],
       ['run', '--detach'],
     ]);
@@ -1461,7 +1649,7 @@ describe('runDetached', () => {
 
   it('throws with docker output when the container cannot start', async () => {
     const stub = stubDocker((argv) =>
-      argv[0] === 'run' ? { code: 125, stderr: 'port is already allocated' } : {},
+      argv[0] === 'run' ? { code: 125, stderr: 'port is already allocated' } : healthyDocker(argv),
     );
     await expect(runtime(stub).runDetached(previewSpec(), ['npm', 'start'])).rejects.toThrow(
       /already allocated/,
