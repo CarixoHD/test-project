@@ -35,11 +35,19 @@ Every product repository must have:
   - `check`: one argv (not a shell string) run in `/workspace` with NO network after every change;
     it must run the typecheck, lint and tests and exit non-zero on failure.
   - `imageInputs`: repository-relative paths (lockfiles) whose content changes the image.
-  - `preview` (optional): argv that serves the app on `port` inside the container.
+  - `preview`: argv that serves the app on `port` inside the container, so the owner can open it.
+    `preview` is REQUIRED for any product that serves HTTP (web app, API, anything with a browser
+    UI); it is optional only for CLIs, libraries and scripts, which omit it. The command must
+    listen on `0.0.0.0` (never `localhost` or `127.0.0.1`) on `port`, run from `/workspace` with
+    the dependencies already in the image, and must not need network access at start beyond what
+    the image has (no `npm install`, `pip install` or downloads when it starts). Examples:
+    - Node: `{"command": ["npx", "vite", "--host", "0.0.0.0", "--port", "5173"], "port": 5173}`
+    - Python: `{"command": ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"], "port": 8000}`
 - `docs/PRD.md` (already maintained by the platform) and architecture decision records in
   `docs/adr/NNNN-title.md` for every significant technical choice.
 
-Write or update these files before planning issues when they are missing or out of date. The
+Write or update these files before planning issues when they are missing or out of date. In
+particular, when the product serves HTTP and an existing `.vibecode/project.json` lacks `preview`, add it in this run. The
 platform validates `.vibecode/project.json` and builds the image from your `Dockerfile`; an invalid
 file or a failing build rejects the run.
 
