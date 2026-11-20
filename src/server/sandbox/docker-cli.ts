@@ -3,7 +3,7 @@
 // buildRunArgs; before that, the worktree is resolved with realpath and confined to
 // realpath(<dataDir>/worktrees), because Docker follows symlinks in bind sources.
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, readFile, realpath, truncate, writeFile } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath, stat, truncate, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ProjectConfigSchema } from '../../shared/agent-results.ts';
 import { redactor } from '../security/index.ts';
@@ -38,6 +38,7 @@ import type {
 
 export const DOCKER_NOT_RUNNING =
   'Docker is not running: start Docker Desktop or the docker service';
+/** Repository of the fallback image, tagged `:<content hash>` (see baseImageTag). */
 export const BASE_IMAGE = 'vibecode/base';
 /**
  * Repository of vibecode/base plus the pinned Claude Code CLI, tagged `:<content hash>` (see
@@ -117,10 +118,68 @@ export type DockerCliRuntimeOptions = {
 };
 
 /**
- * Tag of the Claude Code image FROM `productImage` (ADR 4): sha256 over the product image tag,
- * claude-code.Dockerfile (its only build-context input: the wrapper is written inline) and, over
- * vibecode/base, base.Dockerfile. A CLI pin bump thus yields a new tag and a rebuild.
- * `vibecode/claude-code:<hash>` over vibecode/base, else `vibecode/p-<id>-claude:<hash>`.
+ * Tag of the fallback image (ADR 6): `vibecode/base:<sha256[:12]>` over base.Dockerfile and every
+ * build-context file or directory it COPYs or ADDs (`--from` stages excluded). Editing any of them
+ * yields a new tag, so ensureImage builds it instead of reusing a stale image on the host. The
+ * runtime, FakeContainerRuntime, the login commands and `npm run docker:images` all use this.
+ */
+export async function baseImageTag(imageDir: string): Promise<string> {
+  const dockerfile = await readFile(path.join(imageDir, BASE_DOCKERFILE));
+  const h = createHash('sha256');
+  const field = (label: string, data: Buffer) => {
+    h.update(`${label}\0${String(data.length)}\0`);
+    h.update(data);
+  };
+  field(BASE_DOCKERFILE, dockerfile);
+  for (const src of copySources(dockerfile.toString('utf8'))) {
+    for (const file of await contextFiles(imageDir, src)) {
+      field(file, await readFile(path.join(imageDir, file)));
+    }
+  }
+  return `${BASE_IMAGE}:${h.digest('hex').slice(0, 12)}`;
+}
+
+/** Build-context sources of the COPY/ADD instructions in a Dockerfile, in order (URLs skipped). */
+function copySources(dockerfile: string): string[] {
+  const sources: string[] = [];
+  for (const line of dockerfile.replace(/\\\r?\n/g, ' ').split(/\r?\n/)) {
+    const m = /^\s*(?:COPY|ADD)\s+(.*)$/i.exec(line);
+    if (m?.[1] === undefined) continue;
+    let rest = m[1].trim();
+    const flags: string[] = [];
+    while (rest.startsWith('--')) {
+      const [flag = '', ...more] = rest.split(/\s+/);
+      flags.push(flag);
+      rest = more.join(' ');
+    }
+    if (flags.some((f) => f.startsWith('--from'))) continue;
+    const args = rest.startsWith('[') ? (JSON.parse(rest) as string[]) : rest.split(/\s+/);
+    sources.push(...args.slice(0, -1).filter((a) => !/^[a-z]+:\/\//i.test(a)));
+  }
+  return sources;
+}
+
+/** Files under `src` (a file or directory in `imageDir`), relative to `imageDir`, sorted. */
+async function contextFiles(imageDir: string, src: string): Promise<string[]> {
+  if (/[*?[]/.test(src)) throw new Error(`base.Dockerfile: unsupported COPY pattern ${src}`);
+  const rel = path.relative(imageDir, path.resolve(imageDir, src));
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`base.Dockerfile: COPY source ${src} is outside ${imageDir}`);
+  }
+  const full = path.join(imageDir, rel);
+  if (!(await stat(full)).isDirectory()) return [rel];
+  const entries = await readdir(full, { recursive: true, withFileTypes: true });
+  return entries
+    .filter((e) => e.isFile())
+    .map((e) => path.relative(imageDir, path.join(e.parentPath, e.name)))
+    .sort();
+}
+
+/**
+ * Tag of the Claude Code image FROM `productImage` (ADR 4): sha256 over the product image tag
+ * and claude-code.Dockerfile (its only build-context input: the wrapper is written inline). The
+ * base tag is itself a content hash, so a base or CLI pin change yields a new tag and a rebuild.
+ * `vibecode/claude-code:<hash>` over the base (baseImageTag), else `vibecode/p-<id>-claude:<hash>`.
  */
 export async function claudeImageTag(
   imageDir: string,
@@ -134,8 +193,7 @@ export async function claudeImageTag(
   };
   field('from', Buffer.from(productImage));
   field(CLAUDE_DOCKERFILE, await readFile(path.join(imageDir, CLAUDE_DOCKERFILE)));
-  if (productImage === BASE_IMAGE) {
-    field(BASE_DOCKERFILE, await readIfExists(path.join(imageDir, BASE_DOCKERFILE)));
+  if (productImage.startsWith(`${BASE_IMAGE}:`)) {
     return `${CLAUDE_IMAGE}:${h.digest('hex')}`;
   }
   return `vibecode/p-${productId.toLowerCase()}-claude:${h.digest('hex')}`;
@@ -143,12 +201,13 @@ export async function claudeImageTag(
 
 /**
  * The owner's one-time setup (ADR 4), as shell commands for the host: build the login image
- * (`claudeTag`, FROM vibecode/base), create the volume, and log in as the host uid:gid (the
+ * (`claudeTag`, FROM `baseTag`, both from the same imageDir), create the volume, and log in as the host uid:gid (the
  * identity agents run as, so they can read the login). `--pull never`: never fetch a
  * look-alike image from a registry.
  */
 export function claudeLoginCommands(o: {
   imageDir: string;
+  baseTag: string;
   claudeTag: string;
   uid: number;
   gid: number;
@@ -157,8 +216,8 @@ export function claudeLoginCommands(o: {
   const file = (name: string) => shellQuote(path.join(o.imageDir, name));
   return {
     build:
-      `docker buildx build --load --tag ${BASE_IMAGE} --file ${file(BASE_DOCKERFILE)} ${dir} && ` +
-      `docker buildx build --load --tag ${o.claudeTag} --build-arg BASE_IMAGE=${BASE_IMAGE} ` +
+      `docker buildx build --load --tag ${o.baseTag} --file ${file(BASE_DOCKERFILE)} ${dir} && ` +
+      `docker buildx build --load --tag ${o.claudeTag} --build-arg BASE_IMAGE=${o.baseTag} ` +
       `--file ${file(CLAUDE_DOCKERFILE)} ${dir}`,
     volume: `docker volume create ${CLAUDE_CONFIG_VOLUME}`,
     login:
@@ -229,8 +288,9 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
     const content = await readIfExists(dockerfile);
     if (content === null) {
       const dir = this.#imageDir();
-      await this.#ensureBuilt(BASE_IMAGE, path.join(dir, 'base.Dockerfile'), dir);
-      return BASE_IMAGE;
+      const tag = await baseImageTag(dir);
+      await this.#ensureBuilt(tag, path.join(dir, BASE_DOCKERFILE), dir);
+      return tag;
     }
     const hash = await imageHash(contextDir, content);
     const tag = `vibecode/p-${productId.toLowerCase()}:${hash}`;
@@ -240,7 +300,7 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
 
   /**
    * The derived image FROM `productImage` with the pinned CLI layered on (ADR 4), tagged by
-   * claudeImageTag. Over vibecode/base it is `vibecode/claude-code:<hash>`, the login image.
+   * claudeImageTag. Over the base image (baseImageTag) it is `vibecode/claude-code:<hash>`, the login image.
    */
   async #ensureClaudeImage(productId: string, productImage: string): Promise<string> {
     const dir = this.#imageDir();
@@ -253,8 +313,10 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
   /** The login setup for this host's uid:gid and the current Claude image tag; runs no docker. */
   async claudeLoginCommands(): Promise<ClaudeLoginCommands> {
     const imageDir = this.#imageDir();
-    const claudeTag = await claudeImageTag(imageDir, '', BASE_IMAGE);
-    return claudeLoginCommands({ imageDir, claudeTag, uid: this.#o.uid, gid: this.#o.gid });
+    const baseTag = await baseImageTag(imageDir);
+    const claudeTag = await claudeImageTag(imageDir, '', baseTag);
+    const { uid, gid } = this.#o;
+    return claudeLoginCommands({ imageDir, baseTag, claudeTag, uid, gid });
   }
 
   #imageDir(): string {

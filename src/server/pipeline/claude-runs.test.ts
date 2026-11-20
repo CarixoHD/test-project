@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { EventDraft } from '../../shared/events.ts';
 import { open } from '../db/index.ts';
 import { createGit } from '../git/index.ts';
-import { FakeContainerRuntime, type FakeRunRule } from '../sandbox/index.ts';
+import {
+  DEFAULT_BASE_IMAGE_DIR,
+  FakeContainerRuntime,
+  baseImageTag,
+  type FakeRunRule,
+} from '../sandbox/index.ts';
 import { Redactor } from '../security/index.ts';
 import { createStore } from '../store/index.ts';
 import { FakeClock } from '../util/clock.ts';
@@ -60,7 +65,7 @@ function claudeRuns(runtime: FakeContainerRuntime) {
   );
 }
 
-/** The fake runtime's Claude image over vibecode/base: content-hashed like the docker one. */
+/** The fake runtime's Claude image over vibecode/base:<hash>: content-hashed like the docker one. */
 const CLAUDE_TAG = /^vibecode\/claude-code:[0-9a-f]{64}$/;
 
 function expectClaudeContainer(runArgs: readonly string[], image: RegExp): void {
@@ -115,7 +120,7 @@ describe('runAttempt with claude-code roles', () => {
     expect(reviewer?.runArgs.some((a) => a.includes('dst=/workspace,readonly'))).toBe(true);
     // The check still runs in the plain product image without the config volume.
     const check = h.specs.find((s) => s.kind === 'runOnce');
-    expect(check?.spec.image).toBe('vibecode/base');
+    expect(check?.spec.image).toBe(await baseImageTag(DEFAULT_BASE_IMAGE_DIR));
     expect(check?.spec.claude).toBeUndefined();
   });
 });
