@@ -11,6 +11,7 @@ import {
   type Secrets,
   type Sessions,
 } from '../security/index.ts';
+import type { PasswordHasher } from '../security/password.ts';
 import { writeSetting, type Store } from '../store/index.ts';
 
 // Owner access (ADR 9, ARCHITECTURE §4.10): the scrypt password hash in `settings`
@@ -48,9 +49,18 @@ export interface AccessDeps {
   store: Store;
   secrets: Secrets;
   clock: Clock;
+  /** Defaults to the production scrypt hasher (N=2^15). Tests inject a cheap one (ADR 11). */
+  passwords?: PasswordHasher;
 }
 
-export function createAccess({ store, secrets, clock }: AccessDeps): Access {
+const PRODUCTION_PASSWORDS: PasswordHasher = { hash: hashPassword, verify: verifyPassword };
+
+export function createAccess({
+  store,
+  secrets,
+  clock,
+  passwords = PRODUCTION_PASSWORDS,
+}: AccessDeps): Access {
   const limiter = createRateLimiter({ ...LOGIN_RATE_LIMIT, clock });
   const storedHash = (): string | undefined => {
     const raw = store.q.setting(PASSWORD_HASH_SETTING);
@@ -70,7 +80,7 @@ export function createAccess({ store, secrets, clock }: AccessDeps): Access {
 
   const checkPassword = async (password: string): Promise<boolean> => {
     const hash = storedHash();
-    return hash !== undefined && (await verifyPassword(password, hash));
+    return hash !== undefined && (await passwords.verify(password, hash));
   };
 
   const setPassword = async (next: string): Promise<PasswordChangeResult> => {
@@ -78,7 +88,7 @@ export function createAccess({ store, secrets, clock }: AccessDeps): Access {
     if (!parsed.success) {
       return { ok: false, code: 'invalid', reason: parsed.error.issues[0]?.message ?? 'Invalid' };
     }
-    const hash = await hashPassword(parsed.data);
+    const hash = await passwords.hash(parsed.data);
     store.commit((tx) => {
       writeSetting(tx.db, PASSWORD_HASH_SETTING, hash);
       // Same connection as the commit: the new key joins this transaction.
