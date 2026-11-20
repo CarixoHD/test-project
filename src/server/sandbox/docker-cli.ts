@@ -25,7 +25,8 @@ import type {
   SandboxSpec,
 } from './types.ts';
 
-export const DOCKER_NOT_RUNNING = 'Docker is not running: start Docker Desktop or the docker service';
+export const DOCKER_NOT_RUNNING =
+  'Docker is not running: start Docker Desktop or the docker service';
 export const BASE_IMAGE = 'vibecode/base';
 /** docker/ at the repo root: base.Dockerfile and its build context. */
 export const DEFAULT_BASE_IMAGE_DIR = path.resolve(import.meta.dirname, '../../../docker');

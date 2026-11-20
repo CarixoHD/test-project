@@ -1,5 +1,14 @@
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -240,9 +249,9 @@ describe('ensureImage', () => {
     });
     await symlink(path.join(outside, 'secret.txt'), path.join(ctx, 'lock'));
     const stub = stubDocker();
-    await expect(runtime(stub).ensureImage({ productId: '01PROD', contextDir: ctx })).rejects.toThrow(
-      /outside the repository/,
-    );
+    await expect(
+      runtime(stub).ensureImage({ productId: '01PROD', contextDir: ctx }),
+    ).rejects.toThrow(/outside the repository/);
     expect(stub.calls).toEqual([]);
   });
 
@@ -251,9 +260,9 @@ describe('ensureImage', () => {
     const stub = stubDocker((argv) =>
       argv[0] === 'image' ? { code: 1 } : { code: 1, stderr: 'pull access denied for nope\n' },
     );
-    await expect(runtime(stub).ensureImage({ productId: '01PROD', contextDir: ctx })).rejects.toThrow(
-      /Image build failed.*pull access denied/s,
-    );
+    await expect(
+      runtime(stub).ensureImage({ productId: '01PROD', contextDir: ctx }),
+    ).rejects.toThrow(/Image build failed.*pull access denied/s);
   });
 });
 
@@ -299,9 +308,9 @@ describe('worktree confinement (realpath)', () => {
       await expect(rt.open(spec({ worktree: link }))).rejects.toThrow(
         /Refusing to mount .*evil.*outside/,
       );
-      await expect(rt.runOnce(spec({ worktree: link, role: 'check' }), ['true'], T)).rejects.toThrow(
-        /Refusing to mount/,
-      );
+      await expect(
+        rt.runOnce(spec({ worktree: link, role: 'check' }), ['true'], T),
+      ).rejects.toThrow(/Refusing to mount/);
       expect(stub.calls).toEqual([]);
     } finally {
       await rm(outside, { recursive: true, force: true });
@@ -352,7 +361,10 @@ describe('open and Sandbox', () => {
   });
 
   it('throws with docker output when the container cannot start', async () => {
-    const stub = stubDocker(() => ({ code: 125, stderr: 'Conflict. The container name is in use' }));
+    const stub = stubDocker(() => ({
+      code: 125,
+      stderr: 'Conflict. The container name is in use',
+    }));
     await expect(runtime(stub).open(spec())).rejects.toThrow(/name is in use/);
   });
 
@@ -403,7 +415,10 @@ describe('open and Sandbox', () => {
     );
     const sb = await runtime(stub).open(spec());
     const lines: string[] = [];
-    const r = await sb.exec(['make'], { timeoutMs: 1000, onLine: (l, s) => lines.push(`${s}:${l}`) });
+    const r = await sb.exec(['make'], {
+      timeoutMs: 1000,
+      onLine: (l, s) => lines.push(`${s}:${l}`),
+    });
     expect(stub.calls[1]?.streamed).toBe(true);
     expect(stub.calls[1]?.o).toMatchObject({ killSignal: 'SIGINT', timeoutMs: 1000 });
     expect(lines).toEqual(['stdout:a', 'stdout:b', 'stderr:oops']);
@@ -412,7 +427,9 @@ describe('open and Sandbox', () => {
 
   it('reports timeouts and aborts', async () => {
     const stub = stubDocker((argv) =>
-      argv[0] === 'exec' ? { code: null, timedOut: argv.includes('slow'), aborted: argv.includes('stop') } : {},
+      argv[0] === 'exec'
+        ? { code: null, timedOut: argv.includes('slow'), aborted: argv.includes('stop') }
+        : {},
     );
     const sb = await runtime(stub).open(spec());
     expect(await sb.exec(['slow'], T)).toMatchObject({ code: null, timedOut: true });
@@ -518,13 +535,16 @@ describe('listManaged, remove, publishedPort', () => {
 
 describe('Docker unavailable', () => {
   it('turns a missing CLI or a stopped daemon into an actionable error', async () => {
-    expect(DOCKER_NOT_RUNNING).toBe('Docker is not running: start Docker Desktop or the docker service');
+    expect(DOCKER_NOT_RUNNING).toBe(
+      'Docker is not running: start Docker Desktop or the docker service',
+    );
     const missing = stubDocker(() => new ExecError('Could not run "docker": ENOENT', 'ENOENT'));
     await expect(runtime(missing).listManaged()).rejects.toThrow(DOCKER_NOT_RUNNING);
     await expect(runtime(missing).open(spec())).rejects.toThrow(DOCKER_NOT_RUNNING);
     const down = stubDocker(() => ({
       code: 1,
-      stderr: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?',
+      stderr:
+        'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?',
     }));
     await expect(runtime(down).open(spec())).rejects.toThrow(DOCKER_NOT_RUNNING);
     await expect(runtime(down).ensureNetworks()).rejects.toThrow(DOCKER_NOT_RUNNING);

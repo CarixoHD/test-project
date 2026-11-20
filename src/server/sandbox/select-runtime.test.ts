@@ -30,9 +30,7 @@ describe('selectRuntime', () => {
   });
 
   it('without fakeDocker, returns the docker CLI runtime', () => {
-    expect(selectRuntime({ fakeDocker: false, dataDir: '/data' })).toBeInstanceOf(
-      DockerCliRuntime,
-    );
+    expect(selectRuntime({ fakeDocker: false, dataDir: '/data' })).toBeInstanceOf(DockerCliRuntime);
   });
 
   it('without a docker CLI, reports unavailable and rejects with an actionable message', async () => {
