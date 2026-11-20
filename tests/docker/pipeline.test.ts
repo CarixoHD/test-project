@@ -1,10 +1,10 @@
 // Real-Docker E2E of the pipeline (ARCHITECTURE §7 "docker E2E"): fake LLM + DockerCliRuntime +
 // real git. Fake implementers work inside containers and their work is committed and merged to
 // main; the check runs with network none; containers have no Docker socket and see .git masked;
-// a tiny web product built by the pipeline is previewed on 127.0.0.1; recovery removes orphan
+// a tiny web product whose main serves a page is previewed on 127.0.0.1; recovery removes orphan
 // vibecode.managed containers.
 // Run with `npm run test:docker`. Without a running Docker daemon these tests FAIL, never skip.
-// The tests in this file run in order: the preview serves what the pipeline test merged.
+// Each test sets up its own state, so any of them runs alone with `-t`.
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -85,6 +85,8 @@ let base: string;
 let dataDir: string;
 let rt: DockerCliRuntime;
 let P: ProductId;
+/** Every product this suite created; teardown removes their containers. */
+const products: ProductId[] = [];
 let db: Db;
 let store: Store;
 let git: Git;
@@ -109,8 +111,42 @@ function scoped(runtime: ContainerRuntime, productId: string): ContainerRuntime 
   };
 }
 
-const draft = (type: string, entityId: string | null, data: object) =>
-  ({ type, productId: P, entityId, v: 1, data }) as EventDraft;
+const draft = (productId: ProductId, type: string, entityId: string | null, data: object) =>
+  ({ type, productId, entityId, v: 1, data }) as EventDraft;
+
+/** A product with its own bare repo, the network-none check and a `node server.js` preview. */
+async function createProduct(prefix: string, name: string): Promise<ProductId> {
+  // Lowercase: the id ends up in container labels and image names.
+  const productId = ProductIdSchema.parse(`${prefix}${ids.next('run').toLowerCase()}`);
+  products.push(productId);
+  await git.initRepo(productId);
+  store.commit(() => [
+    draft(productId, 'product.created', null, {
+      name,
+      idea: 'A page that says hello',
+      budgetUsd: null,
+      maxParallel: 1,
+      maxAttempts: 1,
+      models: {},
+      gitRemote: null,
+    }),
+    draft(productId, 'product.settings_changed', null, {
+      project: {
+        check: ['sh', '-c', CHECK_SCRIPT],
+        imageInputs: [],
+        preview: { command: ['node', 'server.js'], port: PREVIEW_PORT },
+      },
+    }),
+  ]);
+  return productId;
+}
+
+/** Best-effort teardown step: a failure is logged with context and the teardown continues. */
+function warn(what: string): (err: unknown) => void {
+  return (err) => {
+    console.warn(`tests/docker teardown: ${what} failed:`, err);
+  };
+}
 
 function lastSpawned(): { role: string; issueNumber: number } {
   const spawned = store
@@ -129,31 +165,11 @@ beforeAll(async () => {
   if (!(await rt.available())) throw new Error(`${DOCKER_NOT_RUNNING} (needed by tests/docker)`);
 
   ids = createIdGen(systemClock);
-  // Lowercase: the id ends up in container labels and image names.
-  P = ProductIdSchema.parse(`dockerpipe${ids.next('run').toLowerCase()}`);
   db = open(':memory:');
   const redactor = new Redactor();
   store = createStore({ db, clock: systemClock, redactor });
   git = createGit({ dataDir });
-  await git.initRepo(P);
-  store.commit(() => [
-    draft('product.created', null, {
-      name: 'Hello web',
-      idea: 'A page that says hello',
-      budgetUsd: null,
-      maxParallel: 1,
-      maxAttempts: 1,
-      models: {},
-      gitRemote: null,
-    }),
-    draft('product.settings_changed', null, {
-      project: {
-        check: ['sh', '-c', CHECK_SCRIPT],
-        imageInputs: [],
-        preview: { command: ['node', 'server.js'], port: PREVIEW_PORT },
-      },
-    }),
-  ]);
+  P = await createProduct('dockerpipe', 'Hello web');
   deps = {
     store,
     ids,
@@ -178,12 +194,20 @@ beforeAll(async () => {
 }, 15 * 60_000);
 
 afterAll(async () => {
-  if (rt !== undefined && P !== undefined) {
-    for (const c of await rt.listManaged().catch(() => [])) {
-      if (c.labels['vibecode.product'] === P) await rt.remove(c.name).catch(() => {});
+  if (rt !== undefined && products.length > 0) {
+    const managed = await rt.listManaged().catch((err: unknown) => {
+      warn('listing managed containers')(err);
+      return [];
+    });
+    for (const c of managed) {
+      const product = c.labels['vibecode.product'];
+      if (!products.some((p) => p === product)) continue;
+      await rt.remove(c.name).catch(warn(`removing container ${c.name}`));
     }
   }
-  if (base !== undefined) await rm(base, { recursive: true, force: true });
+  if (base !== undefined) {
+    await rm(base, { recursive: true, force: true }).catch(warn(`removing ${base}`));
+  }
 });
 
 function newIssue(title: string): IssueId {
@@ -253,6 +277,10 @@ describe('pipeline against a real Docker daemon', () => {
   it(
     'previews current main of the web product on 127.0.0.1 and removes it on stop',
     async () => {
+      // Its own product, whose main already holds the web server: no other test's merge needed.
+      const W = await createProduct('dockerprev', 'Hello preview');
+      await git.commitFilesOnMain(W, { 'server.js': SERVER_JS }, 'Add hello web server');
+      expect(await git.readFileAtMain(W, 'server.js')).toBe(SERVER_JS);
       const previews = createPreviews({
         store,
         ids,
@@ -263,17 +291,17 @@ describe('pipeline against a real Docker daemon', () => {
         dataDir,
       });
       try {
-        const started = await previews.startPreview(P);
+        const started = await previews.startPreview(W);
         if (!started.ok) throw new Error(`preview failed: ${started.reason}`);
         expect(started.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
         const res = await fetch(started.url);
         expect(await res.text()).toBe(PREVIEW_BODY);
-        const running = await scoped(rt, P).listManaged();
+        const running = await scoped(rt, W).listManaged();
         expect(running.map((c) => c.labels['vibecode.role'])).toEqual(['preview']);
 
-        const stopped = await previews.stopPreview(P);
+        const stopped = await previews.stopPreview(W);
         expect(stopped).toEqual({ ok: true });
-        expect(await scoped(rt, P).listManaged()).toEqual([]);
+        expect(await scoped(rt, W).listManaged()).toEqual([]);
       } finally {
         await previews.stopAll();
       }
