@@ -144,6 +144,7 @@ describe('pieceFacing', () => {
     expect(pieces.length).toBeGreaterThan(8);
     for (const p of pieces) {
       const angle = pieceFacing(p);
+      expect(angle).toBe(p.rotY);
       // A model's front faces +z; rotated by `angle` it points along (sin, cos).
       const front = [Math.sin(angle), Math.cos(angle)] as const;
       expect(front[0] * p.pos[0] + front[1] * p.pos[2]).toBeGreaterThan(0);

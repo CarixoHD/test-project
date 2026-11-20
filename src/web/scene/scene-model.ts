@@ -2,6 +2,7 @@ import type { AgentId } from '../../shared/ids.ts';
 import { roleLabel } from '../features/agents/index.ts';
 import type {
   Figure,
+  PieceLayout,
   PieceType,
   ScenePiece,
   SceneState,
@@ -48,15 +49,12 @@ export function instanceCounts(scene: SceneState): Record<PieceType, number> {
 }
 
 /**
- * Rotation around y the 3D view draws a piece with. Wall and window modules are small
- * buildings whose front faces +z; they turn outward on their side of the footprint (the
- * layout's rotY only says which side a slot is on). Floors and roofs keep the layout's rotY.
+ * Rotation around y the 3D view draws a piece with: the layout's rotY. layoutPiece already
+ * turns walls and windows (modules whose front faces local +z) outward on their side of the
+ * footprint; floors and roofs have rotY 0.
  */
-export function pieceFacing(p: ScenePiece): number {
-  if (p.type !== 'wall' && p.type !== 'window') return p.rotY;
-  const [x, , z] = p.pos;
-  if (Math.abs(z) >= Math.abs(x)) return z < 0 ? Math.PI : 0;
-  return x > 0 ? Math.PI / 2 : -Math.PI / 2;
+export function pieceFacing(p: PieceLayout): number {
+  return p.rotY;
 }
 
 /** How a role's figure looks: body colour and hat. Text in the agent list says the same. */
