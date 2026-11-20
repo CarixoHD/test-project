@@ -81,7 +81,7 @@ Copy the commands from Settings rather than typing them: the server fills in the
 
 ### Recording real stream fixtures
 
-The Claude Code backend's parser is tested against NDJSON fixtures in `src/server/agents/fixtures/`. To capture a real stream from your own login (after the one-time setup above):
+The Claude Code backend's parser is tested against NDJSON fixtures in `src/server/agents/fixtures/`. To capture a real stream with your own Claude account, either set `CLAUDE_CODE_OAUTH_TOKEN` to the token `claude setup-token` prints, or do the one-time volume login above:
 
 ```sh
 npm run -s claude:record -- --help   # options
@@ -89,7 +89,7 @@ npm run -s claude:record             # writes src/server/agents/fixtures/real-su
 npm run -s claude:record -- --out /tmp/run.ndjson --model opus
 ```
 
-It prints the CLI version, then runs `claude` once in the current `vibecode/claude-code:<hash>` image (the tag `npm run -s docker:images` prints; `--pull never`) as your uid:gid, with the `vibecode-claude-config` volume mounted at `/home/agent/.claude`. It uses exactly the backend's argv (`--output-format stream-json`, `--json-schema`, the read-only tool set) for a tiny task that replies `{"ok":true}`. The raw stdout goes through the secret redactor (values of environment variables whose names contain `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL`) and is written to the fixture file. The exit code is non-zero if the CLI fails; whatever it printed is still written, so error runs can be recorded too. The script never reads the volume itself; only the CLI inside the container does. Review the file before you commit it.
+It prints the CLI version, then runs `claude` once in the current `vibecode/claude-code:<hash>` image (the tag `npm run -s docker:images` prints; `--pull never`) as your uid:gid. Auth: when `CLAUDE_CODE_OAUTH_TOKEN` is set in the script's environment, it is passed to the container by name only (`--env CLAUDE_CODE_OAUTH_TOKEN`, so the value never appears in argv or logs) and no volume is mounted; otherwise the `vibecode-claude-config` volume is mounted at `/home/agent/.claude`. The script logs which source it used (`token from environment` or `login volume`), never the value. It uses exactly the backend's argv (`--output-format stream-json`, `--json-schema`, the read-only tool set) for a tiny task that replies `{"ok":true}`. The raw stdout goes through the secret redactor (values of environment variables whose names contain `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL`) and is written to the fixture file. The exit code is non-zero if the CLI fails; whatever it printed is still written, so error runs can be recorded too. The script never reads the volume itself; only the CLI inside the container does. Review the file before you commit it.
 
 ### Status, rate limits and logging in again
 
