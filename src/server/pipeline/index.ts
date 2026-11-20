@@ -21,3 +21,15 @@ export {
   type SetTimer,
 } from './activity-batcher.ts';
 export { usageCost, type UsageCost } from './usage.ts';
+export {
+  createOrchestrator,
+  DEFAULT_ORCHESTRATOR_LIMITS,
+  isAllowedOrchestratorPath,
+  type Orchestrator,
+  type OrchestratorDeps,
+} from './orchestrator.ts';
+export {
+  ORCHESTRATOR_BACKOFF_MS,
+  ORCHESTRATOR_MAX_FAILURES,
+  OrchestratorBackoff,
+} from './orchestrator-backoff.ts';
