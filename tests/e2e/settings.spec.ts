@@ -75,9 +75,7 @@ test('role defaults are saved and shown again after a reload', async ({ page, re
   await expect(reviewer.getByLabel('Provider')).toHaveValue('openai');
   await expect(reviewer.getByLabel('Model')).toHaveValue('gpt-e2e-reviewer');
   // Roles without their own model stay unset (they use the default).
-  await expect(models.getByRole('group', { name: 'Sparring' }).getByLabel('Model')).toHaveValue(
-    '',
-  );
+  await expect(models.getByRole('group', { name: 'Sparring' }).getByLabel('Model')).toHaveValue('');
 });
 
 test('a product budget and max parallel agents are saved and shown on the Build tab', async ({
