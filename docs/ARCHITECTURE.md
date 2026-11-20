@@ -82,7 +82,7 @@ src/
     main.tsx, App.tsx, routes/
     state/           store.ts (snapshot + EventSource + reduce), api.ts (typed fetch)
     features/        board/, issue/, sparring/, inbox/, agents/, settings/, products/
-    scene/           Scene3D.tsx (lazy), Workers.tsx, Building.tsx, assets/ (+LICENSE.md)
+    scene/           ScenePanel.tsx, Scene3D.tsx (lazy), scene-model.ts (pure mapping), figures.ts (primitive figures/pieces; assets/ + LICENSE.md once GLBs are vendored)
     ui/              shared accessible primitives (Button, Dialog, Markdown, Tabs, …)
 docker/              base.Dockerfile (vibecode/base), claude-code.Dockerfile
 scripts/             dev.mjs, update-prices.mjs, set-password.ts
@@ -530,6 +530,9 @@ Never a shell. The child runs in its own process group, and timeout or abort sig
   - `/settings`
 - Browser `Notification` fires on `inbox.created` once the owner has granted permission. This belongs to the inbox feature (`features/inbox`, #33), not to the store.
 - Scene3D is `React.lazy`. It renders `sceneReduce` output, with one InstancedMesh per piece type and `SkeletonUtils.clone` for each worker. When collapsed or off-screen it keeps `frameloop="never"` and stays mounted. Clicking a worker opens the same `AgentPanel` that the agent list uses.
+  - `ScenePanel` (`scene/ScenePanel.tsx`): a heading button with `aria-expanded` collapses the view; the choice is kept in `localStorage['vibecode.scene.collapsed']`. The scene chunk loads on the first expand and then stays mounted. `frameloop` comes from `sceneFrameloop({expanded, onScreen, reducedMotion})`: `never` when collapsed or off-screen (IntersectionObserver), `demand` with `prefers-reduced-motion` (no animations), else `always`. The canvas is `aria-hidden`; a note says the board and agent list carry the same information. The scene is `sceneFromState` of the live client state (≡ replaying `sceneReduce`), memoised so events without a scene effect don't re-render it.
+  - `scene-model.ts` (pure, unit-tested): `instanceCounts`/`piecesByType`, `workerPlacements` (look by figure, spot at the site/desk/bench), `debrisPlacements`, `Scene3DProps {scene, frameloop, reducedMotion}`.
+  - Render stats for the E2E smoke test: `window.__vibecodeScene = {drawCalls, triangles, frames, workers, pieces}`, set in dev/test builds, or in production when `localStorage['vibecode.debug.sceneStats'] === '1'` (`SCENE_STATS_FLAG`).
 
 ## 5. Data model (SQLite, `data/vibecode.db`)
 
