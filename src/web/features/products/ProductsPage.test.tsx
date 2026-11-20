@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +10,11 @@ import { createAppStore } from '../../state/store.ts';
 
 // The products feature end to end in the browser: real store, router and API client, with
 // the network (fetch + EventSource) faked at the global boundary.
+//
+// Opening a product page mounts the Build tab, whose 3D view lazily imports the real WebGL
+// scene (three.js + R3F). That import costs seconds under full-suite load and races the test
+// timeouts; these tests are about the products feature, so the scene is a stand-in.
+vi.mock('../../scene/Scene3D.tsx', () => ({ default: () => null }));
 
 class FakeEventSource {
   static readonly CLOSED = 2;
@@ -71,6 +76,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount (stopping the store and its stream) while the fake network is still in place.
+  cleanup();
   vi.unstubAllGlobals();
 });
 

@@ -1,11 +1,16 @@
 import { render, screen, within } from '@testing-library/react';
 import { createMemoryRouter } from 'react-router';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { EventSchema } from '../shared/events.ts';
 import { emptyState, reduce } from '../shared/state.ts';
 import { App } from './App.tsx';
 import { routes } from './routes.tsx';
 import type { AppSnapshot, AppStore, ConnectionStatus } from './state/store.ts';
+
+// The product page keeps the Build tab mounted, whose 3D view lazily imports the real WebGL
+// scene (three.js + R3F, via a deprecated CJS require). That import costs seconds under
+// full-suite load and these tests are about the shell and routes, so the scene is a stand-in.
+vi.mock('./scene/Scene3D.tsx', () => ({ default: () => null }));
 
 const productCreated = EventSchema.parse({
   seq: 1,
