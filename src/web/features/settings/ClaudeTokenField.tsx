@@ -1,12 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
-import type { ClaudeCodeTokenView } from '../../../shared/dto.ts';
 import { ApiError, getClaudeCodeToken, updateClaudeCodeToken } from '../../state/api.ts';
 import { Button, Dialog, Field } from '../../ui/index.ts';
-
-type Load =
-  | { kind: 'loading' }
-  | { kind: 'loaded'; view: ClaudeCodeTokenView }
-  | { kind: 'failed'; message: string };
+import { useRetryableLoad } from './use-retryable-load.ts';
 
 /** Server messages never contain the token (the DTO's errors don't echo it). */
 const messageOf = (err: unknown): string =>
@@ -22,7 +17,7 @@ const HINT =
  */
 export function ClaudeTokenField() {
   const errorId = useId();
-  const [load, setLoad] = useState<Load>({ kind: 'loading' });
+  const { load, setView, retry } = useRetryableLoad(getClaudeCodeToken, messageOf);
   const [draft, setDraft] = useState('');
   const [replacing, setReplacing] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -39,21 +34,10 @@ export function ClaudeTokenField() {
     focusNext.current = null;
   });
 
-  useEffect(() => {
-    const ac = new AbortController();
-    getClaudeCodeToken(ac.signal).then(
-      (view) => setLoad({ kind: 'loaded', view }),
-      (err: unknown) => {
-        if (!ac.signal.aborted) setLoad({ kind: 'failed', message: messageOf(err) });
-      },
-    );
-    return () => ac.abort();
-  }, []);
-
   async function save(token: string | null): Promise<string | null> {
     setBusy(true);
     try {
-      setLoad({ kind: 'loaded', view: await updateClaudeCodeToken(token) });
+      setView(await updateClaudeCodeToken(token));
       return null;
     } catch (err) {
       return messageOf(err);
@@ -105,9 +89,12 @@ export function ClaudeTokenField() {
       <h3>Subscription token</h3>
       {load.kind === 'loading' ? <p>Loading…</p> : null}
       {load.kind === 'failed' ? (
-        <p role="alert" className="ui-field__error">
-          Could not load the token status: {load.message}
-        </p>
+        <div className="settings-provider__stored">
+          <p role="alert" className="ui-field__error">
+            Could not load the token status: {load.message}
+          </p>
+          <Button onClick={retry}>Try again</Button>
+        </div>
       ) : null}
       {stored !== null && !replacing ? (
         <div className="settings-provider__stored">
