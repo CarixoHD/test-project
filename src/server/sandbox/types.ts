@@ -42,6 +42,13 @@ export type ExecOpts = {
   killSignal?: 'SIGINT' | 'SIGTERM' | undefined;
   /** Called with each (redacted) output line as it arrives. */
   onLine?: ((line: string, stream: OutputStream) => void) | undefined;
+  /**
+   * Extra environment variables for the process (e.g. CLAUDE_CODE_OAUTH_TOKEN, ADR 13). The
+   * docker runtime passes only the names in argv (`-e NAME`) and the values through the docker
+   * CLI's own process env, so a value never shows in argv or `ps`. Names must be
+   * `[A-Za-z_][A-Za-z0-9_]*`.
+   */
+  env?: Record<string, string> | undefined;
 };
 
 export type ExecResult = {
