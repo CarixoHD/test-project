@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAccountSettings, SETTING_KEYS } from '../../commands/index.ts';
+import {
+  API_KEY_MIN_LENGTH,
+  SettingsResponseSchema,
+  SettingsUpdateResponseSchema,
+} from '../../../shared/dto.ts';
+import { resolveModel, type Role, type RoleModels } from '../../../shared/models.ts';
 import { readSetting } from '../../store/index.ts';
 import { API_KEY_SECRETS, model, price, MissingProviderSetupError } from '../../llm/index.ts';
-import { createSecrets } from '../../security/index.ts';
+import { createSecrets, MIN_SECRET_LENGTH } from '../../security/index.ts';
 import { expectSnapshotMatchesReplay } from '../../store/testing.ts';
 import { FakeIdGen } from '../../util/id-gen.ts';
 import { createApp } from '../app.ts';
@@ -94,10 +100,11 @@ describe('GET /api/settings', () => {
     const saved = await put({ keys: { anthropic: ANTHROPIC_KEY, openai: OPENAI_KEY } });
     expect(saved.status).toBe(200);
     expect(saved.text).not.toContain(ANTHROPIC_KEY);
+    expect(SettingsUpdateResponseSchema.parse(JSON.parse(saved.text)).keys).toHaveLength(2);
     const res = await get();
     expect(res.text).not.toContain(ANTHROPIC_KEY);
     expect(res.text).not.toContain(OPENAI_KEY);
-    const body = JSON.parse(res.text) as { keys: unknown; providers: { id: string }[] };
+    const body = SettingsResponseSchema.parse(JSON.parse(res.text));
     expect(body.keys).toEqual([
       { provider: 'anthropic', last4: 'wxyz' },
       { provider: 'openai', last4: '9876' },
@@ -226,6 +233,10 @@ describe('PUT /api/settings: provider config', () => {
     expect(store.eventsSince(0)).toEqual([]);
   });
 
+  it('accepts only keys the redactor can mask', () => {
+    expect(API_KEY_MIN_LENGTH).toBeGreaterThanOrEqual(MIN_SECRET_LENGTH);
+  });
+
   it('rejects a non-JSON body with 400', async () => {
     const { app } = setup();
     const res = await app.request('/api/settings', {
@@ -238,25 +249,26 @@ describe('PUT /api/settings: provider config', () => {
 });
 
 describe('PUT /api/settings: models and prices', () => {
-  it('stores role defaults and the default model where resolveModel reads them', async () => {
-    const { put, get, db } = setup();
-    const gpt = { provider: 'openai', model: 'gpt-5' };
-    await put({ roleDefaults: { implementer: SONNET, reviewer: gpt }, defaultModel: gpt });
-    expect(JSON.parse((await get()).text)).toMatchObject({
-      roleDefaults: { implementer: SONNET, reviewer: gpt },
-      defaultModel: gpt,
-    });
-    // resolveModel (pipeline) reads these raw rows: product → roleDefaults[role] → defaultModel.
-    expect(readSetting(db, SETTING_KEYS.roleDefaults)).toEqual({
-      implementer: SONNET,
-      reviewer: gpt,
-    });
-    expect(readSetting(db, SETTING_KEYS.defaultModel)).toEqual(gpt);
+  it('role defaults and the default model set via PUT drive resolveModel', async () => {
+    const { put, get, settings, db } = setup();
+    const gpt = { provider: 'openai', model: 'gpt-5' } as const;
+    const resolve = (role: Role, productModels: RoleModels = {}) =>
+      resolveModel(role, productModels, settings.read());
+    expect(resolve('implementer')).toBeUndefined();
+
+    await put({ roleDefaults: { implementer: SONNET }, defaultModel: gpt });
+    expect(resolve('implementer')).toEqual(SONNET);
+    expect(resolve('reviewer')).toEqual(gpt);
+    // The product's own choice still wins over the account defaults.
+    expect(resolve('implementer', { implementer: gpt })).toEqual(gpt);
+    expect(readSetting(db, SETTING_KEYS.roleDefaults)).toEqual({ implementer: SONNET });
 
     await put({ defaultModel: null });
+    expect(resolve('reviewer')).toBeUndefined();
+    expect(resolve('implementer')).toEqual(SONNET);
     expect(readSetting(db, SETTING_KEYS.defaultModel)).toBeUndefined();
-    expect(JSON.parse((await get()).text)).toMatchObject({
-      roleDefaults: { implementer: SONNET, reviewer: gpt },
+    expect(SettingsResponseSchema.parse(JSON.parse((await get()).text))).toMatchObject({
+      roleDefaults: { implementer: SONNET },
       defaultModel: null,
     });
   });

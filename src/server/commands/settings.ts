@@ -1,11 +1,18 @@
-import { z } from 'zod';
+import type { z } from 'zod';
 import { PriceOverridesSchema, type PriceOverrides } from '../../shared/budget.ts';
+import {
+  SettingsUpdateRequestSchema,
+  type ProviderView,
+  type SettingsResponse,
+  type SettingsUpdateRequest,
+} from '../../shared/dto.ts';
 import type { Event, SettingsSection } from '../../shared/events.ts';
 import {
+  KEYED_PROVIDER_IDS,
   ModelRefSchema,
   RoleModelsSchema,
+  type KeyedProviderId,
   type ModelRef,
-  type ProviderId,
   type RoleModels,
 } from '../../shared/models.ts';
 import type { Db } from '../db/index.ts';
@@ -15,14 +22,15 @@ import {
   type ModelDeps,
   type ProviderConfig,
 } from '../llm/index.ts';
-import { MIN_SECRET_LENGTH, type Secrets } from '../security/index.ts';
+import type { Secrets } from '../security/index.ts';
 import { deleteSetting, readSetting, writeSetting, type Store } from '../store/index.ts';
 
 // Account-wide settings (ARCHITECTURE §4.3 GET|PUT /api/settings, §4.10, ADR 9): provider
 // config, write-only API keys, role defaults, the default model and price overrides.
 // Non-secret values live in `settings`, keys in `secrets` under API_KEY_SECRETS names.
+// Request/response shapes are the shared DTOs (SettingsUpdateRequest, SettingsResponse).
 
-/** `settings` rows written here. The pipeline's resolveModel and pricing read the same keys. */
+/** `settings` rows written here; `read()` feeds the shared resolveModel and price overrides. */
 export const SETTING_KEYS = {
   /** ProviderConfig (no secrets). */
   providerConfig: 'providerConfig',
@@ -34,11 +42,8 @@ export const SETTING_KEYS = {
   priceOverrides: 'priceOverrides',
 } as const;
 
-export type KeyedProvider = keyof typeof API_KEY_SECRETS;
-const KEYED_PROVIDERS = Object.keys(API_KEY_SECRETS) as [KeyedProvider, ...KeyedProvider[]];
-
 /** Providers the Settings page lists (`fake` is for tests and demo mode only). */
-const PROVIDERS: readonly { id: Exclude<ProviderId, 'fake'>; name: string }[] = [
+const PROVIDERS: readonly Pick<ProviderView, 'id' | 'name'>[] = [
   { id: 'anthropic', name: 'Anthropic' },
   { id: 'openai', name: 'OpenAI' },
   { id: 'google', name: 'Google Gemini' },
@@ -46,48 +51,6 @@ const PROVIDERS: readonly { id: Exclude<ProviderId, 'fake'>; name: string }[] = 
   { id: 'openai-compatible', name: 'OpenAI-compatible (Ollama, vLLM, …)' },
   { id: 'claude-code', name: 'Claude Code (subscription)' },
 ];
-
-/**
- * A key is one token: no whitespace (multi-line secrets are not API keys) and at least
- * MIN_SECRET_LENGTH characters, so the redactor can mask it.
- */
-const ApiKeySchema = z
-  .string()
-  .min(MIN_SECRET_LENGTH)
-  .max(4096)
-  .regex(/^\S+$/, 'An API key must not contain whitespace');
-
-/** PUT /api/settings: every section optional; keys are set (string) or cleared (null). */
-export const SettingsUpdateSchema = z
-  .strictObject({
-    providerConfig: ProviderConfigSchema.optional(),
-    keys: z.partialRecord(z.enum(KEYED_PROVIDERS), ApiKeySchema.nullable()).optional(),
-    roleDefaults: RoleModelsSchema.optional(),
-    defaultModel: ModelRefSchema.nullable().optional(),
-    priceOverrides: PriceOverridesSchema.optional(),
-  })
-  .refine((u) => Object.keys(u).length > 0, 'Nothing to update');
-export type SettingsUpdate = z.infer<typeof SettingsUpdateSchema>;
-
-export interface ProviderView {
-  id: Exclude<ProviderId, 'fake'>;
-  name: string;
-  /** Usable as configured: key set, or base URL set (openai-compatible); claude-code always. */
-  enabled: boolean;
-  needsKey: boolean;
-  /** Configured base URL (openai-compatible, openrouter override), else null. */
-  baseURL: string | null;
-}
-
-/** GET /api/settings. Keys appear only as provider + last 4 characters. */
-export interface SettingsView {
-  providers: ProviderView[];
-  providerConfig: ProviderConfig;
-  keys: { provider: KeyedProvider; last4: string | null }[];
-  roleDefaults: RoleModels;
-  defaultModel: ModelRef | null;
-  priceOverrides: PriceOverrides;
-}
 
 /** Non-secret settings, validated. */
 export interface StoredSettings {
@@ -99,8 +62,8 @@ export interface StoredSettings {
 
 export interface AccountSettings {
   read(): StoredSettings;
-  view(): SettingsView;
-  update(input: SettingsUpdate): { ok: true; events: Event[] };
+  view(): SettingsResponse;
+  update(input: SettingsUpdateRequest): { ok: true; events: Event[] };
   /**
    * Registry deps backed by the stored settings: `getSecret` reads `secrets` and
    * `providerConfig` reads `settings` each time model() asks, so changes apply to the next call.
@@ -142,16 +105,16 @@ export function createAccountSettings({
     priceOverrides: readValidated(db, SETTING_KEYS.priceOverrides, PriceOverridesSchema) ?? {},
   });
 
-  const view = (): SettingsView => {
+  const view = (): SettingsResponse => {
     const stored = read();
     const last4BySecret = new Map(secrets.list().map((s) => [s.key, s.last4]));
-    const keys = KEYED_PROVIDERS.flatMap((provider) => {
+    const keys = KEYED_PROVIDER_IDS.flatMap((provider) => {
       const secretKey = API_KEY_SECRETS[provider];
       return last4BySecret.has(secretKey)
         ? [{ provider, last4: last4BySecret.get(secretKey) ?? null }]
         : [];
     });
-    const hasKey = new Set<ProviderId>(keys.map((k) => k.provider));
+    const hasKey = new Set<string>(keys.map((k) => k.provider));
     const { openaiCompatible, openrouter } = stored.providerConfig;
     const providers = PROVIDERS.map(({ id, name }): ProviderView => {
       switch (id) {
@@ -178,17 +141,17 @@ export function createAccountSettings({
     return { providers, ...stored, keys };
   };
 
-  const update = (input: SettingsUpdate): { ok: true; events: Event[] } => {
-    const u = SettingsUpdateSchema.parse(input);
+  const update = (input: SettingsUpdateRequest): { ok: true; events: Event[] } => {
+    const u = SettingsUpdateRequestSchema.parse(input);
     const events = store.commit((tx) => {
       const sections: SettingsSection[] = [];
-      const keys: { provider: KeyedProvider; set: boolean }[] = [];
+      const keys: { provider: KeyedProviderId; set: boolean }[] = [];
       if (u.providerConfig !== undefined) {
         writeSetting(tx.db, SETTING_KEYS.providerConfig, u.providerConfig);
         sections.push('providerConfig');
       }
       if (u.keys !== undefined) {
-        for (const provider of KEYED_PROVIDERS) {
+        for (const provider of KEYED_PROVIDER_IDS) {
           const value = u.keys[provider];
           if (value === undefined) continue;
           // Same connection as the commit: the secret write joins this transaction.

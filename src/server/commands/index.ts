@@ -19,12 +19,7 @@ export {
 export {
   createAccountSettings,
   SETTING_KEYS,
-  SettingsUpdateSchema,
   type AccountSettings,
   type AccountSettingsDeps,
-  type KeyedProvider,
-  type ProviderView,
-  type SettingsUpdate,
-  type SettingsView,
   type StoredSettings,
 } from './settings.ts';

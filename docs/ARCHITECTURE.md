@@ -108,6 +108,11 @@ const emptyState: ClientState;
 //   backendLimits (by backend), previews, settingsChangedAt (ts of the last settings.changed)}, lastSeq. prd.applied also rebases the draft.
 // dto.ts
 const StateResponseSchema;                                 // GET /api/state → {state: ClientState, lastSeq}
+// SettingsResponseSchema / SettingsUpdateRequestSchema / SettingsUpdateResponseSchema (GET|PUT /api/settings)
+// models.ts
+function resolveModel(role, productModels: RoleModels, {roleDefaults, defaultModel}): ModelRef | undefined;
+//   product.models[role] → roleDefaults[role] → defaultModel → undefined (caller: demo fake or 'Choose a model in Settings')
+// KEYED_PROVIDER_IDS, ProviderConfigSchema (re-exported by server/llm)
 // issues.ts
 type IssueStatus = 'open'|'in_progress'|'in_review'|'completed'|'failed'|'cancelled';
 function transition(issue: IssueView, ev: IssueTransitionEvent, cfg: {maxAttempts:number}):
@@ -212,10 +217,10 @@ POST /api/settings/password             {current?, next}
 POST /api/login {password} · POST /api/logout · GET /api/session
 ```
 
-**Settings** (`commands/settings.ts`, `createAccountSettings({store, db, secrets})` → `{read, view, update, modelDeps}`; mounted when `AppDeps.settings` is given):
+**Settings** (DTOs in `shared/dto.ts`; `commands/settings.ts`, `createAccountSettings({store, db, secrets})` → `{read, view, update, modelDeps}`; mounted when `AppDeps.settings` is given):
 - `GET /api/settings` → `{providers: [{id, name, enabled, needsKey, baseURL|null}], providerConfig, keys: [{provider, last4|null}], roleDefaults, defaultModel|null, priceOverrides}`. Keys never appear in full; `last4` is null for keys shorter than 16 chars.
 - `PUT /api/settings` `{providerConfig?: ProviderConfig, keys?: {<provider>: string|null}, roleDefaults?, defaultModel?: ModelRef|null, priceOverrides?}` (strict; at least one field). Sections present replace the stored value; `keys` set (≥ 8 chars, no whitespace) or clear one provider's key under `API_KEY_SECRETS`; `defaultModel: null` deletes it. Invalid → 400. One commit writes the rows and emits `settings.changed{sections, keys:[{provider, set}]}` (never values). Responds `{ok:true, ...view}`.
-- `settings` rows: `providerConfig`, `roleDefaults`, `defaultModel`, `priceOverrides` (`SETTING_KEYS`; read by resolveModel and pricing), plus `settingsChangedAt` (projection of `settings.changed`).
+- `settings` rows: `providerConfig`, `roleDefaults`, `defaultModel`, `priceOverrides` (`SETTING_KEYS`; `settings.read()` supplies the account defaults to the shared `resolveModel` and the overrides to `price`), plus `settingsChangedAt` (projection of `settings.changed`).
 - `modelDeps()` → `ModelDeps` with `getSecret = secrets.get` and a `providerConfig` getter over the stored config: both are read when `model()` runs.
 
 ### 4.4 server/scheduler
