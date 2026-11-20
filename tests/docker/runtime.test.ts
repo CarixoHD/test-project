@@ -14,7 +14,7 @@ import {
   type SandboxSpec,
 } from '../../src/server/sandbox/index.ts';
 import { exec } from '../../src/server/util/exec.ts';
-import { expectFailsClosed, probeIccOff } from './icc-probe.ts';
+import { expectFailsClosed, leftoverProbeNetworks, probeIccOff } from './icc-probe.ts';
 import { EGRESS_PROBE, openInterfaces } from './net-probes.ts';
 
 const uid = process.getuid?.() ?? 1000;
@@ -125,6 +125,20 @@ describe('DockerCliRuntime against a real Docker daemon', () => {
   // Needs the ICC-off egress network: on a host whose daemon cannot create one (no
   // br_netfilter), the same slot proves the runtime fails closed instead (icc-probe.ts).
   if (ICC_OFF.ok) {
+    it('ensureNetworks probes ICC off and leaves no vibecode-icc-probe-* network behind', async () => {
+      await rt.ensureNetworks();
+      const opts = await exec(
+        'docker',
+        ['network', 'inspect', '--format', '{{json .Options}}', 'vibecode-egress'],
+        T,
+      );
+      expect(opts.code).toBe(0);
+      expect(JSON.parse(opts.stdout)).toMatchObject({
+        'com.docker.network.bridge.enable_icc': 'false',
+      });
+      expect(await leftoverProbeNetworks()).toEqual([]);
+    });
+
     it('writes files into the worktree owned by the host uid', async () => {
       const s = await spec('egress');
       const sb = await rt.open(s);

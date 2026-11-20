@@ -81,5 +81,17 @@ export async function expectFailsClosed(rt: DockerCliRuntime): Promise<IccUnsupp
   expect(err.message).toContain('sudo modprobe br_netfilter');
   const after = await exec('docker', ['network', 'inspect', NETWORKS.egress], T);
   expect(after.code, `${NETWORKS.egress} must not exist after a failed ICC-off create`).not.toBe(0);
+  expect(await leftoverProbeNetworks(), 'the runtime removes its ICC probe network').toEqual([]);
   return err;
+}
+
+/** Names of `vibecode-icc-probe-*` networks on the daemon (the runtime's and probeIccOff's). */
+export async function leftoverProbeNetworks(): Promise<string[]> {
+  const r = await exec(
+    'docker',
+    ['network', 'ls', '--filter', 'name=vibecode-icc-probe', '--format', '{{.Name}}'],
+    T,
+  );
+  if (r.code !== 0) throw new Error(`docker network ls failed: ${r.stderr}`);
+  return r.stdout.split('\n').filter((n) => n.startsWith('vibecode-icc-probe-'));
 }

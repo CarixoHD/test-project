@@ -427,7 +427,13 @@ describe('startPreview on the docker CLI runtime (stubbed docker binary)', () =>
     const exec = (cmd: string, argv: readonly string[]): Promise<UtilExecResult> => {
       expect(cmd).toBe('docker');
       argvs.push([...argv]);
-      const stdout = argv[0] === 'port' ? '127.0.0.1:49153\n' : '';
+      // A healthy daemon: ensureNetworks finds vibecode-egress with ICC off.
+      const stdout =
+        argv[0] === 'port'
+          ? '127.0.0.1:49153\n'
+          : argv.includes('{{json .Options}}')
+            ? '{"com.docker.network.bridge.enable_icc":"false"}\n'
+            : '';
       return Promise.resolve({
         code: 0,
         signal: null,
