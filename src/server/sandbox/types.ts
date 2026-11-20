@@ -51,6 +51,8 @@ export interface Sandbox {
   close(): Promise<void>;
 }
 
+export type DetachedContainer = { name: string; hostPort: number };
+
 export type ManagedContainer = { name: string; labels: Record<string, string> };
 
 export interface ContainerRuntime {
@@ -61,6 +63,12 @@ export interface ContainerRuntime {
   open(spec: SandboxSpec): Promise<Sandbox>;
   /** One-shot container for checks. */
   runOnce(spec: SandboxSpec, argv: readonly string[], o: ExecOpts): Promise<ExecResult>;
+  /**
+   * Starts a detached container running `argv` (previews: `project.preview.command`) and
+   * resolves with the host port docker published on 127.0.0.1 for `spec.publishPort`.
+   * Optional so runtimes can add it independently; previews report an error without it.
+   */
+  runDetached?(spec: SandboxSpec, argv: readonly string[]): Promise<DetachedContainer>;
   listManaged(): Promise<ManagedContainer[]>;
   remove(name: string): Promise<void>;
 }

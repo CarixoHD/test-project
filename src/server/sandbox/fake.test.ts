@@ -319,3 +319,37 @@ describe('FakeContainerRuntime scripted run', () => {
     expect(r).toMatchObject({ aborted: true, code: null });
   });
 });
+
+describe('FakeContainerRuntime detached preview', () => {
+  const previewSpec = (): SandboxSpec =>
+    spec({ role: 'preview', network: 'preview', readOnly: true, publishPort: 3000 });
+
+  it('serves a small page on 127.0.0.1 until the container is removed', async () => {
+    const rt = new FakeContainerRuntime({ dataDir });
+    const c = await rt.runDetached(previewSpec(), ['npm', 'start']);
+    expect(c.name).toBe('vibecode-01RUN');
+    expect(rt.calls).toContainEqual({
+      kind: 'runDetached',
+      name: 'vibecode-01RUN',
+      argv: ['npm', 'start'],
+    });
+    expect((await rt.listManaged()).map((m) => m.labels['vibecode.role'])).toEqual(['preview']);
+
+    const res = await fetch(`http://127.0.0.1:${String(c.hostPort)}/`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toMatch(/preview/i);
+
+    await rt.remove(c.name);
+    expect(await rt.listManaged()).toEqual([]);
+    await expect(fetch(`http://127.0.0.1:${String(c.hostPort)}/`)).rejects.toThrow();
+  });
+
+  it('enforces the run-args policy for detached containers', async () => {
+    const rt = new FakeContainerRuntime({ dataDir });
+    await expect(rt.runDetached(spec({ worktree: outside }), ['x'])).rejects.toThrow();
+    await expect(
+      rt.runDetached({ ...previewSpec(), publishPort: undefined }, ['x']),
+    ).rejects.toThrow(/publishPort/);
+    expect(await rt.listManaged()).toEqual([]);
+  });
+});

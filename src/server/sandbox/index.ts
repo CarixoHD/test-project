@@ -1,5 +1,6 @@
 export type {
   ContainerRuntime,
+  DetachedContainer,
   ExecOpts,
   ExecResult,
   HostIdentity,
