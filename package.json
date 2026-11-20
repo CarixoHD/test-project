@@ -20,7 +20,8 @@
     "build": "vite build",
     "start": "node src/server/main.ts",
     "set-password": "node scripts/set-password.ts",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "claude:record": "node scripts/record-claude-stream.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.106",
