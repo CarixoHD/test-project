@@ -22,9 +22,14 @@ export function tailLines(text: string, n = CHECK_OUTPUT_LINES): string {
 const clip = (text: string, limit: number) =>
   text.length <= limit ? text : `${text.slice(0, limit)}\n… (truncated)`;
 
-/** Feedback of the latest ended attempt of the issue, if any. */
+/**
+ * Feedback of the latest ended attempt at the issue's current rev, if any. Feedback from an
+ * older rev (before an owner edit or an orchestrator rewrite) was written against another body.
+ */
 function previousFeedback(store: Store, issue: IssueState): string {
-  const ended = store.q.attemptsByIssue(issue.id).filter((a) => a.status !== 'running');
+  const ended = store.q
+    .attemptsByIssue(issue.id)
+    .filter((a) => a.status !== 'running' && a.issueRev === issue.rev);
   const feedback = ended.at(-1)?.feedback;
   return feedback === undefined || feedback === null || feedback === '' ? NONE : feedback;
 }
