@@ -1,6 +1,7 @@
 export {
   AGENT_IDENTITY,
   GIT_SAFETY_FLAGS,
+  GIT_VERSION_REQUIRED_MESSAGE,
   GitError,
   MainMovedError,
   MIN_GIT_VERSION,
@@ -8,6 +9,7 @@ export {
   gitVersionOk,
   type AddWorktreeOptions,
   type CommitResult,
+  type GitCallOptions,
   type Git,
   type GitDeps,
   type GitOptions,
