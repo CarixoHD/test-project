@@ -19,9 +19,16 @@ interface SceneStats {
   pieces: number;
 }
 
+/** Peaks over every frame the probe reported, kept by the init script below. */
+interface ScenePeaks {
+  drawCalls: number;
+  workers: number;
+}
+
 declare global {
   interface Window {
     __vibecodeScene?: SceneStats;
+    __e2eScenePeaks?: ScenePeaks;
   }
 }
 
@@ -53,6 +60,21 @@ test('the 3D view renders under the draw-call budget and stops when collapsed', 
     ([flag, collapsedKey]) => {
       localStorage.setItem(flag, '1');
       localStorage.setItem(collapsedKey, 'false');
+      // The probe writes its stats once per frame. Demo agents can come and go between two
+      // polls from the test, so record the peaks of every frame here, in the page.
+      const peaks: ScenePeaks = { drawCalls: 0, workers: 0 };
+      let current: SceneStats | undefined;
+      window.__e2eScenePeaks = peaks;
+      Object.defineProperty(window, '__vibecodeScene', {
+        configurable: true,
+        get: () => current,
+        set: (stats: SceneStats | undefined) => {
+          current = stats;
+          if (stats === undefined) return;
+          peaks.drawCalls = Math.max(peaks.drawCalls, stats.drawCalls);
+          peaks.workers = Math.max(peaks.workers, stats.workers);
+        },
+      });
     },
     [SCENE_STATS_FLAG, SCENE_COLLAPSED_KEY] as const,
   );
@@ -70,31 +92,17 @@ test('the 3D view renders under the draw-call budget and stops when collapsed', 
   const handoff = await request.post(`/api/products/${id}/handoff`, { data: {} });
   expect(handoff.ok(), await handoff.text()).toBe(true);
 
-  // Sample the render stats while the pipeline runs: workers come and go, pieces pile up.
-  let maxDrawCalls = 0;
-  let sawWorkers = false;
-  await expect
-    .poll(
-      async () => {
-        const stats = await readStats(page);
-        if (stats === null) return 0;
-        maxDrawCalls = Math.max(maxDrawCalls, stats.drawCalls);
-        sawWorkers ||= stats.workers > 0;
-        return stats.pieces;
-      },
-      { timeout: PIPELINE_TIMEOUT_MS, intervals: [250] },
-    )
-    .toBeGreaterThan(0);
+  // Let the pipeline run: workers come and go (peaks recorded per frame), pieces pile up.
   await expect(page.getByRole('heading', { level: 3, name: 'Completed (3)' })).toBeVisible({
     timeout: PIPELINE_TIMEOUT_MS,
   });
+  await expect.poll(async () => (await readStats(page))?.pieces ?? 0, { timeout: 30_000 }).toBe(3);
   const final = await readStats(page);
-  expect(final).not.toBeNull();
-  maxDrawCalls = Math.max(maxDrawCalls, final?.drawCalls ?? 0);
-  expect(sawWorkers, 'the scene showed working figures at some point').toBe(true);
+  const peaks = await page.evaluate(() => ({ ...window.__e2eScenePeaks }));
+  test.info().annotations.push({ type: 'max draw calls', description: String(peaks.drawCalls) });
+  expect(peaks.workers, 'some frame showed working figures').toBeGreaterThan(0);
   expect(final?.drawCalls).toBeGreaterThan(0);
-  test.info().annotations.push({ type: 'max draw calls', description: String(maxDrawCalls) });
-  expect(maxDrawCalls).toBeLessThan(DRAW_CALL_BUDGET);
+  expect(peaks.drawCalls).toBeLessThan(DRAW_CALL_BUDGET);
 
   // Collapse: the canvas is hidden and no more frames are drawn.
   await toggle.click();
