@@ -1,4 +1,4 @@
-import type { BufferGeometry, Material, Object3D } from 'three';
+import type { BufferGeometry, Material, Matrix4 } from 'three';
 import {
   AnimationClip,
   Box3,
@@ -14,6 +14,7 @@ import {
   Mesh,
   MeshStandardMaterial,
   NumberKeyframeTrack,
+  Object3D,
   Quaternion,
   QuaternionKeyframeTrack,
   SphereGeometry,
@@ -22,8 +23,8 @@ import {
 } from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { Figure, PieceType } from '../../shared/scene.ts';
-import { FIGURE_LOOKS, type FigureLook } from './scene-model.ts';
+import type { Figure, PieceLayout, PieceType } from '../../shared/scene.ts';
+import { FIGURE_LOOKS, pieceFacing, type FigureLook } from './scene-model.ts';
 
 // Figures and building pieces (ADR 8). The scene draws the vendored CC0 Kenney GLBs in
 // ./assets (Mini Characters, City Kit Industrial; see assets/README.md) and falls back to the
@@ -198,19 +199,18 @@ export const WALL_THICKNESS = 0.1;
 /**
  * The box a wall or window fills, in the coordinates of its slot (layoutPiece: on the
  * perimeter line, half a storey up, local +z facing outward). Its outer face lies on the
- * perimeter line, so it stays inside the floor slab. It spans 1 - WALL_THICKNESS along the
- * side and leaves its -x end free: there, the piece of the neighbouring side (turned a
- * quarter) fills the corner, so the sides meet like a pinwheel without overlapping.
+ * perimeter line, so it stays inside the floor slab, and it spans the full slot along the
+ * side. pieceMatrix trims a side's corner piece (layoutPiece `corner`) by WALL_THICKNESS at
+ * its -x end: there, the first piece of the next side (turned a quarter) fills the corner, so
+ * the sides meet like a pinwheel without overlapping or leaving slits.
  */
 const WALL_CELL = {
-  min: new Vector3(-0.5 + WALL_THICKNESS, -0.4, -WALL_THICKNESS),
+  min: new Vector3(-0.5, -0.4, -WALL_THICKNESS),
   max: new Vector3(0.5, 0.5, 0),
 };
 
-const WALL_LENGTH = 1 - WALL_THICKNESS;
-
 /** Moves geometry built around the origin (x/z) into WALL_CELL. */
-const intoWallCell = (g: BufferGeometry) => g.translate(WALL_THICKNESS / 2, 0, -WALL_THICKNESS / 2);
+const intoWallCell = (g: BufferGeometry) => g.translate(0, 0, -WALL_THICKNESS / 2);
 
 /**
  * Primitive geometry of one building piece. Floors and roofs have their origin at the bottom
@@ -222,23 +222,55 @@ export function pieceGeometry(type: PieceType): BufferGeometry {
     case 'floor':
       return new BoxGeometry(1, 0.1, 1).translate(0, 0.05, 0);
     case 'wall':
-      return intoWallCell(new BoxGeometry(WALL_LENGTH, 0.9, WALL_THICKNESS).translate(0, 0.05, 0));
+      return intoWallCell(new BoxGeometry(1, 0.9, WALL_THICKNESS).translate(0, 0.05, 0));
     case 'window': {
       const t = WALL_THICKNESS;
-      const jamb = (WALL_LENGTH - 0.2) / 2;
+      const jamb = (1 - 0.2) / 2;
       return intoWallCell(
         merge([
-          new BoxGeometry(WALL_LENGTH, 0.25, t).translate(0, -0.275, 0),
-          new BoxGeometry(WALL_LENGTH, 0.2, t).translate(0, 0.4, 0),
+          new BoxGeometry(1, 0.25, t).translate(0, -0.275, 0),
+          new BoxGeometry(1, 0.2, t).translate(0, 0.4, 0),
           new BoxGeometry(0.2, 0.45, t).translate(-jamb, 0.075, 0),
           new BoxGeometry(0.2, 0.45, t).translate(jamb, 0.075, 0),
-          new BoxGeometry(WALL_LENGTH - 0.4, 0.45, 0.04).translate(0, 0.075, 0),
+          new BoxGeometry(1 - 0.4, 0.45, 0.04).translate(0, 0.075, 0),
         ]),
       );
     }
     case 'roof':
       return new ConeGeometry(Math.SQRT1_2, 0.7, 4).rotateY(Math.PI / 4).translate(0, 0.35, 0);
   }
+}
+
+const tmp = new Object3D();
+const UP = new Vector3(0, 1, 0);
+const CORNER_SPAN = 1 - WALL_THICKNESS;
+
+/**
+ * The instance matrix of one building piece: `half` is half the footprint (floors and roofs
+ * are stretched to it) and `t` in [0,1] the placement animation (1 = settled: dropped in and
+ * grown to full size). A side's corner piece is shortened to CORNER_SPAN along local x and
+ * shifted towards +x, so its -x end gives way to the next side while its +x end and its outer
+ * face stay on the slot. Used by Scene3D and by the geometry tests.
+ */
+export function pieceMatrix(p: PieceLayout, half: number, t: number, out: Matrix4): Matrix4 {
+  const ease = 1 - (1 - t) ** 3;
+  const drop = (1 - ease) * 1.5;
+  const s = 0.4 + 0.6 * ease;
+  const angle = pieceFacing(p);
+  const trim = p.corner ? (1 - CORNER_SPAN) / 2 : 0;
+  // Local +x rotated by `angle` around y points along (cos, -sin).
+  tmp.position.set(
+    p.pos[0] + trim * s * Math.cos(angle),
+    p.pos[1] + drop,
+    p.pos[2] - trim * s * Math.sin(angle),
+  );
+  tmp.quaternion.setFromAxisAngle(UP, angle);
+  const footprint = 2 * half;
+  if (p.type === 'floor') tmp.scale.set(footprint * s, 1, footprint * s);
+  else if (p.type === 'roof') tmp.scale.set((footprint + 0.4) * s, s, (footprint + 0.4) * s);
+  else tmp.scale.set((p.corner ? CORNER_SPAN : 1) * s, s, s);
+  tmp.updateMatrix();
+  return out.copy(tmp.matrix);
 }
 
 export const PIECE_COLORS: Record<PieceType, string> = {
