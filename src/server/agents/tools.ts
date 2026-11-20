@@ -111,6 +111,20 @@ async function readText(sandbox: Sandbox, path: string): Promise<string> {
   return r.stdout;
 }
 
+/** Like `readText`, but refuses a read the sandbox cut short so the caller never writes it back. */
+async function readWholeText(sandbox: Sandbox, path: string): Promise<string> {
+  const r = await fileOp(sandbox, { op: 'read', path });
+  if (r.code !== 0) throw failure(r);
+  if (r.truncated) {
+    throw new ToolError(
+      `${path} is too large to edit with edit_file: its read was truncated by the sandbox, so ` +
+        'writing it back would lose the rest of the file. The file was not modified. Use `run` ' +
+        '(e.g. sed -i) to edit it in place, or write_file with the full content.',
+    );
+  }
+  return r.stdout;
+}
+
 async function writeText(sandbox: Sandbox, path: string, content: string): Promise<void> {
   const r = await fileOp(sandbox, { op: 'write', path }, content);
   if (r.code !== 0) throw failure(r);
@@ -153,7 +167,7 @@ const editFileTool = defineTool({
     new: z.string().describe('Replacement text'),
   }),
   run: async ({ path, old, new: replacement }, sb) => {
-    const text = await readText(sb, path);
+    const text = await readWholeText(sb, path);
     const count = countOccurrences(text, old);
     if (count === 0) throw new ToolError(`old string not found in ${path}`);
     if (count > 1) {

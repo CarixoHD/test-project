@@ -9,6 +9,7 @@ import {
 import { IssueIdSchema, ProductIdSchema } from '../../../shared/ids.ts';
 import { addIssue, cancelIssue, editIssue } from '../../commands/index.ts';
 import type { AppDeps } from '../deps.ts';
+import { readJson } from '../body.ts';
 import { fail } from '../errors.ts';
 
 /** Owner issue commands (ARCHITECTURE §4.3): add, edit (rev-guarded), cancel. */
@@ -17,7 +18,7 @@ export function registerIssueRoutes(app: Hono, { store, ids }: AppDeps): void {
 
   app.post('/api/products/:id/issues', async (c) => {
     const productId = ProductIdSchema.parse(c.req.param('id'));
-    const input = AddIssueRequestSchema.parse(await c.req.json());
+    const input = AddIssueRequestSchema.parse(await readJson(c));
     const r = addIssue(deps, productId, input);
     if (!r.ok) fail(r);
     const body: AddIssueResponse = { ok: true, issueId: r.issueId, number: r.number };
@@ -26,7 +27,7 @@ export function registerIssueRoutes(app: Hono, { store, ids }: AppDeps): void {
 
   app.patch('/api/issues/:id', async (c) => {
     const id = IssueIdSchema.parse(c.req.param('id'));
-    const input = EditIssueRequestSchema.parse(await c.req.json());
+    const input = EditIssueRequestSchema.parse(await readJson(c));
     const r = editIssue(deps, id, input);
     if (!r.ok) fail(r);
     const body: EditIssueResponse = { ok: true, rev: r.rev };

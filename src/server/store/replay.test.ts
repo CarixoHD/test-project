@@ -188,6 +188,11 @@ function commands(): EventDraft[][] {
     ],
     [
       onProduct('backend.cleared', { backend: 'anthropic' }, null),
+      onProduct(
+        'settings.changed',
+        { sections: ['keys'], keys: [{ provider: 'anthropic', set: true }] },
+        null,
+      ),
       on('agent.state', AG1, { state: 'working', until: null }),
     ],
     [

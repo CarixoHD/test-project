@@ -23,6 +23,7 @@ export const emptyState: ClientState = {
   usage: { byProduct: {}, byIssue: {} },
   backendLimits: {},
   previews: {},
+  settingsChangedAt: null,
   lastSeq: 0,
 };
 
@@ -75,6 +76,9 @@ export function reduce(s: ClientState, e: Event): ClientState {
     case 'backend.limited':
     case 'backend.cleared':
       return { ...reduceAccountEvent(s, e), lastSeq: e.seq };
+    case 'settings.changed':
+      // The settings themselves are not in ClientState: the client refetches GET /api/settings.
+      return { ...s, settingsChangedAt: e.ts, lastSeq: e.seq };
     default: {
       // Compile time: every catalogued type has a case above. Runtime: a type from a newer
       // server (forward compat) lands here and is ignored.

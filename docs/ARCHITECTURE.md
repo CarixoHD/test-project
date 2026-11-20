@@ -105,9 +105,14 @@ const emptyState: ClientState;
 // ClientState: id-keyed records {products, prdDrafts, prdVersions (metadata only), sparMessages,
 //   issues, attempts, agents (lastActivity = last line only), questions, inbox (read flag),
 //   usage {byProduct, byIssue}: {apiUsd, apiUnpriced, subscriptionTokens, subscriptionCalls},
-//   backendLimits (by backend), previews}, lastSeq. prd.applied also rebases the draft.
+//   backendLimits (by backend), previews, settingsChangedAt (ts of the last settings.changed)}, lastSeq. prd.applied also rebases the draft.
 // dto.ts
 const StateResponseSchema;                                 // GET /api/state → {state: ClientState, lastSeq}
+// SettingsResponseSchema / SettingsUpdateRequestSchema / SettingsUpdateResponseSchema (GET|PUT /api/settings)
+// models.ts
+function resolveModel(role, productModels: RoleModels, {roleDefaults, defaultModel}): ModelRef | undefined;
+//   product.models[role] → roleDefaults[role] → defaultModel → undefined (caller: demo fake or 'Choose a model in Settings')
+// KEYED_PROVIDER_IDS, ProviderConfigSchema (re-exported by server/llm)
 // issues.ts
 type IssueStatus = 'open'|'in_progress'|'in_review'|'completed'|'failed'|'cancelled';
 function transition(issue: IssueView, ev: IssueTransitionEvent, cfg: {maxAttempts:number}):
@@ -214,6 +219,12 @@ POST /api/settings/password             {current?, next}
 POST /api/login {password} · POST /api/logout · GET /api/session
 ```
 
+**Settings** (DTOs in `shared/dto.ts`; `commands/settings.ts`, `createAccountSettings({store, db, secrets})` → `{read, view, update, modelDeps}`; mounted when `AppDeps.settings` is given):
+- `GET /api/settings` → `{providers: [{id, name, enabled, needsKey, baseURL|null}], providerConfig, keys: [{provider, last4|null}], roleDefaults, defaultModel|null, priceOverrides}`. Keys never appear in full; `last4` is null for keys shorter than 16 chars.
+- `PUT /api/settings` `{providerConfig?: ProviderConfig, keys?: {<provider>: string|null}, roleDefaults?, defaultModel?: ModelRef|null, priceOverrides?}` (strict; at least one field). Sections present replace the stored value; `keys` set (≥ 8 chars, no whitespace) or clear one provider's key under `API_KEY_SECRETS`; `defaultModel: null` deletes it. Invalid → 400. One commit writes the rows and emits `settings.changed{sections, keys:[{provider, set}]}` (never values). Responds `{ok:true, ...view}`.
+- `settings` rows: `providerConfig`, `roleDefaults`, `defaultModel`, `priceOverrides` (`SETTING_KEYS`; `settings.read()` supplies the account defaults to the shared `resolveModel` and the overrides to `price`), plus `settingsChangedAt` (projection of `settings.changed`).
+- `modelDeps()` → `ModelDeps` with `getSecret = secrets.get` and a `providerConfig` getter over the stored config: both are read when `model()` runs.
+
 ### 4.4 server/scheduler
 ```ts
 createScheduler({store, clock, runners: {runOrchestrator(productId, triggers, run), runAttempt(issueId, run)},
@@ -230,7 +241,7 @@ It ticks on every bus event and every 2 s. A product is skipped if it is not `bu
 ### 4.5 server/pipeline
 ```ts
 sparTurn(productId, ownerMessage): Promise<void>
-runOrchestrator(productId, triggers: Event[]): Promise<void>
+runOrchestrator(productId, triggers: Event[], run: RunHandle): Promise<void>   // from createOrchestrator(deps), see below
 runAttempt(issueId): Promise<void>
 // zod result schemas, enforced by the agent's `finish` tool or --json-schema:
 SparResult   {reply, prdMarkdown?}
@@ -244,13 +255,16 @@ ReviewResult {approve: boolean, findings: string[]}
 `server/commands` applies a plan (`commands/index.ts`):
 ```ts
 type CommandDeps = {store: Store; ids: IdGen};
-applyPlan(deps, productId, plan: PlanResult, consumedSeq): {ok:true; events; createdIds: Record<key, IssueId>} | {ok:false; reason};
+applyPlan(deps, productId, plan: PlanResult, consumedSeq, opts?: {project?: ProjectConfig; replanSummary?: string})
+  : {ok:true; events; createdIds: Record<key, IssueId>} | {ok:false; reason};
 // Ops are checked in order against a working copy of the product's issues: create keys unique (and not an
 // existing id); dependsOn = plan keys or existing issue ids of the product; edit only open/failed (rev+1);
 // cancel/rewrite via transition(); then no cycle across all issues. Invalid → nothing committed, cursor unchanged.
 // Valid → ONE commit: issue.created (next per-product numbers, origin orchestrator, product prdVersion, priority ?? 0),
 // issue.edited, issue.cancelled{by:'orchestrator'}, issue.rewritten, question.asked{target:'orchestrator'},
 // orchestrator.cursor_advanced{cursor: consumedSeq} (refused if consumedSeq < current cursor).
+// opts.project → product.settings_changed{project}; opts.replanSummary → inbox.created{kind:'replan', body: summary,
+// link /products/:id}; both in the same commit (a refused plan commits neither; an invalid project is refused).
 nextIssueNumber(issues); resolveDependsOn(refs, {keys, existingIds, cancelledIds}); findDependencyCycle(graph) → [a,…,a] | null
 // resolveDependsOn refuses unknown refs and refs to cancelled issues (applyPlan passes its working copy,
 // so cancel X then create Y ← X in one plan fails). Owner commands (flow 7), {ok:false; reason; code} on failure:
@@ -295,6 +309,7 @@ usageCost(model, stepUsage, priceOverrides): billing/tokens/webSearches/calls/co
 ```
 - `runRecordedAgent` commits `agent.spawned`, appends every activity line to `logs/<agentId>.ndjson` (`{ts, line}`, redacted, file 0600) and ends it with `exited <outcome>[: message]`, emits `agent.activity` through `ActivityBatcher` (≤ 1 per 250 ms of `clock` time, last 5 held lines; a timer flushes held lines when the window ends; lines still held at exit stay in the log only), commits one `usage.recorded` per step (entity id from `IdGen` kind `usage`) then calls `afterUsage`, commits `agent.state{rate_limited, until}` on a rate-limited result, and always commits `agent.exited` in `finally` (outcome = result kind, or `error` when the run throws).
 - A throwing recording callback (store, log file, `afterUsage`) stops the agent via `shouldStop` and is rethrown after the run; it is never turned into a model error.
+- Orchestrator (`pipeline/orchestrator.ts`, flow 3): `createOrchestrator({...RecordedRunContext, git, runtime, modelDeps, withMergeLock, demo?, limits?, backoff?}) → {runOrchestrator, orchestratorNotBefore}`; the composition root passes `runOrchestrator` to the scheduler's runners and `orchestratorNotBefore` as its backoff hook. A run: worktree of main (branch `vibecode/<runId>`) → `ensureImage` → warm sandbox (`egress`) → `runRecordedAgent(role orchestrator, all tools, webSearch = capabilities(model).webSearch, schema PlanResult)` with `prompts/orchestrator.md` (PRD, issues with status and last feedback, issues depending on cancelled ones, triggers, repository contract, sizing rules, a note when search is unavailable) → `commitAll` → reject changed paths outside `Dockerfile`, `.dockerignore`, `.vibecode/**`, `docs/**` (`git.changedPaths`) → validate `.vibecode/project.json` (ProjectConfig; the file is the source of truth, `PlanResult.project` is not used) → `ensureImage` on the new Dockerfile → under `withMergeLock`: `integrate` + `advanceMain`, then `applyPlan(…, max trigger seq, {project if changed, replanSummary if a consumed `prd.applied` has version > 1})`. `finally` closes the sandbox and removes the worktree. A `stopped` agent is not a failure. Any other failure leaves the cursor alone; retries back off 30 s, 2 min (in memory, `OrchestratorBackoff`); the 3rd consecutive failure commits `inbox.created{kind:'error'}` and `orchestratorNotBefore` returns `Infinity` until a trigger newer than the failed run's arrives.
 - Usage: billing `api` uses OpenRouter's reported cost (`source:'provider'`) when present, else `priceUsage(price(model, overrides))` (`computed`; unknown → `unpriced`, costUsd null). Billing `subscription` (`capabilities(ref).subscription`, i.e. claude-code): `costUsd` null, `estCostUsd` = the same computation as an estimate (null when unknown), `source:'cli'`. `calls` = 1 per step.
 
 ### 4.6 server/agents
@@ -385,6 +400,7 @@ initRepo(productId): Promise<void>                         // bare repo + initia
 addWorktree(productId, runId, ref='main', {detached?}): Promise<{dir; branch: string|null; baseSha}>
                                                            // dir = data/worktrees/<runId>, branch = vibecode/<runId> (null when detached)
 commitAll(dir, message): Promise<{sha:string|null; diff:string}>   // null when nothing changed
+changedPaths(dir, fromRef): Promise<string[]>                       // diff --name-only -z --no-renames fromRef..HEAD, sorted
 cleanWorktree(dir): Promise<void>                          // reset --hard + clean -ffdx (after checks)
 mainSha(productId): Promise<string>; readFileAtMain(productId, path): Promise<string|null>
 integrate(productId, branch, baseSha, message): Promise<
@@ -401,7 +417,10 @@ Main history has **one commit per merged issue**: `commit-tree <merged tree> -p 
 
 ### 4.10 server/security
 ```ts
-secrets.get(key) / secrets.set(key, value) / secrets.list(): {key; last4}[]   // SQLite `secrets` table; DB file 0600, data dir 0700
+createSecrets({db, clock, redactor}): Secrets           // boot: registers every stored value with redactor
+secrets.get(key) / secrets.set(key, value) / secrets.delete(key) / secrets.list(): {key; last4|null}[]
+                                                           // SQLite `secrets` table; DB file 0600, data dir 0700; set registers the value;
+                                                           // delete keeps it registered; last4 null under 16 chars
 redactor.register(value); redactor.redact(text)            // all secret values ≥ 8 chars; applied in store.commit, log writer, errors
                                                            // literal, longest first; ≥16 chars → `***`+last4, 8–15 chars → `[REDACTED]`
 redactor.safeBoundary(text)                                // where continued/cut text may be split without splitting a secret
@@ -515,6 +534,7 @@ Event types (each has a zod schema in `shared/events.ts`, with `v:1`):
 - `question.asked|answered`
 - `inbox.created|read`
 - `backend.limited|cleared`
+- `settings.changed` (global; `{sections, keys: [{provider, set}]}`, never values; reduced to `ClientState.settingsChangedAt`)
 - `preview.started|stopped`
 
 `agent.activity` is batched and not reduced into the snapshot, apart from the last line. Events older than 7 days are pruned.

@@ -1,4 +1,9 @@
-export { applyPlan, type ApplyPlanResult, type CommandDeps } from './apply-plan.ts';
+export {
+  applyPlan,
+  type ApplyPlanOptions,
+  type ApplyPlanResult,
+  type CommandDeps,
+} from './apply-plan.ts';
 export {
   findDependencyCycle,
   nextIssueNumber,
@@ -22,6 +27,13 @@ export {
   type EditIssueResult,
   type IssueCommandFailure,
 } from './issues.ts';
+export {
+  createAccountSettings,
+  SETTING_KEYS,
+  type AccountSettings,
+  type AccountSettingsDeps,
+  type StoredSettings,
+} from './settings.ts';
 export {
   createSparring,
   nextSparMessageId,

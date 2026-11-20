@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import type { EventOf } from '../../shared/events.ts';
 import { addUsage, type UsageTotals } from '../../shared/state.ts';
 import { type Db, schema } from '../db/index.ts';
+import { readSetting, writeSetting } from './settings.ts';
 
 // Projects accounting and account-wide events. Mirrors src/shared/state-account.ts.
 
@@ -114,4 +115,17 @@ export function projectAccountEvent(db: Db, e: AccountEvent): void {
       db.delete(backendLimits).where(eq(backendLimits.backend, e.data.backend)).run();
       return;
   }
+}
+
+/** `settings` row holding ClientState.settingsChangedAt (written only by this projection). */
+export const SETTINGS_CHANGED_AT_KEY = 'settingsChangedAt';
+
+/** `settings.changed`: the settings rows themselves are written by the command; this keeps the marker. */
+export function projectSettingsChanged(db: Db, ts: number): void {
+  writeSetting(db, SETTINGS_CHANGED_AT_KEY, ts);
+}
+
+export function readSettingsChangedAt(db: Db): number | null {
+  const value = readSetting(db, SETTINGS_CHANGED_AT_KEY);
+  return typeof value === 'number' ? value : null;
 }
