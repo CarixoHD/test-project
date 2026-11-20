@@ -2,10 +2,13 @@ import { resolve } from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
 import { ensureDataDir, parseConfig, type Config } from './config.ts';
 import { open } from './db/index.ts';
+import { createGit } from './git/index.ts';
 import { createApp } from './http/index.ts';
+import { createScheduler, type Runners } from './scheduler/index.ts';
 import { redactor } from './security/index.ts';
 import { createStore } from './store/index.ts';
 import { systemClock } from './util/clock.ts';
+import { createIdGen } from './util/id-gen.ts';
 
 const DEFAULT_WEB_ROOT = resolve(import.meta.dirname, '../../dist/web');
 
@@ -15,12 +18,29 @@ export interface Running {
   close(): Promise<void>;
 }
 
+/** Placeholder runners until the pipeline is wired in (demo/integration issue): they do nothing. */
+const NO_OP_RUNNERS: Runners = {
+  runOrchestrator: () => Promise.resolve(),
+  runAttempt: () => Promise.resolve(),
+};
+
 /** Composition root: config → data dir → DB → store → app → serve. */
 export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise<Running> {
   ensureDataDir(config.dataDir);
   const db = open(config.dbPath);
   const store = createStore({ db, clock: systemClock, redactor });
-  const app = createApp({ store, redactor, webRoot });
+  const git = createGit({ dataDir: config.dataDir });
+  const ids = createIdGen(systemClock);
+  const app = createApp({ store, ids, git, redactor, webRoot });
+  const scheduler = createScheduler({
+    store,
+    clock: systemClock,
+    ids,
+    runners: NO_OP_RUNNERS,
+    onError: (err) => {
+      console.error(redactor.redact(`scheduler run failed: ${String(err)}`));
+    },
+  });
 
   const { server, address } = await new Promise<{
     server: ServerType;
@@ -31,10 +51,13 @@ export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise
     });
   });
 
+  scheduler.start();
+
   return {
     address,
-    close: () =>
-      new Promise<void>((done, fail) => {
+    close: async () => {
+      await scheduler.stop();
+      await new Promise<void>((done, fail) => {
         // SSE streams never end on their own: drop open connections so close() can finish.
         if ('closeAllConnections' in server) server.closeAllConnections();
         server.close((err) => {
@@ -42,7 +65,8 @@ export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise
           if (err) fail(err);
           else done();
         });
-      }),
+      });
+    },
   };
 }
 

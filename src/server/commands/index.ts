@@ -5,3 +5,20 @@ export {
   resolveDependsOn,
   type DependsOnContext,
 } from './issue-graph.ts';
+export {
+  createProduct,
+  DEFAULT_PRODUCT_SETTINGS,
+  type CreateProductDeps,
+  type CreateProductResult,
+} from './create-product.ts';
+export {
+  addIssue,
+  cancelIssue,
+  editIssue,
+  type AddIssueInput,
+  type AddIssueResult,
+  type CancelIssueResult,
+  type EditIssueInput,
+  type EditIssueResult,
+  type IssueCommandFailure,
+} from './issues.ts';

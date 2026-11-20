@@ -6,7 +6,12 @@ import type { IdGen, IssueId, ProductId } from '../../shared/ids.ts';
 import { transition } from '../../shared/issues.ts';
 import type { ProductState } from '../../shared/state.ts';
 import type { Queries, Store } from '../store/index.ts';
-import { findDependencyCycle, nextIssueNumber, resolveDependsOn } from './issue-graph.ts';
+import {
+  findDependencyCycle,
+  nextIssueNumber,
+  resolveDependsOn,
+  type DependsOnContext,
+} from './issue-graph.ts';
 
 // Applies an orchestrator PlanResult to the issue board (ARCHITECTURE §6 flow 3, ADR 7).
 // Ops are validated in order against a working copy of the product's issues; if any op is
@@ -152,8 +157,17 @@ function assertNever(x: never): never {
 
 type OpOf<K extends IssueOp['op']> = Extract<IssueOp, { op: K }>;
 
+/** Dependency context from the working copy, so an issue cancelled earlier in the plan counts. */
+function dependsOnContext(board: Board): DependsOnContext<IssueId> {
+  const cancelledIds = new Set<string>();
+  for (const issue of board.issues.values()) {
+    if (issue.status === 'cancelled') cancelledIds.add(issue.id);
+  }
+  return { keys: board.keys, existingIds: board.existingIds, cancelledIds };
+}
+
 function createIssue(board: Board, op: OpOf<'create'>): { ok: true } | Fail {
-  const deps = resolveDependsOn(op.dependsOn, board);
+  const deps = resolveDependsOn(op.dependsOn, dependsOnContext(board));
   if (!deps.ok) return fail(`create "${op.key}": ${deps.reason}`);
   const id = board.keys.get(op.key);
   if (id === undefined) throw new Error(`no id allocated for key "${op.key}"`);
@@ -207,7 +221,7 @@ function editIssue(board: Board, op: OpOf<'edit'>): { ok: true } | Fail {
   }
   let dependsOn: IssueId[] | undefined;
   if (op.dependsOn !== undefined) {
-    const deps = resolveDependsOn(op.dependsOn, board);
+    const deps = resolveDependsOn(op.dependsOn, dependsOnContext(board));
     if (!deps.ok) return fail(`edit #${issue.number}: ${deps.reason}`);
     dependsOn = deps.ids;
   }

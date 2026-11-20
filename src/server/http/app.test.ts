@@ -8,7 +8,7 @@ import { productCreated, setupStore, sparMessage } from './testing.ts';
 
 function setup(webRoot?: string) {
   const deps = setupStore();
-  return { ...deps, app: createApp({ store: deps.store, redactor: deps.redactor, webRoot }) };
+  return { ...deps, app: createApp({ ...deps, webRoot }) };
 }
 
 describe('GET /api/health', () => {

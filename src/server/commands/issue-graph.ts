@@ -13,11 +13,16 @@ export type DependsOnContext<Id extends string> = {
   keys: ReadonlyMap<string, Id>;
   /** Ids of the product's existing issues. */
   existingIds: ReadonlySet<string>;
+  /**
+   * Ids of cancelled issues (in the caller's current working state). A dependency on one
+   * could never complete, so it is refused.
+   */
+  cancelledIds: ReadonlySet<string>;
 };
 
 /**
  * Resolves `dependsOn` references (plan keys first, then existing issue ids of the product)
- * to ids, keeping the first occurrence of each. Unknown references are refused.
+ * to ids, keeping the first occurrence of each. Unknown and cancelled references are refused.
  */
 export function resolveDependsOn<Id extends string>(
   refs: readonly string[],
@@ -27,6 +32,9 @@ export function resolveDependsOn<Id extends string>(
   for (const ref of refs) {
     const id = ctx.keys.get(ref) ?? (ctx.existingIds.has(ref) ? (ref as Id) : undefined);
     if (id === undefined) return { ok: false, reason: `unknown dependency "${ref}"` };
+    if (ctx.cancelledIds.has(id)) {
+      return { ok: false, reason: `dependency "${ref}" is cancelled and can never complete` };
+    }
     if (!ids.includes(id)) ids.push(id);
   }
   return { ok: true, ids };

@@ -190,14 +190,14 @@ Hooks run inside the transaction after the builder's drafts are appended and pro
 **Invariant (tested):** `events.reduce(reduce, emptyState)` equals `snapshot().state` after any command sequence. Tests call `expectSnapshotMatchesReplay(store)` from `store/testing.ts`.
 
 ### 4.3 server/http
-These are thin routes. Each one validates with zod, calls a command, and returns `{ok}` or a typed error.
+These are thin routes. Each one validates with zod, calls a command, and returns `{ok}` or a typed error. `createApp({store, ids, git, redactor, webRoot?, heartbeatMs?})` gets the command dependencies from the composition root (`main.ts`).
 
 ```
 GET  /api/state                         → {state, lastSeq}
 GET  /api/events                        SSE; id=seq; replays seq > Last-Event-ID; ':hb' every 15s
 GET  /api/agents/:id/log?follow=1       full redacted agent log (NDJSON file), SSE when follow
 GET  /api/attempts/:id/diff | /check    artifacts
-POST /api/products                      {name, idea}
+POST /api/products                      {name, idea}       → 201 {id}
 POST /api/products/:id/spar             {message}           → 202; reply arrives as event
 PUT  /api/products/:id/prd-draft        {markdown}
 POST /api/products/:id/handoff | apply-prd | pause | resume
@@ -215,8 +215,15 @@ POST /api/login {password} · POST /api/logout · GET /api/session
 
 ### 4.4 server/scheduler
 ```ts
-interface Scheduler { start(): void; stop(): Promise<void>; kick(): void; }
+createScheduler({store, clock, runners: {runOrchestrator(productId, triggers, run), runAttempt(issueId, run)},
+  isBackendBlocked?(productId, role) /* default: backendBlockedByLimits(store, clock) */,
+  orchestratorNotBefore?(productId): epochMs, ids?, timer?, tickMs? /* 2000 */, onError?}): Scheduler
+interface Scheduler { start(): void; stop(): Promise<void>; kick(): void;
+  shouldStop(runId): boolean; withMergeLock<T>(productId, fn: () => Promise<T>): Promise<T>;
+  liveRuns(): ReadonlyMap<RunId, {abort: AbortController, productId, kind: 'orchestrator'|'attempt', issueId?}>; }
+RunHandle = {runId, signal /* aborted on stop() */, shouldStop()}
 ```
+Issue `priority` is an integer; higher is more urgent (urgent > high > normal > low), ties by lower number. Runners are called synchronously; a run that settles does not re-tick by itself (its end events or the 2 s timer do), so a run that ends without committing cannot hot-loop. The orchestrator counts against `maxParallel`. The default backend check resolves the role's backend from `settings.models[role].provider` and treats a `backendLimits` entry as active while it needs login, has no `until`, or `until` is in the future.
 It ticks on every bus event and every 2 s. A product is skipped if it is not `building`, if it is paused, or if its budget is exhausted. For each remaining product it does three things. (1) If `pendingTriggers` is non-empty and no orchestrator run is live, it starts one. (2) While running agents (orchestrator plus attempts) is below `maxParallel`, it starts `runAttempt` for the next ready issue, ordered by priority and then number. (3) It skips roles whose backend is rate-limited or needs login. Live runs are kept in an in-memory `Map<runId, {abort, productId}>`. `shouldStop(runId)` returns true when the product is paused, the budget is exhausted, or the server is shutting down. It also owns `withMergeLock(productId, fn)`, a per-product async mutex.
 
 ### 4.5 server/pipeline
@@ -243,7 +250,19 @@ applyPlan(deps, productId, plan: PlanResult, consumedSeq): {ok:true; events; cre
 // Valid → ONE commit: issue.created (next per-product numbers, origin orchestrator, product prdVersion, priority ?? 0),
 // issue.edited, issue.cancelled{by:'orchestrator'}, issue.rewritten, question.asked{target:'orchestrator'},
 // orchestrator.cursor_advanced{cursor: consumedSeq} (refused if consumedSeq < current cursor).
-nextIssueNumber(issues); resolveDependsOn(refs, {keys, existingIds}); findDependencyCycle(graph) → [a,…,a] | null
+nextIssueNumber(issues); resolveDependsOn(refs, {keys, existingIds, cancelledIds}); findDependencyCycle(graph) → [a,…,a] | null
+// resolveDependsOn refuses unknown refs and refs to cancelled issues (applyPlan passes its working copy,
+// so cancel X then create Y ← X in one plan fails). Owner commands (flow 7), {ok:false; reason; code} on failure:
+addIssue(deps, productId, {title, body, dependsOn, priority?}) → {ok; events; issueId; number}
+//   origin owner, next number, prdVersion; a complete product → product.phase_changed{building} in the same commit
+editIssue(deps, issueId, {title?, body?, dependsOn?, rev}) → {ok; events; rev}
+//   open|failed|in_progress|in_review only (else conflict); rev ≠ current → conflict; rev+1; no cycles
+cancelIssue(deps, issueId) → {ok; events}   // via transition(); completed/cancelled → conflict; by:'owner'
+// codes: invalid → 400, not_found → 404, conflict → 409
+createProduct({store, ids, git}, {name, idea}): Promise<{ok:true; id: ProductId} | {ok:false; reason}>;
+// CreateProductRequestSchema (shared/dto.ts): trimmed name 1–80, idea 1–4000. git.initRepo(id) runs first,
+// then ONE commit: product.created with DEFAULT_PRODUCT_SETTINGS (budget null, maxParallel 3, maxAttempts 3,
+// models {}, gitRemote null); a failed initRepo throws and commits nothing.
 ```
 
 The result schemas above are defined in `src/shared/agent-results.ts`. The pipeline imports them from there and does not redefine them.
