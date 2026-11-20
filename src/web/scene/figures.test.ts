@@ -68,8 +68,7 @@ function meshes(object: Object3D): Mesh[] {
   return found;
 }
 
-const textured = (m: Mesh) =>
-  m.material instanceof MeshStandardMaterial && m.material.map !== null;
+const textured = (m: Mesh) => m.material instanceof MeshStandardMaterial && m.material.map !== null;
 
 const CLIP_NAMES: ClipName[] = ['walk', 'work', 'idle', 'sit'];
 const ROLES: Figure[] = ['foreman', 'builder', 'inspector'];

@@ -307,7 +307,6 @@ const KENNEY_CLIPS: Record<ClipName, string> = {
   sit: 'sit',
 };
 
-
 /** Kenney characters are 0.7-0.8 units tall; scaled, they match the primitive figures. */
 const CHARACTER_SCALE = 1.45;
 
