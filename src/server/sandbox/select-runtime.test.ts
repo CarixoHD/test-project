@@ -19,6 +19,15 @@ describe('selectRuntime', () => {
     );
   });
 
+  it('passes the script to the FakeContainerRuntime', async () => {
+    const runtime = selectRuntime(
+      { fakeDocker: true, dataDir: '/data' },
+      { script: [{ match: ['make', 'check'], result: { code: 0, stdout: 'ok\n' } }] },
+    );
+    const r = await runtime.runOnce(SPEC, ['make', 'check'], { timeoutMs: 1 });
+    expect([r.code, r.stdout]).toEqual([0, 'ok\n']);
+  });
+
   it('without fakeDocker, reports unavailable and rejects with an actionable message', async () => {
     const runtime = selectRuntime({ fakeDocker: false, dataDir: '/data' });
     expect(DOCKER_UNAVAILABLE_REASON).toBe(
