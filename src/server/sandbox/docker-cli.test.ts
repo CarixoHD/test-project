@@ -322,7 +322,16 @@ describe('ensureImage with claude (derived Claude Code image)', () => {
     expect(tag).toBe(`vibecode/p-01prod-claude:${hash}`);
     expect(stub.argvs()).toEqual([
       ['image', 'inspect', '--format', '{{.Id}}', productTag],
-      ['buildx', 'build', '--load', '--tag', productTag, '--file', path.join(ctx, 'Dockerfile'), ctx],
+      [
+        'buildx',
+        'build',
+        '--load',
+        '--tag',
+        productTag,
+        '--file',
+        path.join(ctx, 'Dockerfile'),
+        ctx,
+      ],
       ['image', 'inspect', '--format', '{{.Id}}', tag],
       [
         'buildx',

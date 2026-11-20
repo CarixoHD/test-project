@@ -250,7 +250,17 @@ export class DockerCliRuntime implements ContainerRuntime {
         const found = await this.#manage(['image', 'inspect', '--format', '{{.Id}}', tag]);
         if (found.code === 0) return;
         const r = await this.#manage(
-          ['buildx', 'build', '--load', '--tag', tag, ...buildArgs, '--file', dockerfile, contextDir],
+          [
+            'buildx',
+            'build',
+            '--load',
+            '--tag',
+            tag,
+            ...buildArgs,
+            '--file',
+            dockerfile,
+            contextDir,
+          ],
           BUILD_TIMEOUT_MS,
         );
         if (r.code !== 0) throw new Error(`Image build failed for ${tag}: ${detail(r)}`);
