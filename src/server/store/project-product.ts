@@ -76,9 +76,7 @@ export function projectProductEvent(db: Db, e: ProductLevelEvent): void {
     case 'prd.summarized':
       db.update(prdVersions)
         .set({ summary: e.data.summary })
-        .where(
-          and(eq(prdVersions.productId, e.productId), eq(prdVersions.version, e.data.version)),
-        )
+        .where(and(eq(prdVersions.productId, e.productId), eq(prdVersions.version, e.data.version)))
         .run();
       return;
     case 'orchestrator.cursor_advanced':
