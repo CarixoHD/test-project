@@ -90,7 +90,10 @@ describe('diffStatuses / describeStatusChanges', () => {
 
   it('summarises many changes in one sentence instead of one per issue', () => {
     const issues = byId(...[1, 2, 3, 4].map((n) => issue(n, 'completed')));
-    const changes = [1, 2, 3, 4].map((n) => ({ id: `i${String(n)}`, status: 'completed' as const }));
+    const changes = [1, 2, 3, 4].map((n) => ({
+      id: `i${String(n)}`,
+      status: 'completed' as const,
+    }));
     expect(describeStatusChanges(changes, issues)).toBe('4 issues changed status.');
   });
 

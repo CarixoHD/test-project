@@ -538,3 +538,103 @@ a {
   max-height: 40rem;
   overflow-y: auto;
 }
+
+/* Build tab: toolbar slots on top, board beside the agent list and 3D view. */
+.build-tab__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-block: var(--space-4);
+}
+
+.build-tab__main {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(16rem, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+
+@media (max-width: 64rem) {
+  .build-tab__main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.build-tab__side {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.build-tab__slot p {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+/* Board: six status columns that scroll sideways on narrow screens. */
+.board__columns {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(14rem, 1fr);
+  gap: var(--space-3);
+  overflow-x: auto;
+  padding-bottom: var(--space-2);
+}
+
+.board__column {
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+
+.board__column > summary {
+  cursor: pointer;
+}
+
+.board__column > summary > .board__heading {
+  display: inline;
+}
+
+.board__heading {
+  margin: 0 0 var(--space-2);
+  font-size: 1rem;
+}
+
+.board__cards {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.issue-card {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+.issue-card__title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.issue-card__meta,
+.issue-card__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-1) 0 0;
+}
+
+.issue-card__facts,
+.issue-card__blocked {
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+}
+
+.issue-card__blocked {
+  margin: var(--space-1) 0 0;
+}

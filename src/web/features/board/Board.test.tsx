@@ -130,7 +130,8 @@ const cardTitles = (name: string) =>
   within(column(name))
     .queryAllByRole('link')
     .map((a) => a.textContent);
-const card = (title: string) => screen.getByRole('link', { name: title }).closest('li') as HTMLElement;
+const card = (title: string) =>
+  screen.getByRole('link', { name: title }).closest('li') as HTMLElement;
 const announcer = () => screen.getByTestId('board-announcer');
 
 describe('Board', () => {
@@ -167,7 +168,8 @@ describe('Board', () => {
 
   it('shows status as text, priority, attempts and a link to the issue detail', async () => {
     await renderBoard([
-      () => issueCreated({ n: 7, title: 'Search', status: 'in_review', priority: 2, attemptCount: 1 }),
+      () =>
+        issueCreated({ n: 7, title: 'Search', status: 'in_review', priority: 2, attemptCount: 1 }),
     ]);
     const c = card('#7 Search');
     expect(within(c).getByText('In review')).toBeInTheDocument();
@@ -254,9 +256,7 @@ describe('Board status announcements', () => {
     push(statusChanged(1, 'in_progress', 'in_review', 1));
     push(statusChanged(2, 'in_progress', 'open', 1));
     act(() => vi.advanceTimersByTime(ANNOUNCE_DELAY_MS));
-    expect(announcer().textContent).toBe(
-      '#1 Login form is now In review. #2 Logout is now Open.',
-    );
+    expect(announcer().textContent).toBe('#1 Login form is now In review. #2 Logout is now Open.');
   });
 
   it('summarises a large burst as a count instead of flooding', async () => {
