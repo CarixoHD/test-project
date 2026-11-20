@@ -32,6 +32,7 @@ Unit tests sit next to the code: `foo.ts` → `foo.test.ts`, and `Board.tsx` →
 | Browser E2E (needs `npx playwright install --with-deps chromium`) | `npm run test:e2e` |
 | Docker suite (needs Docker) | `npm run test:docker` |
 | Docker images by hand (prints build commands with the current hashed tags) | `npm run -s docker:images` (pipe to `sh` to build) |
+| Remove outdated Docker images (prints `docker image rm` for old vibecode/base and vibecode/claude-code tags) | `npm run -s docker:prune` (pipe to `sh` to remove) |
 | Production | `npm run build && npm start` |
 
 Before you finish, run `npm run typecheck && npm run lint && npm test`. All three must pass. If you touched a UI flow that Playwright covers, also run `npm run test:e2e` when browsers are available.
