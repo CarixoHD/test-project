@@ -14,6 +14,7 @@
     "test": "vitest run --project unit --project web",
     "test:e2e": "playwright test",
     "test:docker": "vitest run --project docker",
+    "docker:base": "docker buildx build --load --tag vibecode/base --file docker/base.Dockerfile docker",
     "dev": "node scripts/dev.mjs",
     "build": "vite build",
     "start": "node src/server/main.ts",

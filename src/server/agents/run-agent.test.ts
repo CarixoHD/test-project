@@ -196,14 +196,11 @@ describe('runAgent with the API backend', () => {
     });
   });
 
-  it('reports the Claude Code backend as not available yet', async () => {
+  it('runs provider claude-code through the Claude Code CLI in the sandbox', async () => {
     const { spec: s } = spec([], { model: { provider: 'claude-code', model: 'sonnet' } });
 
-    expect(await runAgent(s)).toEqual({
-      kind: 'error',
-      message: 'Claude Code backend not available yet',
-      transient: false,
-    });
+    // The fake runtime has no `claude` binary: the CLI exits 127 without a result.
+    expect(await runAgent(s)).toMatchObject({ kind: 'error', transient: true });
   });
 
   it('refuses tools without a sandbox', async () => {

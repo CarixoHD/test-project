@@ -15,8 +15,18 @@ export type AgentResult<T> =
   | { kind: 'auth_required'; backend: string }
   | { kind: 'error'; message: string; transient: boolean };
 
-/** Usage of one model call (step) in the disjoint `Usage` buckets, plus raw provider metadata. */
-export type StepUsage = Usage & { step: number; providerMetadata: unknown };
+/**
+ * Usage of one model call (step) in the disjoint `Usage` buckets, plus raw provider metadata.
+ * The Claude Code backend reports one StepUsage per CLI run, covering `calls` model turns.
+ */
+export type StepUsage = Usage & {
+  step: number;
+  providerMetadata: unknown;
+  /** Model calls covered by this usage; default 1. */
+  calls?: number;
+  /** Subscription only: the CLI's own cost estimate (`total_cost_usd`); never real spend. */
+  reportedEstCostUsd?: number;
+};
 
 export type AgentLimits = {
   maxSteps: number;

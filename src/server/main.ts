@@ -22,7 +22,7 @@ import {
   type OrchestratorDeps,
 } from './pipeline/index.ts';
 import { recover } from './recovery/index.ts';
-import { selectRuntime } from './sandbox/index.ts';
+import { createPreviews, selectRuntime } from './sandbox/index.ts';
 import { createSecrets, redactor } from './security/index.ts';
 import { createStore, type Store } from './store/index.ts';
 import { systemClock, type Clock } from './util/clock.ts';
@@ -53,6 +53,8 @@ export interface StartOptions {
   orchestratorBackoff?: OrchestratorDeps['backoff'];
   /** Wraps each orchestrator run (tests observe when runs start and end). */
   wrapRunOrchestrator?: (run: Runners['runOrchestrator']) => Runners['runOrchestrator'];
+  /** docker CLI binary for the real runtime (tests point it at a missing one). */
+  dockerCommand?: string;
 }
 
 /** Composition root: config → data dir → DB → store → app → serve. */
@@ -113,8 +115,10 @@ export async function start(
       console.error(redactor.redact(`sparring turn failed: ${String(err)}`));
     },
   });
-  const app = createApp({ store, ids, git, redactor, webRoot, settings, sparring });
-  const runtime = selectRuntime(config, config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {});
+  const runtime = selectRuntime(config, {
+    ...(config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {}),
+    ...(options.dockerCommand === undefined ? {} : { docker: options.dockerCommand }),
+  });
   // Restart recovery (§4.11): nothing of the previous process is live; reconcile it before the
   // scheduler can start new runs.
   await recover({
@@ -127,6 +131,16 @@ export async function start(
       console.warn(redactor.redact(line));
     },
   });
+  const previews = createPreviews({
+    store,
+    ids,
+    clock,
+    git,
+    runtime,
+    redactor,
+    dataDir: config.dataDir,
+  });
+  const app = createApp({ store, ids, git, redactor, webRoot, settings, sparring, previews });
   // The orchestrator merges under the scheduler's lock and the scheduler runs the orchestrator:
   // the lock closure reads `scheduler` only during a run, after it has been created below.
   const orchestrator = createOrchestrator({
@@ -202,6 +216,8 @@ export async function start(
       await scheduler.stop();
       // A sparring turn commits when its agent answers: let it finish before the DB closes.
       await sparring.idle();
+      // Previews started by this process: remove their containers and worktrees.
+      await previews.stopAll();
       await new Promise<void>((done, fail) => {
         // SSE streams never end on their own: drop open connections so close() can finish.
         if ('closeAllConnections' in server) server.closeAllConnections();

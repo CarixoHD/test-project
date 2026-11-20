@@ -15,7 +15,7 @@ import { addIssue } from '../commands/index.ts';
 import { open, type Db } from '../db/index.ts';
 import { createGit, type Git } from '../git/index.ts';
 import {
-  DOCKER_UNAVAILABLE_REASON,
+  DOCKER_NOT_RUNNING,
   FakeContainerRuntime,
   type ContainerRuntime,
   type SandboxSpec,
@@ -220,13 +220,13 @@ describe('recover: containers', () => {
     crashState(s);
     await s.git.addWorktree(P, 'run-x');
     const unavailable = stubRuntime(s.runtime, {
-      listManaged: () => Promise.reject(new Error(DOCKER_UNAVAILABLE_REASON)),
+      listManaged: () => Promise.reject(new Error(DOCKER_NOT_RUNNING)),
       remove: () => Promise.reject(new Error('remove must not be called')),
     });
 
     await recover({ ...s.deps, runtime: unavailable });
 
-    expect(s.logs.some((l) => l.includes(DOCKER_UNAVAILABLE_REASON))).toBe(true);
+    expect(s.logs.some((l) => l.includes(DOCKER_NOT_RUNNING))).toBe(true);
     expect(await readdir(path.join(dataDir, 'worktrees'))).toEqual([]);
     const { state } = s.store.snapshot();
     expect(Object.values(state.issues).map((i) => i.status)).toEqual(['open', 'open', 'open']);

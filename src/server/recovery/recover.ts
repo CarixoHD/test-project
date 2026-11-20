@@ -7,7 +7,7 @@ import { transition } from '../../shared/issues.ts';
 import type { ClientState } from '../../shared/state.ts';
 import type { Db } from '../db/index.ts';
 import type { Git } from '../git/index.ts';
-import { DOCKER_UNAVAILABLE_REASON, type ContainerRuntime } from '../sandbox/index.ts';
+import { DOCKER_NOT_RUNNING, type ContainerRuntime } from '../sandbox/index.ts';
 import { pruneActivity, type Store } from '../store/index.ts';
 
 /** ADR 5: agent.activity events are kept for 7 days. */
@@ -59,8 +59,8 @@ async function removeContainers(
   try {
     managed = await runtime.listManaged();
   } catch (err) {
-    if (err instanceof Error && err.message === DOCKER_UNAVAILABLE_REASON) {
-      log(`recovery: skipped container cleanup (${DOCKER_UNAVAILABLE_REASON})`);
+    if (err instanceof Error && err.message === DOCKER_NOT_RUNNING) {
+      log(`recovery: skipped container cleanup (${DOCKER_NOT_RUNNING})`);
       return null;
     }
     throw new Error(`recovery: listing managed containers failed: ${String(err)}`, { cause: err });
