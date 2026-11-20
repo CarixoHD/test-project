@@ -23,10 +23,9 @@
     "src/server",
     "src/shared",
     "scripts",
-    "tests",
+    "tests/docker",
     "vite.config.ts",
     "drizzle.config.ts",
-    "vitest.config.ts",
-    "playwright.config.ts"
+    "vitest.config.ts"
   ]
 }
