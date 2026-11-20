@@ -217,6 +217,31 @@ describe('store.q.setting', () => {
   });
 });
 
+describe('store.q.backendLimit', () => {
+  it('returns the projected limit until backend.cleared, null when not limited', () => {
+    const { store } = setup();
+    const limit = { backend: 'openai', until: 1_700_000_060_000, needsLogin: false, reason: 'x' };
+    expect(store.q.backendLimit('openai')).toBeNull();
+
+    store.commit(() => [
+      { type: 'backend.limited', productId: null, entityId: null, v: 1, data: limit },
+    ]);
+    expect(store.q.backendLimit('openai')).toEqual(limit);
+    expect(store.q.backendLimit('anthropic')).toBeNull();
+
+    store.commit(() => [
+      {
+        type: 'backend.cleared',
+        productId: null,
+        entityId: null,
+        v: 1,
+        data: { backend: 'openai' },
+      },
+    ]);
+    expect(store.q.backendLimit('openai')).toBeNull();
+  });
+});
+
 describe('store.q.sparMessages / prdDraft', () => {
   it('returns the transcript in arrival order and the current draft', () => {
     const { store } = setup();
