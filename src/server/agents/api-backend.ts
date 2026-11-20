@@ -30,6 +30,13 @@ export const FINISH_TOOL_NAME = 'finish';
 export const DEFAULT_STEP_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_RATE_LIMIT_MS = 60_000;
 const ACTIVITY_LINE_LIMIT = 500;
+/**
+ * Sent as a user message after a step with no (client-side) tool calls, so the next call never
+ * ends on an assistant message (some providers reject that) and a chatty model is steered to finish.
+ */
+export const FINISH_NUDGE =
+  `You replied without calling a tool. Continue the task with your tools, or call ` +
+  `\`${FINISH_TOOL_NAME}\` with your result if you are done.`;
 
 type Failure = Exclude<AgentResult<never>, { kind: 'ok' }>;
 
@@ -176,6 +183,7 @@ async function runStep<T>(
   let providerMetadata: unknown;
   let webSearchResults = 0;
   let text = '';
+  let clientToolCalls = 0;
   try {
     const result = streamText({
       model: run.languageModel,
@@ -193,6 +201,7 @@ async function runStep<T>(
           text += part.text;
           break;
         case 'tool-call':
+          if (part.providerExecuted !== true) clientToolCalls += 1;
           activity(
             `${part.providerExecuted === true ? 'provider tool' : 'tool'} ${part.toolName} ${JSON.stringify(part.input)}`,
           );
@@ -223,7 +232,12 @@ async function runStep<T>(
     }
     spec.onUsage?.(toStepUsage(step, usage, providerMetadata, webSearchResults));
     if (run.finished !== undefined) return { kind: 'finished', result: run.finished.value };
-    return { kind: 'continue', messages: (await result.response).messages };
+    const { messages: responseMessages } = await result.response;
+    if (clientToolCalls > 0) return { kind: 'continue', messages: responseMessages };
+    return {
+      kind: 'continue',
+      messages: [...responseMessages, { role: 'user', content: FINISH_NUDGE }],
+    };
   } catch (err) {
     if (signal.aborted) return { kind: 'failed', failure: abortFailure(run) };
     return { kind: 'failed', failure: classifyError(err, spec.model, spec.clock) };
