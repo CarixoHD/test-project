@@ -5,9 +5,37 @@ import type { AgentId, AttemptId, IssueId, ProductId, QuestionId } from '../../s
 import { transition, type IssueTransitionEvent } from '../../shared/issues.ts';
 import type { IssueState } from '../../shared/state.ts';
 import type { Store, Tx } from '../store/index.ts';
-import { limitDrafts, type BackendLimitDraft } from './backend-limit.ts';
+import type { BackendLimitDraft } from './backend-limit.ts';
 
 export type { BackendLimitDraft } from './backend-limit.ts';
+
+/**
+ * A rate limit whose `until` is at most this much later than the backend's active limit is the
+ * same limit: the API backend computes `until` as now + retry-after at each failed request, so
+ * parallel runs hitting one 429 a few ms apart get slightly different values.
+ */
+export const LIMIT_DEDUPE_TOLERANCE_MS = 5_000;
+
+/**
+ * backend.limited for `limit`, shared by attempts and orchestrator runs, so parallel runs hitting
+ * the same limit record it (and its inbox item) once. While the backend has a limit (until the
+ * scheduler or the owner commits backend.cleared), a rate limit is recorded only when it extends
+ * the active one by more than LIMIT_DEDUPE_TOLERANCE_MS, so an active limit is never shortened.
+ * A change between rate-limited and needs-login is always recorded; a repeated needs-login is not.
+ */
+export function backendLimitDrafts(tx: Tx, limit: BackendLimitDraft): EventDraft[] {
+  const current = tx.q.backendLimit(limit.backend);
+  return current === null || current.needsLogin !== limit.needsLogin || extendsLimit(current, limit)
+    ? [{ type: 'backend.limited', productId: null, entityId: null, v: 1, data: limit }]
+    : [];
+}
+
+/** True when `next` ends more than the tolerance after `current`; null `until` = no end. */
+function extendsLimit(current: { until: number | null }, next: { until: number | null }): boolean {
+  if (current.until === null) return false;
+  if (next.until === null) return true;
+  return next.until > current.until + LIMIT_DEDUPE_TOLERANCE_MS;
+}
 
 // Store commits of an attempt (ARCHITECTURE §6 flow 4). Issue moves always go through the
 // shared `transition()`; a move that is no longer legal (e.g. the owner cancelled) is skipped.
@@ -167,8 +195,8 @@ export type QuestionDraft = { id: QuestionId; agentId: AgentId; text: string };
 /**
  * attempt.ended{interrupted, interruptReason}, uncounted (ADR 7), and the issue back to open
  * (not before `runAfter`) when it is still in progress or in review. `limit` also commits
- * backend.limited, but only when it changes the backend's projected limit, so parallel attempts
- * hitting the same limit record it (and its inbox item) once. `question` also commits
+ * backend.limited unless it repeats the backend's active limit (`backendLimitDrafts`), so parallel
+ * attempts hitting the same limit record it (and its inbox item) once. `question` also commits
  * question.asked{target:'issue'} and issue.held, so the scheduler skips the issue until the
  * owner answers; when the issue was cancelled meanwhile (re-read inside the commit), the
  * question is dropped and the attempt is discarded instead.
@@ -185,7 +213,7 @@ export function interruptAttempt(
     if (question !== undefined && tx.q.issue(ref.issueId)?.status === 'cancelled') {
       return [endedDraft(ref, 'discarded', feedback, outcome)];
     }
-    const limited = limit === undefined ? [] : limitDrafts(tx, limit);
+    const limited = limit === undefined ? [] : backendLimitDrafts(tx, limit);
     const asked = question === undefined ? [] : questionDrafts(ref, question);
     return [
       endedDraft(ref, 'interrupted', feedback, outcome, false, reason),
