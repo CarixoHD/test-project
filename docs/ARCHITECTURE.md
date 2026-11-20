@@ -214,7 +214,7 @@ PATCH /api/issues/:id                   {title?, body?, dependsOn?, rev}   (409 
 POST /api/issues/:id/cancel
 POST /api/questions/:id/answer          {text}
 POST /api/inbox/:id/read
-POST|DELETE /api/products/:id/preview
+POST|DELETE /api/products/:id/preview   POST → {url} once GET / answers (409 no preview config / failed start); DELETE (409 none running)
 GET|PUT /api/settings                   providers, keys (write-only, masked on read), role defaults, price overrides
 POST /api/settings/password             {current?, next}
 POST /api/login {password} · POST /api/logout · GET /api/session
@@ -384,6 +384,7 @@ interface ContainerRuntime {
   ensureImage(p: {productId: string; contextDir: string}): Promise<string>; // tag = vibecode/p-<id>:<sha256(Dockerfile+imageInputs)>, or vibecode/base
   open(spec: SandboxSpec): Promise<Sandbox>;          // warm container: `sleep infinity`
   runOnce(spec: SandboxSpec, argv: string[], o: ExecOpts): Promise<ExecResult>;  // checks
+  runDetached?(spec: SandboxSpec, argv: string[]): Promise<{name: string; hostPort: number}>;  // previews: `docker run --detach`, then the 127.0.0.1 host port of spec.publishPort; optional until the docker runtime implements it (previews then report an error)
   listManaged(): Promise<{name: string; labels: Record<string,string>}[]>;
   remove(name: string): Promise<void>;
 }
@@ -402,7 +403,7 @@ function buildRunArgs(spec: SandboxSpec, host: {uid:number; gid:number; dataDir:
 
 It throws if a mount source contains `docker.sock` or is outside `data/worktrees`. The `none` network gets no networking. `egress` is the `vibecode-egress` bridge with ICC disabled. `preview` is the `vibecode-preview` bridge, and its port is published as `127.0.0.1::<port>`. `FakeContainerRuntime` runs nothing. It applies `write_file`/`read_file` to the worktree directly (with path confinement) and answers `run` from a script.
 
-Preview: `startPreview(productId) → {url}` and `stopPreview(productId)`. It uses a detached worktree of main, the product image, `project.preview.command` and a read-only mount. It polls `GET /` for up to 60 s. Only one preview runs per product.
+Preview (`preview.ts`): `createPreviews({store, ids, clock, git, runtime, redactor, dataDir, fetch?, sleep?}) → {startPreview(productId) → {ok, url} | {ok:false, code, reason}; stopPreview(productId); stopAll()}`. Start: 404 unknown product, 409 without `project.preview`; stops the running preview first (one per product), then a detached worktree of main (`data/worktrees/<runId>`), `ensureImage`, `runDetached` with role `preview`, read-only mount, network `preview`, `publishPort: project.preview.port` and argv `project.preview.command`. It polls `GET http://127.0.0.1:<hostPort>/` (any status < 500) every 500 ms for up to 60 s (injected fetch, clock and sleep), then commits `preview.started{url, container}`. A timeout or start failure removes the container and worktree and returns a 409 with an actionable reason. Stop removes container and worktree and commits `preview.stopped` (409 when none runs); a preview known only from the store (after a restart) is found via its container name. Start and stop of one product are serialised. `main.ts` calls `stopAll()` on shutdown. `FakeContainerRuntime.runDetached` serves a small HTML page on an ephemeral 127.0.0.1 port (demo mode) until `remove`.
 
 ### 4.9 server/git
 All git commands run on the host with `-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.file.allow=never` (`GIT_SAFETY_FLAGS`, always first in argv), a timeout, `GIT_CONFIG_GLOBAL=/dev/null` + `GIT_CONFIG_NOSYSTEM=1`, inherited `GIT_DIR`-style variables removed, and the fixed `AGENT_IDENTITY` as author and committer. Product repositories are bare: `data/repos/<productId>.git`. Product and run ids must be safe path segments (`[A-Za-z0-9][A-Za-z0-9_-]*`); repo paths must be relative, normalised and outside `.git`.
