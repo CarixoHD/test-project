@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,6 +16,8 @@ const PASSWORD = 'correct horse battery';
 
 class FakeEventSource {
   static readonly CLOSED = 2;
+  /** Every stream the store opened in the current test. */
+  static instances: FakeEventSource[] = [];
   readyState = 0;
   onopen: ((ev: unknown) => void) | null = null;
   onmessage: ((ev: { data: string }) => void) | null = null;
@@ -23,6 +25,7 @@ class FakeEventSource {
   readonly url: string;
   constructor(url: string) {
     this.url = url;
+    FakeEventSource.instances.push(this);
   }
   close(): void {
     this.readyState = 2;
@@ -40,6 +43,7 @@ let server: {
 };
 
 beforeEach(() => {
+  FakeEventSource.instances = [];
   server = { passwordSet: true, loggedIn: false, rateLimited: false, calls: [] };
   vi.stubGlobal('EventSource', FakeEventSource);
   vi.stubGlobal(
@@ -93,6 +97,10 @@ afterEach(() => {
   // Unmount first: React may still owe the store's mount effect (which opens the EventSource),
   // and it must run while the fakes are still installed.
   cleanup();
+  // Unmounting stopped the store, so no stream outlives the test.
+  expect(FakeEventSource.instances.every((es) => es.readyState === FakeEventSource.CLOSED)).toBe(
+    true,
+  );
   vi.unstubAllGlobals();
 });
 
@@ -106,6 +114,17 @@ function renderApp() {
 }
 
 const passwordField = () => screen.getByLabelText('Password');
+
+/**
+ * The app can render before React runs the store's mount effect. Wait until the store has opened
+ * its stream and requested the snapshot, so its start settles inside the test.
+ */
+async function storeStarted() {
+  await waitFor(() => {
+    expect(FakeEventSource.instances.map((es) => es.url)).toContain('/api/events');
+    expect(server.calls).toContain('GET /api/state');
+  });
+}
 
 describe('AuthGate', () => {
   it('shows only the Login page when a password is set and there is no session', async () => {
@@ -122,6 +141,7 @@ describe('AuthGate', () => {
     server.passwordSet = false;
     renderApp();
     expect(await screen.findByRole('heading', { name: 'Products' })).toBeVisible();
+    await storeStarted();
     expect(screen.queryByRole('button', { name: 'Log out' })).toBeNull();
     expect(screen.queryByLabelText('Password')).toBeNull();
   });
@@ -138,6 +158,7 @@ describe('AuthGate', () => {
     await user.type(passwordField(), PASSWORD);
     await user.click(screen.getByRole('button', { name: 'Log in' }));
     expect(await screen.findByRole('heading', { name: 'Products' })).toBeVisible();
+    await storeStarted();
     expect(screen.getByRole('button', { name: 'Log out' })).toBeVisible();
   });
 
@@ -159,6 +180,7 @@ describe('AuthGate', () => {
     server.loggedIn = true;
     renderApp();
     expect(await screen.findByRole('heading', { name: 'Products' })).toBeVisible();
+    await storeStarted();
 
     server.loggedIn = false; // the session expired or the password changed elsewhere
     await act(async () => {
@@ -173,7 +195,9 @@ describe('AuthGate', () => {
     const user = userEvent.setup();
     server.loggedIn = true;
     renderApp();
-    await user.click(await screen.findByRole('button', { name: 'Log out' }));
+    const logoutButton = await screen.findByRole('button', { name: 'Log out' });
+    await storeStarted();
+    await user.click(logoutButton);
     expect(await screen.findByRole('heading', { name: 'Log in to Vibecode' })).toBeVisible();
     expect(server.calls).toContain('POST /api/logout');
     expect(server.loggedIn).toBe(false);
