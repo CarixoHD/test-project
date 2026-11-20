@@ -48,7 +48,14 @@ export type FakeRunRule = {
 };
 
 export type FakeCall =
-  | { kind: 'exec' | 'runOnce'; name: string; argv: string[]; stdin?: string }
+  | {
+      kind: 'exec' | 'runOnce';
+      name: string;
+      argv: string[];
+      stdin?: string;
+      /** Sorted names of ExecOpts.env; never the values. */
+      env?: string[];
+    }
   | { kind: 'runDetached'; name: string; argv: string[] }
   | { kind: 'open' | 'close' | 'remove'; name: string }
   | { kind: 'ensureImage'; productId: string; contextDir: string; claude?: boolean };
@@ -322,8 +329,15 @@ function matches(m: FakeRunRule['match'], argv: readonly string[]): boolean {
   return m.length <= argv.length && m.every((a, i) => argv[i] === a);
 }
 
-function callArgs(argv: readonly string[], o: ExecOpts): { argv: string[]; stdin?: string } {
-  return o.stdin === undefined ? { argv: [...argv] } : { argv: [...argv], stdin: o.stdin };
+function callArgs(
+  argv: readonly string[],
+  o: ExecOpts,
+): { argv: string[]; stdin?: string; env?: string[] } {
+  return {
+    argv: [...argv],
+    ...(o.stdin === undefined ? {} : { stdin: o.stdin }),
+    ...(o.env === undefined ? {} : { env: Object.keys(o.env).sort() }),
+  };
 }
 
 function lines(text: string): string[] {

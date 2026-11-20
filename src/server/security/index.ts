@@ -2,6 +2,7 @@ import { Redactor } from './redact.ts';
 
 export { Redactor, LAST4_MIN_LENGTH, MIN_SECRET_LENGTH, REDACTED } from './redact.ts';
 export {
+  CLAUDE_CODE_TOKEN_SECRET,
   createSecrets,
   gitTokenSecret,
   type SecretInfo,

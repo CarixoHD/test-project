@@ -397,6 +397,23 @@ describe('FakeContainerRuntime scripted run', () => {
     });
   });
 
+  it('records exec env names, never their values', async () => {
+    const rt = new FakeContainerRuntime({ dataDir });
+    const sb = await rt.open(spec());
+    await sb.exec(['claude'], { ...T, env: { CLAUDE_CODE_OAUTH_TOKEN: 'secret-value-123' } });
+    await rt.runOnce(spec({ runId: '01CHK', role: 'check' }), ['npm'], {
+      ...T,
+      env: { B: 'other-value-456', A: 'x' },
+    });
+    await sb.exec(['true'], T);
+    expect(rt.calls.filter((c) => c.kind === 'exec' || c.kind === 'runOnce')).toEqual([
+      { kind: 'exec', name: 'vibecode-01RUN', argv: ['claude'], env: ['CLAUDE_CODE_OAUTH_TOKEN'] },
+      { kind: 'runOnce', name: 'vibecode-01CHK', argv: ['npm'], env: ['A', 'B'] },
+      { kind: 'exec', name: 'vibecode-01RUN', argv: ['true'] },
+    ]);
+    expect(JSON.stringify(rt.calls)).not.toMatch(/secret-value|other-value/);
+  });
+
   it('runs no processes: unscripted argv exits 127 and has no side effects', async () => {
     const sb = await openAgent();
     const r = await sb.exec(['sh', '-c', 'echo pwned > pwned.txt'], T);

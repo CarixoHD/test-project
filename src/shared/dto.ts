@@ -156,6 +156,26 @@ export const GitTokenViewSchema = z.strictObject({
 });
 export type GitTokenView = z.infer<typeof GitTokenViewSchema>;
 
+/**
+ * `PUT /api/backends/claude-code/token`: the Claude subscription token from `claude setup-token`
+ * (ADR 13), write-only; null removes it. Surrounding whitespace from pasting is trimmed. Messages
+ * never echo the value.
+ */
+export const ClaudeCodeTokenUpdateRequestSchema = z.strictObject({
+  token: z
+    .string('The token must be a string or null')
+    .trim()
+    .min(API_KEY_MIN_LENGTH, `A token must be at least ${API_KEY_MIN_LENGTH} characters`)
+    .max(4096, 'A token must be at most 4096 characters')
+    .regex(/^\S+$/, 'A token must not contain whitespace')
+    .nullable(),
+});
+export type ClaudeCodeTokenUpdateRequest = z.infer<typeof ClaudeCodeTokenUpdateRequestSchema>;
+
+/** `GET|PUT /api/backends/claude-code/token`: never the token, at most its last 4 characters. */
+export const ClaudeCodeTokenViewSchema = GitTokenViewSchema;
+export type ClaudeCodeTokenView = GitTokenView;
+
 /** `PUT /api/settings`: every section optional; keys are set (string) or cleared (null). */
 export const SettingsUpdateRequestSchema = z
   .strictObject({

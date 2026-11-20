@@ -2,8 +2,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ClaudeLoginResponseSchema } from '../../../shared/dto.ts';
+import { ClaudeCodeTokenViewSchema, ClaudeLoginResponseSchema } from '../../../shared/dto.ts';
+import { createClaudeCodeToken } from '../../commands/index.ts';
 import { FakeContainerRuntime } from '../../sandbox/index.ts';
+import { CLAUDE_CODE_TOKEN_SECRET, createSecrets } from '../../security/index.ts';
 import { expectSnapshotMatchesReplay } from '../../store/testing.ts';
 import { createApp } from '../app.ts';
 import { setupStore } from '../testing.ts';
@@ -102,5 +104,94 @@ describe('GET /api/backends/claude-code/login', () => {
   it('is absent without a runtime', async () => {
     const h = setup();
     expect((await h.app.request('/api/backends/claude-code/login')).status).toBe(404);
+  });
+});
+
+describe('GET|PUT /api/backends/claude-code/token', () => {
+  const TOKEN = 'sk-ant-oat01-SubscriptionSetupToken-Wx9z';
+
+  function tokenSetup() {
+    const base = setup();
+    const secrets = createSecrets(base);
+    const app = createApp({
+      store: base.store,
+      ids: base.ids,
+      git: base.git,
+      redactor: base.redactor,
+      claudeCodeToken: createClaudeCodeToken({ store: base.store, secrets }),
+    });
+    const call = async (method: 'GET' | 'PUT', body?: unknown) => {
+      const res = await app.request('/api/backends/claude-code/token', {
+        method,
+        ...(body === undefined
+          ? {}
+          : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+      });
+      return { status: res.status, text: await res.text() };
+    };
+    return { ...base, secrets, call };
+  }
+
+  it('is unset at first', async () => {
+    const h = tokenSetup();
+    const res = await h.call('GET');
+    expect(res.status).toBe(200);
+    expect(ClaudeCodeTokenViewSchema.parse(JSON.parse(res.text))).toEqual({
+      set: false,
+      last4: null,
+    });
+  });
+
+  it('stores the token write-only: responses show {set, last4} and never the value', async () => {
+    const h = tokenSetup();
+    const put = await h.call('PUT', { token: TOKEN });
+    expect(put.status).toBe(200);
+    expect(JSON.parse(put.text)).toEqual({ set: true, last4: 'Wx9z' });
+    expect(put.text).not.toContain(TOKEN);
+    const get = await h.call('GET');
+    expect(JSON.parse(get.text)).toEqual({ set: true, last4: 'Wx9z' });
+    expect(get.text).not.toContain(TOKEN);
+    expect(h.secrets.get(CLAUDE_CODE_TOKEN_SECRET)).toBe(TOKEN);
+    expect(JSON.stringify(h.store.eventsSince(0))).not.toContain(TOKEN);
+    expect(JSON.stringify(h.store.snapshot())).not.toContain(TOKEN);
+  });
+
+  it('removes the token with null', async () => {
+    const h = tokenSetup();
+    await h.call('PUT', { token: TOKEN });
+    const res = await h.call('PUT', { token: null });
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.text)).toEqual({ set: false, last4: null });
+    expect(h.secrets.get(CLAUDE_CODE_TOKEN_SECRET)).toBeUndefined();
+  });
+
+  it('rejects an invalid body with 400 without echoing the submitted value', async () => {
+    const h = tokenSetup();
+    for (const token of [`${TOKEN} extra`, 'short', '', `${TOKEN}${'Q'.repeat(5000)}`]) {
+      const res = await h.call('PUT', { token });
+      expect(res.status).toBe(400);
+      expect(res.text).not.toContain(TOKEN);
+      expect(res.text).not.toContain('short');
+    }
+    expect((await h.call('PUT', {})).status).toBe(400);
+    expect(h.secrets.list()).toEqual([]);
+  });
+
+  it('saving a token clears an active claude-code needs_login limit', async () => {
+    const h = tokenSetup();
+    h.limited(true);
+    const res = await h.call('PUT', { token: TOKEN });
+    expect(res.status).toBe(200);
+    expect(h.store.snapshot().state.backendLimits).toEqual({});
+    expect(h.store.eventsSince(0).at(-1)).toMatchObject({
+      type: 'backend.cleared',
+      data: { backend: 'claude-code' },
+    });
+    expectSnapshotMatchesReplay(h.store);
+  });
+
+  it('is absent without the command', async () => {
+    const h = setup();
+    expect((await h.app.request('/api/backends/claude-code/token')).status).toBe(404);
   });
 });

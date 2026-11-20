@@ -58,5 +58,11 @@ export function createSecrets({ db, clock, redactor }: SecretsDeps): Secrets {
   };
 }
 
+/**
+ * `secrets` key of the Claude subscription token from `claude setup-token` (ADR 13). Write-only;
+ * read only by the Claude Code backend to hand it to the CLI as CLAUDE_CODE_OAUTH_TOKEN.
+ */
+export const CLAUDE_CODE_TOKEN_SECRET = 'claude-code.oauthToken';
+
 /** `secrets` key of a product's git remote token (write-only; read only to push). */
 export const gitTokenSecret = (productId: string): string => `git-token:${productId}`;

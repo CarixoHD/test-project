@@ -333,8 +333,9 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
   }
 
   async runOnce(spec: SandboxSpec, argv: readonly string[], o: ExecOpts): Promise<ExecResult> {
+    const envArgs = envFlags(o.env);
     const args = await this.#prepare(spec);
-    const r = await this.#run(['run', '--rm', '-i', ...args, ...argv], o);
+    const r = await this.#run(['run', '--rm', '-i', ...envArgs, ...args, ...argv], o);
     // Killing the CLI client does not always stop the container: remove it explicitly.
     if (r.timedOut || r.aborted) await this.remove(containerName(spec.runId));
     return r;
@@ -477,6 +478,7 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
    * timeout takes the same in-container path as an abort.
    */
   async #execInContainer(name: string, argv: readonly string[], o: ExecOpts): Promise<ExecResult> {
+    const envArgs = envFlags(o.env);
     if (o.signal?.aborted === true) return { ...ABORTED };
     const pidFile = `/tmp/vibecode-exec-${randomUUID()}.pid`;
     const firstSignal = SIGNAL_NAMES[o.killSignal ?? 'SIGTERM'];
@@ -506,7 +508,20 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
     let r: ExecResult;
     try {
       r = await this.#runRaw(
-        ['exec', '-i', '-w', WORKSPACE, name, 'sh', '-c', EXEC_WRAPPER, 'sh', pidFile, ...argv],
+        [
+          'exec',
+          '-i',
+          ...envArgs,
+          '-w',
+          WORKSPACE,
+          name,
+          'sh',
+          '-c',
+          EXEC_WRAPPER,
+          'sh',
+          pidFile,
+          ...argv,
+        ],
         {
           ...o,
           signal: client.signal,
@@ -610,6 +625,8 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
       timeoutMs: o.timeoutMs,
       signal: o.signal,
       killSignal: clientKillSignal,
+      // Values for the `-e NAME` flags: docker reads them from its own environment.
+      ...(o.env === undefined ? {} : { env: { ...o.env } }),
     };
     try {
       if (o.onLine === undefined) {
@@ -744,6 +761,21 @@ function isDockerNotRunning(err: unknown): boolean {
  */
 function daemonDown(r: { code: number | null; stderr: string }): boolean {
   return (r.code === 125 || r.code === 1) && DAEMON_DOWN.test(r.stderr);
+}
+
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * `-e NAME` per ExecOpts.env entry, names only: docker takes each value from its own process
+ * env (see #runRaw), so no value appears in argv. Throws on a name docker could misread.
+ */
+function envFlags(env: Record<string, string> | undefined): string[] {
+  if (env === undefined) return [];
+  return Object.keys(env).flatMap((name) => {
+    // The name is not echoed: a malformed one may be a pasted value.
+    if (!ENV_NAME_RE.test(name)) throw new Error('Invalid environment variable name for exec');
+    return ['-e', name];
+  });
 }
 
 function assertContainerName(name: string): void {

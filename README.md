@@ -40,11 +40,15 @@ Forgot the password? Run `npm run set-password` again on the host; it does not a
 
 ## Using your Claude subscription (Claude Code)
 
-Vibecode can run agents on your Claude Pro or Max subscription instead of an API key. It does this by running the official, unmodified Claude Code CLI (`@anthropic-ai/claude-code`, pinned in `docker/claude-code.Dockerfile`) inside the agent containers. You log in once with Anthropic's own login flow; Vibecode only starts the CLI. See [ADR 4](docs/decisions/0004-claude-subscription-backend-drive-the-unmodified-c.md).
+Vibecode can run agents on your Claude Pro or Max subscription instead of an API key. It does this by running the official, unmodified Claude Code CLI (`@anthropic-ai/claude-code`, pinned in `docker/claude-code.Dockerfile`) inside the agent containers. You either paste a subscription token from `claude setup-token` into Vibecode, or log in once with Anthropic's own login flow; either way Vibecode only starts the CLI. See [ADR 4](docs/decisions/0004-claude-subscription-backend-drive-the-unmodified-c.md) and [ADR 13](docs/decisions/0013-claude-subscription-owner-can-paste-a-claude-setup.md).
 
 ### One-time setup
 
-You need Docker. Run these on the machine that runs Vibecode. Settings → Claude Code shows them with copy buttons, filled in for your host:
+You need Docker. There are two ways to log in. The token is the recommended one; the volume login is the fallback.
+
+**Recommended: paste a subscription token.** On any machine with Claude Code installed, run `claude setup-token`. It opens Anthropic's login and prints a long-lived token (`sk-ant-oat01-…`, valid for a year). Paste it under Settings → Claude Code (the API is `PUT /api/backends/claude-code/token {"token": "…"}`; `{"token": null}` removes it). Vibecode keeps it write-only in its secrets table: it only ever shows whether a token is set and its last 4 characters, and masks it in every log and activity line. Saving a token also clears a **Needs login** status. Each Claude Code run then gets the token as `CLAUDE_CODE_OAUTH_TOKEN` in the container's environment (`docker exec -e CLAUDE_CODE_OAUTH_TOKEN`, with the value passed through the docker CLI's own environment, never on a command line). Vibecode still builds the Claude image on first use; no volume login is needed.
+
+**Fallback: log in to a Docker volume.** Without a token, the CLI uses the login stored in the `vibecode-claude-config` volume. Run these on the machine that runs Vibecode. Settings → Claude Code shows them with copy buttons, filled in for your host:
 
 ```sh
 # 1. Build the login image (Vibecode also builds it on first use). <base-hash> is a content hash
@@ -60,7 +64,7 @@ docker run -it --rm --pull never --user "$(id -u):$(id -g)" \
   -v vibecode-claude-config:/home/agent/.claude vibecode/claude-code:<hash> claude auth login
 ```
 
-The login stores its state in the `vibecode-claude-config` Docker volume. Then choose the **Claude Code** provider for one or more roles under Settings → Models (or per product).
+The login stores its state in the `vibecode-claude-config` Docker volume. When a token is set, it takes precedence over the volume login. With either method, choose the **Claude Code** provider for one or more roles under Settings → Models (or per product).
 
 Copy the commands from Settings rather than typing them: the server fills in the current `<hash>` and your uid and gid. The image tags change whenever the pinned CLI version (`CLAUDE_CODE_VERSION`) or `docker/base.Dockerfile` changes, and Vibecode then rebuilds the images. The volume stays the same, so an existing login keeps working. `--pull never` makes sure Docker never fetches a look-alike image from a registry.
 
@@ -89,14 +93,14 @@ It prints the CLI version, then runs `claude` once in the current `vibecode/clau
 
 ### Status, rate limits and logging in again
 
-Settings → Claude Code shows the current status: **OK**, **Needs login**, or **Rate limited until …**. While Claude Code is rate limited or needs a login, Vibecode does not start runs on it. When the CLI reports that the login expired, run the login command again and press **I've logged in**.
+Settings → Claude Code shows the current status: **OK**, **Needs login**, or **Rate limited until …**. While Claude Code is rate limited or needs a login, Vibecode does not start runs on it. When the CLI reports that the login expired, paste a new token from `claude setup-token` (this clears the status), or run the volume login command again and press **I've logged in**.
 
 ### The token rule
 
-Anthropic's terms forbid third-party apps from collecting, storing or forwarding subscription credentials, and from calling the API with subscription OAuth tokens. So:
+Anthropic's terms forbid using subscription OAuth tokens to call the API directly or through the Agent SDK, and restrict third-party apps that collect or forward subscription credentials. Vibecode is self-hosted and single-user, so its secrets table is your own secret store on your own machine (ADR 13). So:
 
-- **Never extract tokens** from the volume, from `~/.claude/.credentials.json`, or from `claude setup-token`, and never paste them into Vibecode or anything else.
-- Vibecode never reads the `vibecode-claude-config` volume. It never sets `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` for Claude Code runs (it unsets them), and it never uses `--bare`. A test enforces that no server code outside the sandbox names the volume or the credentials file.
+- **The only token you paste is the one `claude setup-token` prints**, the documented way to give the CLI a login in CI and scripts. Vibecode uses it for nothing except handing it to the official, unmodified CLI as `CLAUDE_CODE_OAUTH_TOKEN`; it never calls the API with it. It is write-only, never in events, and redacted from logs.
+- **Never extract tokens** from the volume or from `~/.claude/.credentials.json`. Vibecode never reads the `vibecode-claude-config` volume. It never sets `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` for Claude Code runs (it unsets them), and it never uses `--bare`. A test enforces that no server code outside the sandbox names the volume or the credentials file.
 - This backend is for your own, individual use. Use API keys if other people use your Vibecode.
 
-Known risk: any code running in a Claude-backed container, including a malicious dependency of your product, could read the login in the volume. Only build products whose dependencies you trust.
+Known risk: any code running in a Claude-backed container, including a malicious dependency of your product, could read the token from its environment or the login in the volume. Only build products whose dependencies you trust.

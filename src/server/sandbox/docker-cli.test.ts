@@ -701,6 +701,56 @@ describe('open and Sandbox', () => {
     expect(stub.calls[2]?.o.timeoutMs).toBeLessThanOrEqual(10_000);
   });
 
+  it('passes env by name only (`-e NAME`); the value travels in the docker CLI process env', async () => {
+    const TOKEN = 'sk-ant-oat01-ExecEnvValue-abcd1234';
+    const stub = stubDocker();
+    const sb = await runtime(stub).open(spec());
+    await sb.exec(['claude', '-p'], { ...T, env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN } });
+    await sb.exec(['claude', '-p'], {
+      ...T,
+      env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN },
+      onLine: () => {},
+    });
+    for (const call of [stub.calls[1], stub.calls[3]]) {
+      expect(call?.argv.slice(0, 9)).toEqual([
+        'exec',
+        '-i',
+        '-e',
+        'CLAUDE_CODE_OAUTH_TOKEN',
+        '-w',
+        '/workspace',
+        'vibecode-01RUN',
+        'sh',
+        '-c',
+      ]);
+      expect(call?.argv.slice(-2)).toEqual(['claude', '-p']);
+      expect(call?.o.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: TOKEN });
+    }
+    expect(stub.calls[3]?.streamed).toBe(true);
+    // The value is never in any argv (visible in `ps`), and cleanup execs get no env.
+    expect(JSON.stringify(stub.argvs())).not.toContain(TOKEN);
+    expect(stub.calls[2]?.o.env).toBeUndefined();
+  });
+
+  it('adds nothing to argv or the client env without exec env', async () => {
+    const stub = stubDocker();
+    const sb = await runtime(stub).open(spec());
+    await sb.exec(['true'], T);
+    expect(wrapped(stub.calls[1]?.argv)).toEqual(['true']);
+    expect(stub.calls[1]?.o.env).toBeUndefined();
+  });
+
+  it('refuses an env name docker could misread, without calling docker', async () => {
+    const stub = stubDocker();
+    const sb = await runtime(stub).open(spec());
+    for (const name of ['A=B', '-e', '', '1X', 'A B']) {
+      await expect(sb.exec(['true'], { ...T, env: { [name]: 'v' } })).rejects.toThrow(
+        /environment variable name/,
+      );
+    }
+    expect(stub.calls).toHaveLength(1);
+  });
+
   it('logs a failed pid file cleanup with container and pid file, keeping the exec result', async () => {
     const logs: string[] = [];
     const stub = stubDocker((argv) =>
@@ -1258,6 +1308,25 @@ describe('runOnce', () => {
     expect(stub.calls[0]?.o).toMatchObject({ timeoutMs: 999, killSignal: 'SIGINT' });
     expect(lines).toEqual(['ok']);
     expect(r).toMatchObject({ code: 0, stdout: 'ok\n' });
+  });
+
+  it('passes env by name only before the image; the value in the docker CLI process env', async () => {
+    const stub = stubDocker();
+    await runtime(stub).runOnce(spec({ role: 'check' }), ['npm', 'test'], {
+      ...T,
+      env: { SOME_TOKEN: 'value-123456789' },
+    });
+    expect(stub.argvs()[0]).toEqual([
+      'run',
+      '--rm',
+      '-i',
+      '-e',
+      'SOME_TOKEN',
+      ...buildRunArgs(spec({ role: 'check', worktree: realWt }), HOST()),
+      'npm',
+      'test',
+    ]);
+    expect(stub.calls[0]?.o.env).toEqual({ SOME_TOKEN: 'value-123456789' });
   });
 
   it('force-removes the container after a timeout or abort', async () => {
