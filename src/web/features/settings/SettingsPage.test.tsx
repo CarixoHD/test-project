@@ -9,7 +9,7 @@ import {
 } from '../../../shared/dto.ts';
 import { EventSchema, type Event } from '../../../shared/events.ts';
 import { KEYED_PROVIDER_IDS, type KeyedProviderId } from '../../../shared/models.ts';
-import { emptyState } from '../../../shared/state.ts';
+import { emptyState, type ClientState } from '../../../shared/state.ts';
 import { App } from '../../App.tsx';
 import { routes } from '../../routes.tsx';
 import { createAppStore } from '../../state/store.ts';
@@ -107,9 +107,15 @@ class FakeSettingsServer {
 }
 
 let server: FakeSettingsServer;
+/** What GET /api/state answers (backend limits drive the Claude Code status). */
+let initialState: ClientState;
+/** Backends the page asked to clear (POST /api/backends/:backend/clear). */
+let cleared: string[];
 
 beforeEach(() => {
   server = new FakeSettingsServer();
+  initialState = emptyState;
+  cleared = [];
   vi.stubGlobal('EventSource', FakeEventSource);
   vi.stubGlobal(
     'fetch',
@@ -123,7 +129,12 @@ beforeEach(() => {
         return Promise.resolve(server.update(JSON.parse(String(init?.body))));
       }
       if (url === '/api/state') {
-        return Promise.resolve(Response.json({ state: emptyState, lastSeq: 0 }));
+        return Promise.resolve(Response.json({ state: initialState, lastSeq: 0 }));
+      }
+      const clear = /^\/api\/backends\/([^/]+)\/clear$/.exec(url);
+      if (clear?.[1] !== undefined && method === 'POST') {
+        cleared.push(clear[1]);
+        return Promise.resolve(Response.json({ ok: true }));
       }
       return Promise.resolve(
         Response.json({ error: { code: 'not_found', message: url } }, { status: 404 }),
@@ -396,5 +407,87 @@ describe('Settings: price overrides', () => {
       'true',
     );
     expect(server.puts).toEqual([]);
+  });
+});
+
+const NOW = Date.now();
+const limit = (over: { until?: number | null; needsLogin?: boolean }) => ({
+  backend: 'claude-code',
+  until: over.until ?? null,
+  needsLogin: over.needsLogin ?? false,
+  reason: 'test',
+});
+const withLimit = (l: ReturnType<typeof limit>): ClientState => ({
+  ...emptyState,
+  backendLimits: { 'claude-code': l },
+});
+
+describe('Settings: Claude Code', () => {
+  const region = () => screen.getByRole('region', { name: 'Claude Code' });
+
+  it('shows the one-time setup commands with copy buttons', async () => {
+    const { user } = await renderSettings();
+    const r = region();
+    expect(within(r).getByText('docker volume create vibecode-claude-config')).toBeVisible();
+    const login =
+      'docker run -it --rm -v vibecode-claude-config:/home/agent/.claude vibecode/claude-code claude auth login';
+    expect(within(r).getByText(login)).toBeVisible();
+
+    await user.click(within(r).getByRole('button', { name: 'Copy the login command' }));
+    expect(await navigator.clipboard.readText()).toBe(login);
+    expect(within(r).getByText('Copied the login command.')).toBeVisible();
+    await user.click(within(r).getByRole('button', { name: 'Copy the volume command' }));
+    expect(await navigator.clipboard.readText()).toBe(
+      'docker volume create vibecode-claude-config',
+    );
+  });
+
+  it('says OK when no limit is recorded', async () => {
+    await renderSettings();
+    expect(within(region()).getByText('OK')).toBeVisible();
+    expect(within(region()).queryByRole('button', { name: "I've logged in" })).toBeNull();
+  });
+
+  it('shows "rate limited until" from the backend limits', async () => {
+    const until = NOW + 60 * 60_000;
+    initialState = withLimit(limit({ until }));
+    await renderSettings();
+    const time = new Date(until).toLocaleString(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
+    expect(within(region()).getByText(`Rate limited until ${time}`)).toBeVisible();
+  });
+
+  it('goes back to OK once the rate limit has reset', async () => {
+    initialState = withLimit(limit({ until: NOW - 1000 }));
+    await renderSettings();
+    expect(await within(region()).findByText('OK')).toBeVisible();
+  });
+
+  it("needs login: 'I've logged in' clears it, and the status goes back to OK live", async () => {
+    initialState = withLimit(limit({ needsLogin: true }));
+    const { user } = await renderSettings();
+    expect(within(region()).getByText('Needs login')).toBeVisible();
+
+    await user.click(within(region()).getByRole('button', { name: "I've logged in" }));
+    expect(cleared).toEqual(['claude-code']);
+
+    seq += 1;
+    const event = EventSchema.parse({
+      seq,
+      ts: NOW,
+      type: 'backend.cleared',
+      productId: null,
+      entityId: null,
+      v: 1,
+      data: { backend: 'claude-code' },
+    });
+    const stream = FakeEventSource.latest;
+    if (stream === null) throw new Error('no stream');
+    act(() => stream.onmessage?.({ data: JSON.stringify(event) }));
+
+    expect(await within(region()).findByText('OK')).toBeVisible();
+    expect(within(region()).queryByText('Needs login')).toBeNull();
   });
 });

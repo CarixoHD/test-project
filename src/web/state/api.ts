@@ -181,6 +181,15 @@ export function handoffProduct(productId: string, signal?: AbortSignal): Promise
   });
 }
 
+/** Clears an account-wide backend limit, e.g. Claude Code's needs_login after logging in. */
+export function clearBackendLimit(backend: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/backends/${encodeURIComponent(backend)}/clear`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
 /** Pauses the product's build; 409 when it is already paused. */
 export function pauseProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
   return request(`/api/products/${encodeURIComponent(productId)}/pause`, {
