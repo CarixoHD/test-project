@@ -7,6 +7,7 @@ import { ProductIdSchema, type IssueId } from '../../shared/ids.ts';
 import type { Role } from '../../shared/models.ts';
 import { addIssue } from '../commands/index.ts';
 import { open } from '../db/index.ts';
+import { inboxHook } from '../notify/index.ts';
 import { createGit, type Git } from '../git/index.ts';
 import type { FakeScript } from '../llm/index.ts';
 import { FakeContainerRuntime, type FakeRunRule, type SandboxSpec } from '../sandbox/index.ts';
@@ -47,6 +48,8 @@ export type HarnessOptions = {
   models?: object;
   /** Extra container script rules (after the check rule); `specs` is live. */
   runtimeScript?: (specs: readonly SpecCall[]) => FakeRunRule[];
+  /** Install the real inbox commit hook (notify/), as main.ts does. */
+  inbox?: boolean;
 };
 
 export type Harness = {
@@ -105,7 +108,12 @@ export function runHandle(ids: FakeIdGen): RunHandle {
 export async function setupAttempt(dataDir: string, o: HarnessOptions = {}): Promise<Harness> {
   const clock = new FakeClock(START);
   const ids = new FakeIdGen();
-  const store = createStore({ db: open(':memory:'), clock, redactor: new Redactor() });
+  const store = createStore({
+    db: open(':memory:'),
+    clock,
+    redactor: new Redactor(),
+    hooks: o.inbox === true ? [inboxHook({ ids })] : [],
+  });
   const git = createGit({ dataDir });
   await git.initRepo(P);
   const project = o.project === undefined ? PROJECT : o.project;

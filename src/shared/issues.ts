@@ -15,8 +15,11 @@ export type IssueTransitionEvent =
    * in_progress|in_review → open while attempts remain, else → failed.
    */
   | { type: 'attempt_failed'; reason: string; runAfter?: number }
-  /** Uncounted interruption: in_progress|in_review → open, attemptCount unchanged. */
-  | { type: 'interrupted'; reason: InterruptReason; runAfter?: number }
+  /**
+   * Uncounted interruption: in_progress|in_review → open, attemptCount unchanged. No `reason`
+   * for an uncounted infrastructure error, which is no interruption but goes back to open too.
+   */
+  | { type: 'interrupted'; reason?: InterruptReason; runAfter?: number }
   /** in_review → completed: merged to main. */
   | { type: 'merged'; mergedOrder: number; mergeSha: string }
   /** open|failed|in_progress|in_review → cancelled, by the owner or orchestrator. */
