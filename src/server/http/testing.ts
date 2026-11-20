@@ -1,0 +1,42 @@
+import type { EventDraft } from '../../shared/events.ts';
+import { ProductIdSchema } from '../../shared/ids.ts';
+import { open } from '../db/index.ts';
+import { Redactor } from '../security/index.ts';
+import { createStore } from '../store/index.ts';
+import { FakeClock } from '../util/clock.ts';
+
+// Test fixtures for the http module's tests (not imported by production code).
+
+export const TEST_PRODUCT = ProductIdSchema.parse('product-1');
+
+export function setupStore() {
+  const db = open(':memory:');
+  const clock = new FakeClock(1_700_000_000_000);
+  const redactor = new Redactor();
+  const store = createStore({ db, clock, redactor });
+  return { db, clock, redactor, store };
+}
+
+export const productCreated = (name = 'Todo'): EventDraft => ({
+  type: 'product.created',
+  productId: TEST_PRODUCT,
+  entityId: null,
+  v: 1,
+  data: {
+    name,
+    idea: 'A todo app',
+    budgetUsd: 10,
+    maxParallel: 3,
+    maxAttempts: 3,
+    models: {},
+    gitRemote: null,
+  },
+});
+
+export const sparMessage = (id: string, text: string): EventDraft => ({
+  type: 'spar.message',
+  productId: TEST_PRODUCT,
+  entityId: id,
+  v: 1,
+  data: { role: 'owner', text },
+});

@@ -120,7 +120,11 @@ type IssueTransitionEvent =
 function isReady(issue, issuesById: Map|Record<IssueId, IssueView>, now): boolean;   // open, not held, deps completed, runAfter<=now
 function slotsFree(running:number, maxParallel:number): number;    // max(0, maxParallel - running)
 // triggers.ts
-function pendingTriggers(events: Event[], cursor: number): Event[];
+function pendingTriggers(events: Event[], cursor: number,
+  opts?: {productId?: ProductId; questions?: Map|Record<QuestionId, {target}>}): Event[];
+//   seq > cursor, seq order; TRIGGER_TYPES = product.handed_off, prd.applied, issue.failed, question.answered.
+//   An answer counts only for an orchestrator question; the target comes from a question.asked in
+//   `events`, else from `opts.questions` (e.g. ClientState.questions); unknown target → not a trigger.
 // budget.ts
 // Price: USD per 1M tokens {input, output, cacheRead?, cacheWrite?, reasoning?} + webSearch? USD per call.
 // Usage buckets are disjoint: input excludes cache read/write, output excludes reasoning.
@@ -228,6 +232,19 @@ IssueOp      {op:'create', key, title, body, dependsOn:(key|id)[], priority?}
 ImplResult   {summary, question?}
 ReviewResult {approve: boolean, findings: string[]}
 ```
+`server/commands` applies a plan (`commands/index.ts`):
+```ts
+type CommandDeps = {store: Store; ids: IdGen};
+applyPlan(deps, productId, plan: PlanResult, consumedSeq): {ok:true; events; createdIds: Record<key, IssueId>} | {ok:false; reason};
+// Ops are checked in order against a working copy of the product's issues: create keys unique (and not an
+// existing id); dependsOn = plan keys or existing issue ids of the product; edit only open/failed (rev+1);
+// cancel/rewrite via transition(); then no cycle across all issues. Invalid → nothing committed, cursor unchanged.
+// Valid → ONE commit: issue.created (next per-product numbers, origin orchestrator, product prdVersion, priority ?? 0),
+// issue.edited, issue.cancelled{by:'orchestrator'}, issue.rewritten, question.asked{target:'orchestrator'},
+// orchestrator.cursor_advanced{cursor: consumedSeq} (refused if consumedSeq < current cursor).
+nextIssueNumber(issues); resolveDependsOn(refs, {keys, existingIds}); findDependencyCycle(graph) → [a,…,a] | null
+```
+
 The result schemas above are defined in `src/shared/agent-results.ts`. The pipeline imports them from there and does not redefine them.
 
 Prompts live in `src/server/pipeline/prompts/<role>.md`. They are plain markdown templates with `{{var}}` substitution.
