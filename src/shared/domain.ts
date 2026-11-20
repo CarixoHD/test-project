@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { GIT_REMOTE_URL_ERROR, validateGitRemoteUrl } from './git-remote.ts';
 import { IssueIdSchema, QuestionIdSchema } from './ids.ts';
 import { RoleModelsSchema } from './models.ts';
 
@@ -92,7 +93,10 @@ export const GitShaSchema = z
   .string()
   .regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/, 'expected a full git sha');
 
-export const GitRemoteSchema = z.object({ url: Text });
+/** Same rule on the server (PATCH settings) and in the web form; see git-remote.ts. */
+export const GitRemoteSchema = z.object({
+  url: z.string().refine((url) => validateGitRemoteUrl(url).ok, GIT_REMOTE_URL_ERROR),
+});
 export type GitRemote = z.infer<typeof GitRemoteSchema>;
 
 export const ProductSettingsSchema = z.object({
