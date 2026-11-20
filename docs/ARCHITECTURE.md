@@ -279,6 +279,11 @@ createSparring({store, ids, sparTurn: SparTurnRunner, onError}): Sparring;   // 
 //   and starts sparTurn; one turn per product (in-memory), a second while running → conflict (409).
 //   isTurnRunning(productId); idle(). A throwing turn goes to onError and frees the product.
 savePrdDraft(deps, productId, {markdown}) → {ok; events}   // prd.draft_saved{baseVersion: product.prdVersion}
+handoff({store, ids, git}, productId): Promise<{ok; events}>   // flow 2; phase ≠ sparring or blank draft → conflict
+//   git.commitFilesOnMain({docs/PRD.md: draft}) unless main already has exactly that text (a retry after a failed
+//   store commit), then ONE commit: prd.applied{version 1, summary null}, product.handed_off{prdVersion 1},
+//   product.phase_changed{building}; phase and draft are re-checked inside the commit. One handoff per product
+//   at a time (in-memory) → conflict.
 // SparRequestSchema / SavePrdDraftRequestSchema in shared/dto.ts. Spar message ids: nextSparMessageId(deps).
 createProduct({store, ids, git}, {name, idea}): Promise<{ok:true; id: ProductId} | {ok:false; reason}>;
 // CreateProductRequestSchema (shared/dto.ts): trimmed name 1–80, idea 1–4000. git.initRepo(id) runs first,
@@ -459,6 +464,7 @@ Never a shell. The child runs in its own process group, and timeout or abort sig
   getState(signal?): Promise<StateResponse>                                // api.ts; GET /api/state, zod-validated, failures → ApiError
   sendSparMessage(productId, message, signal?): Promise<OkResponse>        // api.ts; POST /api/products/:id/spar (reply arrives as events)
   savePrdDraft(productId, markdown, signal?): Promise<OkResponse>          // api.ts; PUT /api/products/:id/prd-draft
+  handoffProduct(productId, signal?): Promise<OkResponse>                  // api.ts; POST /api/products/:id/handoff
   ```
   - `createAppStore` holds the snapshot and the connection, with no React involved. `start()` connects, and the function it returns disconnects. It can be started again after a stop.
   - `AppStoreProvider` puts one store in context and keeps it connected while it is mounted.

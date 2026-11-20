@@ -186,7 +186,7 @@ describe('ProductPage', () => {
       return panel;
     };
     expect(panelOf('Build')).toBeVisible();
-    expect(panelOf('Build')).toHaveTextContent(/board/);
+    expect(within(panelOf('Build')).getByRole('region', { name: 'Issues' })).toBeInTheDocument();
     expect(panelOf('Spec')).toHaveTextContent(/PRD draft/);
     expect(panelOf('Settings')).toHaveTextContent('Settings for Todo app');
   });

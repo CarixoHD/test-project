@@ -12,6 +12,7 @@ import {
   ModelRefSchema,
   RoleModelsSchema,
   type KeyedProviderId,
+  type ModelDefaults,
   type ModelRef,
   type RoleModels,
 } from '../../shared/models.ts';
@@ -23,7 +24,7 @@ import {
   type ProviderConfig,
 } from '../llm/index.ts';
 import type { Secrets } from '../security/index.ts';
-import { deleteSetting, readSetting, writeSetting, type Store } from '../store/index.ts';
+import { deleteSetting, writeSetting, type Store } from '../store/index.ts';
 
 // Account-wide settings (ARCHITECTURE §4.3 GET|PUT /api/settings, §4.10, ADR 9): provider
 // config, write-only API keys, role defaults, the default model and price overrides.
@@ -78,8 +79,8 @@ export interface AccountSettingsDeps {
   secrets: Secrets;
 }
 
-function readValidated<S extends z.ZodType>(db: Db, key: string, schema: S) {
-  const raw = readSetting(db, key);
+function readValidated<S extends z.ZodType>(store: Store, key: string, schema: S) {
+  const raw = store.q.setting(key);
   if (raw === undefined) return undefined;
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
@@ -90,19 +91,27 @@ function readValidated<S extends z.ZodType>(db: Db, key: string, schema: S) {
   return parsed.data as z.infer<S>;
 }
 
-export function createAccountSettings({
-  store,
-  db,
-  secrets,
-}: AccountSettingsDeps): AccountSettings {
-  const readProviderConfig = () =>
-    readValidated(db, SETTING_KEYS.providerConfig, ProviderConfigSchema) ?? {};
+// Validated readers of single `settings` rows: the one place that parses them. `read()` below
+// and the pipeline (resolveModel, price overrides in runRecordedAgent) both use these.
+// Each throws, naming the key, when its row is malformed.
 
+export const readProviderConfig = (store: Store): ProviderConfig =>
+  readValidated(store, SETTING_KEYS.providerConfig, ProviderConfigSchema) ?? {};
+
+/** The account's model defaults, in the shape the shared `resolveModel` takes. */
+export const readModelDefaults = (store: Store): ModelDefaults => ({
+  roleDefaults: readValidated(store, SETTING_KEYS.roleDefaults, RoleModelsSchema) ?? {},
+  defaultModel: readValidated(store, SETTING_KEYS.defaultModel, ModelRefSchema) ?? null,
+});
+
+export const readPriceOverrides = (store: Store): PriceOverrides =>
+  readValidated(store, SETTING_KEYS.priceOverrides, PriceOverridesSchema) ?? {};
+
+export function createAccountSettings({ store, secrets }: AccountSettingsDeps): AccountSettings {
   const read = (): StoredSettings => ({
-    providerConfig: readProviderConfig(),
-    roleDefaults: readValidated(db, SETTING_KEYS.roleDefaults, RoleModelsSchema) ?? {},
-    defaultModel: readValidated(db, SETTING_KEYS.defaultModel, ModelRefSchema) ?? null,
-    priceOverrides: readValidated(db, SETTING_KEYS.priceOverrides, PriceOverridesSchema) ?? {},
+    providerConfig: readProviderConfig(store),
+    ...readModelDefaults(store),
+    priceOverrides: readPriceOverrides(store),
   });
 
   const view = (): SettingsResponse => {
@@ -191,7 +200,7 @@ export function createAccountSettings({
   const modelDeps = (): ModelDeps => ({
     getSecret: (key) => secrets.get(key),
     get providerConfig() {
-      return readProviderConfig();
+      return readProviderConfig(store);
     },
   });
 
