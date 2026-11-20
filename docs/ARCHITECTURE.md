@@ -221,6 +221,7 @@ POST /api/inbox/:id/read
 POST|DELETE /api/products/:id/preview   POST → {url} once GET / answers (409 no preview config / failed start); DELETE (409 none running)
 GET|PUT /api/settings                   providers, keys (write-only, masked on read), role defaults, price overrides
 POST /api/backends/:backend/clear       backend.cleared when a limit exists (Settings "I've logged in"); idempotent; unknown provider → 400
+GET  /api/backends/claude-code/login    ClaudeLoginResponse {build, volume, login}: setup commands from the runtime (`ClaudeLoginSource`): host uid:gid, current `vibecode/claude-code:<hash>`
 POST /api/settings/password             {current?, next}
 POST /api/login {password} · POST /api/logout · GET /api/session
 ```

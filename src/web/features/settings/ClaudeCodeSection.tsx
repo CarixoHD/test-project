@@ -3,15 +3,15 @@ import type { BackendLimit } from '../../../shared/state-schema.ts';
 import { ApiError, clearBackendLimit } from '../../state/api.ts';
 import { useApp, type AppSnapshot } from '../../state/store.ts';
 import { Button, StatusBadge, type BadgeTone } from '../../ui/index.ts';
+import { useClaudeLogin } from './use-claude-login.ts';
 
 const BACKEND = 'claude-code';
-const VOLUME_COMMAND = 'docker volume create vibecode-claude-config';
-const LOGIN_COMMAND =
-  'docker run -it --rm -v vibecode-claude-config:/home/agent/.claude vibecode/claude-code claude auth login';
 
-const COMMANDS = [
-  { id: 'volume', what: 'the volume command', text: VOLUME_COMMAND },
-  { id: 'login', what: 'the login command', text: LOGIN_COMMAND },
+/** The setup steps, in order; their text comes from the server (its uid:gid and image tag). */
+const STEPS = [
+  { id: 'build', what: 'the build command' },
+  { id: 'volume', what: 'the volume command' },
+  { id: 'login', what: 'the login command' },
 ] as const;
 
 const selectLimit = (s: AppSnapshot): BackendLimit | undefined => s.state.backendLimits[BACKEND];
@@ -75,6 +75,8 @@ export function ClaudeCodeSection() {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+  const setup = useClaudeLogin();
+  const { commands } = setup;
 
   const copy = async (what: string, text: string) => {
     try {
@@ -131,19 +133,31 @@ export function ClaudeCodeSection() {
 
       <h3>One-time setup</h3>
       <p>
-        Run these in a terminal on the machine that runs Vibecode. Log in again the same way
-        whenever Claude Code reports that the login expired.
+        Run these in a terminal on the machine that runs Vibecode: build the image, create the
+        volume, then log in. The login runs as your own user, like the agents. Log in again the same
+        way whenever Claude Code reports that the login expired.
       </p>
-      <ol className="settings-claude__steps">
-        {COMMANDS.map((c) => (
-          <li key={c.id}>
-            <code className="settings-claude__command">{c.text}</code>
-            <Button aria-label={`Copy ${c.what}`} onClick={() => void copy(c.what, c.text)}>
-              Copy
-            </Button>
-          </li>
-        ))}
-      </ol>
+      {setup.error !== null ? (
+        <p role="alert" className="ui-field__error">
+          {setup.error}
+        </p>
+      ) : null}
+      {commands !== null ? (
+        <ol className="settings-claude__steps">
+          {STEPS.map((step) => (
+            <li key={step.id}>
+              <code className="settings-claude__command">{commands[step.id]}</code>
+              <Button
+                aria-label={`Copy ${step.what}`}
+                onClick={() => void copy(step.what, commands[step.id])}
+              >
+                Copy
+              </Button>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {commands === null && setup.error === null ? <p>Loading the setup commands…</p> : null}
       <p role="status" className="settings-notice">
         {notice}
       </p>

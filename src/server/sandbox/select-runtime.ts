@@ -2,7 +2,7 @@
 // FakeContainerRuntime with VIBECODE_FAKE_DOCKER=1, otherwise the docker CLI runtime.
 import { DockerCliRuntime } from './docker-cli.ts';
 import { FakeContainerRuntime, type FakeRunRule } from './fake.ts';
-import type { ContainerRuntime } from './types.ts';
+import type { ClaudeLoginSource, ContainerRuntime } from './types.ts';
 
 const FALLBACK_ID = 1000;
 
@@ -13,7 +13,7 @@ const FALLBACK_ID = 1000;
 export function selectRuntime(
   config: { fakeDocker: boolean; dataDir: string },
   o: { script?: readonly FakeRunRule[]; docker?: string } = {},
-): ContainerRuntime {
+): ContainerRuntime & ClaudeLoginSource {
   if (config.fakeDocker) {
     return new FakeContainerRuntime({
       dataDir: config.dataDir,

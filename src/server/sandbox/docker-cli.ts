@@ -14,8 +14,17 @@ import {
   type ExecOptions,
   type ExecResult as UtilExecResult,
 } from '../util/exec.ts';
-import { NETWORKS, WORKSPACE, buildRunArgs, containerName } from './run-args.ts';
+import {
+  AGENT_HOME,
+  CLAUDE_CONFIG_VOLUME,
+  NETWORKS,
+  WORKSPACE,
+  buildRunArgs,
+  containerName,
+} from './run-args.ts';
 import type {
+  ClaudeLoginCommands,
+  ClaudeLoginSource,
   ContainerRuntime,
   DetachedContainer,
   EnsureImageParams,
@@ -30,8 +39,12 @@ import type {
 export const DOCKER_NOT_RUNNING =
   'Docker is not running: start Docker Desktop or the docker service';
 export const BASE_IMAGE = 'vibecode/base';
-/** vibecode/base plus the pinned Claude Code CLI; also the image the owner logs in with (ADR 4). */
+/**
+ * Repository of vibecode/base plus the pinned Claude Code CLI, tagged `:<content hash>` (see
+ * claudeImageTag); also the image the owner logs in with (ADR 4).
+ */
 export const CLAUDE_IMAGE = 'vibecode/claude-code';
+const BASE_DOCKERFILE = 'base.Dockerfile';
 const CLAUDE_DOCKERFILE = 'claude-code.Dockerfile';
 /** docker/ at the repo root: base.Dockerfile, claude-code.Dockerfile and their build context. */
 export const DEFAULT_BASE_IMAGE_DIR = path.resolve(import.meta.dirname, '../../../docker');
@@ -88,7 +101,63 @@ export type DockerCliRuntimeOptions = {
   spawnStream?: typeof defaultSpawnStream;
 };
 
-export class DockerCliRuntime implements ContainerRuntime {
+/**
+ * Tag of the Claude Code image FROM `productImage` (ADR 4): sha256 over the product image tag,
+ * claude-code.Dockerfile (its only build-context input: the wrapper is written inline) and, over
+ * vibecode/base, base.Dockerfile. A CLI pin bump thus yields a new tag and a rebuild.
+ * `vibecode/claude-code:<hash>` over vibecode/base, else `vibecode/p-<id>-claude:<hash>`.
+ */
+export async function claudeImageTag(
+  imageDir: string,
+  productId: string,
+  productImage: string,
+): Promise<string> {
+  const h = createHash('sha256');
+  const field = (label: string, data: Buffer | null) => {
+    h.update(`${label}\0${data === null ? 'missing' : String(data.length)}\0`);
+    if (data !== null) h.update(data);
+  };
+  field('from', Buffer.from(productImage));
+  field(CLAUDE_DOCKERFILE, await readFile(path.join(imageDir, CLAUDE_DOCKERFILE)));
+  if (productImage === BASE_IMAGE) {
+    field(BASE_DOCKERFILE, await readIfExists(path.join(imageDir, BASE_DOCKERFILE)));
+    return `${CLAUDE_IMAGE}:${h.digest('hex')}`;
+  }
+  return `vibecode/p-${productId.toLowerCase()}-claude:${h.digest('hex')}`;
+}
+
+/**
+ * The owner's one-time setup (ADR 4), as shell commands for the host: build the login image
+ * (`claudeTag`, FROM vibecode/base), create the volume, and log in as the host uid:gid (the
+ * identity agents run as, so they can read the login). `--pull never`: never fetch a
+ * look-alike image from a registry.
+ */
+export function claudeLoginCommands(o: {
+  imageDir: string;
+  claudeTag: string;
+  uid: number;
+  gid: number;
+}): ClaudeLoginCommands {
+  const dir = shellQuote(o.imageDir);
+  const file = (name: string) => shellQuote(path.join(o.imageDir, name));
+  return {
+    build:
+      `docker buildx build --load --tag ${BASE_IMAGE} --file ${file(BASE_DOCKERFILE)} ${dir} && ` +
+      `docker buildx build --load --tag ${o.claudeTag} --build-arg BASE_IMAGE=${BASE_IMAGE} ` +
+      `--file ${file(CLAUDE_DOCKERFILE)} ${dir}`,
+    volume: `docker volume create ${CLAUDE_CONFIG_VOLUME}`,
+    login:
+      `docker run -it --rm --pull never --user ${String(o.uid)}:${String(o.gid)} ` +
+      `-v ${CLAUDE_CONFIG_VOLUME}:${AGENT_HOME}/.claude ${o.claudeTag} claude auth login`,
+  };
+}
+
+/** POSIX single-quoting, only when needed: `/a b` → `'/a b'`, `it's` → `'it'\''s'`. */
+function shellQuote(s: string): string {
+  return /^[A-Za-z0-9_./:=@+-]+$/.test(s) ? s : `'${s.replaceAll("'", "'\\''")}'`;
+}
+
+export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
   readonly #o: DockerCliRuntimeOptions;
   readonly #exec: typeof defaultExec;
   readonly #spawnStream: typeof defaultSpawnStream;
@@ -155,20 +224,22 @@ export class DockerCliRuntime implements ContainerRuntime {
   }
 
   /**
-   * The derived image FROM `productImage` with the pinned CLI layered on (ADR 4). Over
-   * vibecode/base it is vibecode/claude-code, the image of the login command.
+   * The derived image FROM `productImage` with the pinned CLI layered on (ADR 4), tagged by
+   * claudeImageTag. Over vibecode/base it is `vibecode/claude-code:<hash>`, the login image.
    */
   async #ensureClaudeImage(productId: string, productImage: string): Promise<string> {
     const dir = this.#imageDir();
     const dockerfile = path.join(dir, CLAUDE_DOCKERFILE);
-    let tag = CLAUDE_IMAGE;
-    if (productImage !== BASE_IMAGE) {
-      const content = await readFile(dockerfile);
-      const hash = createHash('sha256').update(`${productImage}\0`).update(content).digest('hex');
-      tag = `vibecode/p-${productId.toLowerCase()}-claude:${hash}`;
-    }
+    const tag = await claudeImageTag(dir, productId, productImage);
     await this.#ensureBuilt(tag, dockerfile, dir, ['--build-arg', `BASE_IMAGE=${productImage}`]);
     return tag;
+  }
+
+  /** The login setup for this host's uid:gid and the current Claude image tag; runs no docker. */
+  async claudeLoginCommands(): Promise<ClaudeLoginCommands> {
+    const imageDir = this.#imageDir();
+    const claudeTag = await claudeImageTag(imageDir, '', BASE_IMAGE);
+    return claudeLoginCommands({ imageDir, claudeTag, uid: this.#o.uid, gid: this.#o.gid });
   }
 
   #imageDir(): string {

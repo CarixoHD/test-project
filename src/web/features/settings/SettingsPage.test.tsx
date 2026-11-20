@@ -4,6 +4,7 @@ import { createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SettingsUpdateRequestSchema,
+  type ClaudeLoginResponse,
   type SettingsResponse,
   type SettingsUpdateRequest,
 } from '../../../shared/dto.ts';
@@ -111,9 +112,18 @@ let server: FakeSettingsServer;
 let initialState: ClientState;
 /** Backends the page asked to clear (POST /api/backends/:backend/clear). */
 let cleared: string[];
+/** What GET /api/backends/claude-code/login answers (null: a 500). */
+let loginCommands: ClaudeLoginResponse | null;
+const CLAUDE_TAG = `vibecode/claude-code:${'ab12'.repeat(16)}`;
+const LOGIN_COMMANDS: ClaudeLoginResponse = {
+  build: `docker buildx build --load --tag ${CLAUDE_TAG} --file /opt/vibecode/docker/claude-code.Dockerfile /opt/vibecode/docker`,
+  volume: 'docker volume create vibecode-claude-config',
+  login: `docker run -it --rm --pull never --user 1501:20 -v vibecode-claude-config:/home/agent/.claude ${CLAUDE_TAG} claude auth login`,
+};
 
 beforeEach(() => {
   server = new FakeSettingsServer();
+  loginCommands = LOGIN_COMMANDS;
   initialState = emptyState;
   cleared = [];
   vi.stubGlobal('EventSource', FakeEventSource);
@@ -130,6 +140,13 @@ beforeEach(() => {
       }
       if (url === '/api/state') {
         return Promise.resolve(Response.json({ state: initialState, lastSeq: 0 }));
+      }
+      if (url === '/api/backends/claude-code/login' && method === 'GET') {
+        return Promise.resolve(
+          loginCommands === null
+            ? Response.json({ error: { code: 'internal', message: 'boom' } }, { status: 500 })
+            : Response.json(loginCommands),
+        );
       }
       const clear = /^\/api\/backends\/([^/]+)\/clear$/.exec(url);
       if (clear?.[1] !== undefined && method === 'POST') {
@@ -425,21 +442,33 @@ const withLimit = (l: ReturnType<typeof limit>): ClientState => ({
 describe('Settings: Claude Code', () => {
   const region = () => screen.getByRole('region', { name: 'Claude Code' });
 
-  it('shows the one-time setup commands with copy buttons', async () => {
+  it("shows the server's setup commands (host uid:gid, current image tag) with copy buttons", async () => {
     const { user } = await renderSettings();
     const r = region();
+    const login = await within(r).findByText(LOGIN_COMMANDS.login);
+    expect(login).toBeVisible();
+    expect(login.textContent).toContain('--user 1501:20 ');
+    expect(within(r).getByText(LOGIN_COMMANDS.build)).toBeVisible();
     expect(within(r).getByText('docker volume create vibecode-claude-config')).toBeVisible();
-    const login =
-      'docker run -it --rm -v vibecode-claude-config:/home/agent/.claude vibecode/claude-code claude auth login';
-    expect(within(r).getByText(login)).toBeVisible();
 
     await user.click(within(r).getByRole('button', { name: 'Copy the login command' }));
-    expect(await navigator.clipboard.readText()).toBe(login);
+    expect(await navigator.clipboard.readText()).toBe(LOGIN_COMMANDS.login);
     expect(within(r).getByText('Copied the login command.')).toBeVisible();
     await user.click(within(r).getByRole('button', { name: 'Copy the volume command' }));
     expect(await navigator.clipboard.readText()).toBe(
       'docker volume create vibecode-claude-config',
     );
+    await user.click(within(r).getByRole('button', { name: 'Copy the build command' }));
+    expect(await navigator.clipboard.readText()).toBe(LOGIN_COMMANDS.build);
+  });
+
+  it('says so when the setup commands cannot be loaded', async () => {
+    loginCommands = null;
+    await renderSettings();
+    expect(await within(region()).findByRole('alert')).toHaveTextContent(
+      'Could not load the setup commands',
+    );
+    expect(within(region()).queryByText(/claude auth login/)).toBeNull();
   });
 
   it('says OK when no limit is recorded', async () => {
