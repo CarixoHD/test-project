@@ -7,7 +7,9 @@ import { parseEvent, type Event } from '../shared/events.ts';
 import { AgentIdSchema, InboxIdSchema, ProductIdSchema } from '../shared/ids.ts';
 import { parseConfig } from './config.ts';
 import { EventEmitter } from 'node:events';
-import { closeOnSignals, start, type Running } from './main.ts';
+import { createServer } from 'node:net';
+import { GIT_VERSION_REQUIRED_MESSAGE } from './git/index.ts';
+import { closeOnSignals, main, start, type Running } from './main.ts';
 import { liveChildCount, spawnStream, type RunOutcome } from './util/exec.ts';
 
 describe('start (composition root)', () => {
@@ -310,6 +312,127 @@ describe('start (composition root)', () => {
     expect(Math.min(started, 2)).toBe(runs);
   });
 });
+
+describe('start: host git version check (ARCHITECTURE §2)', () => {
+  let root: string | undefined;
+  let running: Running | undefined;
+  afterEach(async () => {
+    await running?.close();
+    running = undefined;
+    if (root !== undefined) rmSync(root, { recursive: true, force: true });
+    root = undefined;
+  });
+
+  it('rejects with GIT_VERSION_REQUIRED_MESSAGE when host git is too old, and nothing listens', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const dataDir = join(root, 'data');
+    const port = await freePort();
+    const config = { ...parseConfig({ VIBECODE_DATA_DIR: dataDir }), port };
+    let checks = 0;
+    await expect(
+      start(config, join(root, 'no-web'), {
+        gitVersionOk: () => {
+          checks += 1;
+          return Promise.resolve(false);
+        },
+      }),
+    ).rejects.toThrow(GIT_VERSION_REQUIRED_MESSAGE);
+    expect(checks).toBe(1);
+    // Refused before anything was opened: no data dir, no DB, no listener on the port.
+    expect(existsSync(dataDir)).toBe(false);
+    await expect(fetch(`http://127.0.0.1:${String(port)}/api/state`)).rejects.toThrow();
+  });
+
+  it('boots when host git is new enough', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const config = { ...parseConfig({ VIBECODE_DATA_DIR: join(root, 'data') }), port: 0 };
+    let checks = 0;
+    running = await start(config, join(root, 'no-web'), {
+      gitVersionOk: () => {
+        checks += 1;
+        return Promise.resolve(true);
+      },
+    });
+    expect(checks).toBe(1);
+    const res = await fetch(`http://127.0.0.1:${String(running.address.port)}/api/state`);
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('main (entrypoint)', () => {
+  let root: string | undefined;
+  let running: Running | undefined;
+  afterEach(async () => {
+    await running?.close();
+    running = undefined;
+    if (root !== undefined) rmSync(root, { recursive: true, force: true });
+    root = undefined;
+  });
+
+  function fakeProc() {
+    const exits: number[] = [];
+    const emitter = new EventEmitter();
+    return {
+      exits,
+      emitter,
+      proc: {
+        on: (signal: 'SIGINT' | 'SIGTERM', fn: () => void) => emitter.on(signal, fn),
+        exit: (code: number) => {
+          exits.push(code);
+        },
+      },
+    };
+  }
+
+  it('writes GIT_VERSION_REQUIRED_MESSAGE to stderr and exits 1 when host git is too old', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const { exits, proc } = fakeProc();
+    const errors: string[] = [];
+    const port = await freePort();
+    const result = await main(
+      { VIBECODE_DATA_DIR: join(root, 'data'), VIBECODE_PORT: String(port) },
+      {
+        proc,
+        error: (line) => errors.push(line),
+        log: () => {},
+        options: { gitVersionOk: () => Promise.resolve(false) },
+      },
+    );
+    expect(result).toBeUndefined();
+    expect(errors).toEqual([GIT_VERSION_REQUIRED_MESSAGE]);
+    expect(exits).toEqual([1]);
+    await expect(fetch(`http://127.0.0.1:${String(port)}/api/state`)).rejects.toThrow();
+  });
+
+  it('starts listening and logs the address when host git is new enough', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const { exits, proc } = fakeProc();
+    const logs: string[] = [];
+    const port = await freePort();
+    running = await main(
+      { VIBECODE_DATA_DIR: join(root, 'data'), VIBECODE_PORT: String(port) },
+      {
+        proc,
+        error: () => {},
+        log: (line) => logs.push(line),
+        options: { gitVersionOk: () => Promise.resolve(true) },
+      },
+    );
+    expect(running?.address.port).toBe(port);
+    expect(exits).toEqual([]);
+    expect(logs).toEqual([`Vibecode listening on http://127.0.0.1:${String(port)}`]);
+  });
+});
+
+/** A TCP port that was free a moment ago (bound to 0, then released). */
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('no port');
+  await new Promise<void>((done) => server.close(() => done()));
+  return address.port;
+}
 
 describe('closeOnSignals (graceful shutdown)', () => {
   function fakeProcess() {
