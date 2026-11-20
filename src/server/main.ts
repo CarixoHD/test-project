@@ -91,6 +91,7 @@ export async function start(
     schedulerTickMs,
   } = options;
   const logsDir = join(config.dataDir, 'logs');
+  const artifactsDir = join(config.dataDir, 'artifacts');
   // Every agent run checks the budget after each usage step (§6 flow 5).
   const afterUsage = budgetAfterUsage({ store, ids });
   // Demo mode answers every role from its default script (src/server/demo) unless a test
@@ -163,6 +164,7 @@ export async function start(
     sparring,
     previews,
     logsDir,
+    artifactsDir,
     // apply-prd commits docs/PRD.md under the merge lock; `scheduler` is created below and read
     // only when a request arrives.
     withMergeLock: (productId, fn) => scheduler.withMergeLock(productId, fn),
@@ -201,7 +203,7 @@ export async function start(
             redactor,
             logsDir,
             afterUsage,
-            artifactsDir: join(config.dataDir, 'artifacts'),
+            artifactsDir,
             git,
             runtime,
             // A getter, as for the orchestrator: keys and provider settings at call time.

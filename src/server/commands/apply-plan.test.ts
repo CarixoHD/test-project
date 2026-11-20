@@ -494,3 +494,64 @@ describe('applyPlan options: project config and replan summary', () => {
     );
   });
 });
+
+describe('applyPlan on a complete product', () => {
+  const markComplete = (deps: CommandDeps) => {
+    deps.store.commit(() => [draft('product.phase_changed', P, null, { phase: 'complete' })]);
+  };
+  const types = (r: ApplyPlanResult) => (r.ok ? r.events.map((e) => e.type) : r.reason);
+
+  it('a plan that creates an issue sets the phase back to building in the same commit', () => {
+    const { store, deps } = setup();
+    const { a, b } = seedIssues(deps);
+    completeIssue(deps, a);
+    completeIssue(deps, b);
+    markComplete(deps);
+
+    const r = applyPlan(deps, P, plan([create('more')]), 9);
+
+    expect(types(r)).toEqual([
+      'issue.created',
+      'product.phase_changed',
+      'orchestrator.cursor_advanced',
+    ]);
+    expect(r.ok && r.events[1]?.data).toEqual({ phase: 'building' });
+    expect(store.q.product(P)?.phase).toBe('building');
+    expectSnapshotMatchesReplay(store);
+  });
+
+  it('a plan that rewrites an issue back to open sets the phase back to building', () => {
+    const { store, deps } = setup();
+    const { a, b } = seedIssues(deps);
+    completeIssue(deps, a);
+    failIssue(deps, b);
+    markComplete(deps);
+
+    const r = applyPlan(deps, P, plan([{ op: 'rewrite', id: b, body: 'again' }]), 9);
+
+    expect(types(r)).toEqual([
+      'issue.rewritten',
+      'product.phase_changed',
+      'orchestrator.cursor_advanced',
+    ]);
+    expect(store.q.product(P)?.phase).toBe('building');
+  });
+
+  it('a plan that only cancels leaves the product complete', () => {
+    const { store, deps } = setup();
+    const { a, b } = seedIssues(deps);
+    completeIssue(deps, a);
+    markComplete(deps);
+
+    const r = applyPlan(deps, P, plan([{ op: 'cancel', id: b, reason: 'not needed' }]), 9);
+
+    expect(types(r)).toEqual(['issue.cancelled', 'orchestrator.cursor_advanced']);
+    expect(store.q.product(P)?.phase).toBe('complete');
+  });
+
+  it('a building product gets no phase event', () => {
+    const { deps } = setup();
+    const r = applyPlan(deps, P, plan([create('x')]), 3);
+    expect(types(r)).toEqual(['issue.created', 'orchestrator.cursor_advanced']);
+  });
+});
