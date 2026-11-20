@@ -6,7 +6,8 @@ import { CreateProductResponseSchema, StateResponseSchema } from '../shared/dto.
 import { parseEvent, type Event } from '../shared/events.ts';
 import { InboxIdSchema, ProductIdSchema } from '../shared/ids.ts';
 import { parseConfig } from './config.ts';
-import { start, type Running } from './main.ts';
+import { EventEmitter } from 'node:events';
+import { closeOnSignals, start, type Running } from './main.ts';
 
 describe('start (composition root)', () => {
   let root: string | undefined;
@@ -243,6 +244,64 @@ describe('start (composition root)', () => {
     await new Promise((done) => setTimeout(done, 200));
 
     expect(Math.min(started, 2)).toBe(runs);
+  });
+});
+
+describe('closeOnSignals (graceful shutdown)', () => {
+  function fakeProcess() {
+    const emitter = new EventEmitter();
+    const exits: number[] = [];
+    return {
+      emitter,
+      exits,
+      proc: {
+        once: (signal: 'SIGINT' | 'SIGTERM', fn: () => void) => emitter.once(signal, fn),
+        exit: (code: number) => {
+          exits.push(code);
+        },
+      },
+    };
+  }
+
+  it.each(['SIGINT', 'SIGTERM'] as const)('on %s: closes once, then exits 0', async (signal) => {
+    const { emitter, exits, proc } = fakeProcess();
+    let closes = 0;
+    closeOnSignals({ close: () => Promise.resolve(void (closes += 1)) }, proc, () => {});
+    emitter.emit(signal);
+    emitter.emit(signal === 'SIGINT' ? 'SIGTERM' : 'SIGINT');
+    await new Promise((done) => setTimeout(done, 0));
+    expect(closes).toBe(1);
+    expect(exits).toEqual([0]);
+  });
+
+  it('exits 1 and logs when close fails', async () => {
+    const { emitter, exits, proc } = fakeProcess();
+    const logged: string[] = [];
+    closeOnSignals({ close: () => Promise.reject(new Error('db busy')) }, proc, (line) =>
+      logged.push(line),
+    );
+    emitter.emit('SIGTERM');
+    await new Promise((done) => setTimeout(done, 0));
+    expect(exits).toEqual([1]);
+    expect(logged.join('\n')).toContain('db busy');
+  });
+
+  it('stops the scheduler: a real server closes on SIGTERM', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    try {
+      const config = { ...parseConfig({ VIBECODE_DATA_DIR: join(root, 'data') }), port: 0 };
+      const running = await start(config, join(root, 'no-web'));
+      const { emitter, exits, proc } = fakeProcess();
+      closeOnSignals(running, proc, () => {});
+      emitter.emit('SIGTERM');
+      await waitFor(() => exits.length > 0);
+      expect(exits).toEqual([0]);
+      await expect(
+        fetch(`http://127.0.0.1:${String(running.address.port)}/api/state`),
+      ).rejects.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

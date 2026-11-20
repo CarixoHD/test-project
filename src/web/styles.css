@@ -570,6 +570,54 @@ a {
   color: var(--ink-muted);
 }
 
+/* Cost bar: spend text first, the bar only backs it up; warnings are text, not just colour. */
+.cost-bar {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 14rem;
+}
+
+.build-tab__slot .cost-bar__line {
+  color: var(--ink);
+}
+
+.cost-bar__amount {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.cost-bar__track {
+  height: 0.5rem;
+  overflow: hidden;
+  background: var(--tone-neutral-fill);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+.cost-bar__fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.cost-bar__track--warn .cost-bar__fill {
+  background: var(--tone-warning-ink);
+}
+
+.cost-bar__track--exhausted .cost-bar__fill {
+  background: var(--danger);
+}
+
+.build-tab__slot .cost-bar__alert {
+  padding: var(--space-1) var(--space-2);
+  color: var(--tone-warning-ink);
+  background: var(--tone-warning-fill);
+  border-radius: var(--radius-control);
+}
+
+.build-tab__slot .cost-bar__note {
+  font-size: 0.875rem;
+}
+
 /* Board: header with the "Add issue" button, then six status columns that scroll sideways. */
 .board__header {
   display: flex;
