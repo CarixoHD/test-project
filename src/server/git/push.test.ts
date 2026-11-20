@@ -1,6 +1,6 @@
-import { readdir, readFile, realpath, rm, mkdtemp } from 'node:fs/promises';
+import { readdir, readFile, realpath, rm, mkdtemp, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { exec, type ExecOptions, type ExecResult } from '../util/exec.ts';
 import { createGit, GitError, type Git } from './index.ts';
@@ -145,6 +145,41 @@ describe('git.push', () => {
     const config = await readFile(join(repoOf('p1'), 'config'), 'utf8');
     expect(config).not.toContain(TOKEN);
     expect(config).not.toContain('example.com');
+  });
+
+  it('writes the askpass helper under the data dir (not os.tmpdir) and removes it after success and failure', async () => {
+    const seen: { askpass: string; dirMode: number }[] = [];
+    let failNext = false;
+    const fakeExec: typeof exec = async (cmd, argv, o): Promise<ExecResult> => {
+      if (!argv.includes('push')) return exec(cmd, argv, o);
+      const askpass = o.env?.['GIT_ASKPASS'];
+      if (askpass === undefined) throw new Error('GIT_ASKPASS not set');
+      seen.push({ askpass, dirMode: (await stat(dirname(askpass))).mode & 0o777 });
+      return {
+        code: failNext ? 128 : 0,
+        signal: null,
+        timedOut: false,
+        aborted: false,
+        stdout: '',
+        stderr: failNext ? 'fatal: nope' : '',
+        truncated: false,
+      };
+    };
+    const git = createGit({ dataDir, exec: fakeExec });
+    await git.initRepo('p1');
+    const url = 'https://example.com/owner/repo.git';
+
+    await git.push('p1', { url, token: TOKEN });
+    failNext = true;
+    await expect(git.push('p1', { url, token: TOKEN })).rejects.toThrow(GitError);
+
+    expect(seen).toHaveLength(2);
+    for (const { askpass, dirMode } of seen) {
+      expect(askpass.startsWith(dataDir + sep)).toBe(true);
+      expect(askpass.startsWith(join(tmpdir(), 'vibecode-askpass-'))).toBe(false);
+      expect(dirMode).toBe(0o700);
+      await expect(readdir(dirname(askpass))).rejects.toThrow();
+    }
   });
 
   it('redacts the token from a failed push error', async () => {
