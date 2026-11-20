@@ -43,7 +43,12 @@ function settingsChanged(s: ClientState, e: EventOf<'product.settings_changed'>)
     if (d.maxAttempts !== undefined) settings.maxAttempts = d.maxAttempts;
     if (d.models !== undefined) settings.models = d.models;
     if (d.gitRemote !== undefined) settings.gitRemote = d.gitRemote;
-    return { ...p, settings, project: d.project ?? p.project };
+    return {
+      ...p,
+      settings,
+      project: d.project ?? p.project,
+      budgetWarned: d.budgetWarned === false ? false : p.budgetWarned,
+    };
   });
 }
 

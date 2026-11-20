@@ -31,6 +31,8 @@ export type ExecOpts = {
   /** Required: the process is killed after this many ms. */
   timeoutMs: number;
   signal?: AbortSignal | undefined;
+  /** Delivered to the process when `signal` aborts; default SIGTERM. Claude Code ends its turn on SIGINT. */
+  killSignal?: 'SIGINT' | 'SIGTERM' | undefined;
   /** Called with each (redacted) output line as it arrives. */
   onLine?: ((line: string, stream: OutputStream) => void) | undefined;
 };
