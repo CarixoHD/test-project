@@ -29,3 +29,10 @@ export {
   type ParsedFileOp,
   type PathResult,
 } from './file-ops.ts';
+export {
+  FakeContainerRuntime,
+  type FakeCall,
+  type FakeContainerRuntimeOptions,
+  type FakeRunResult,
+  type FakeRunRule,
+} from './fake.ts';
