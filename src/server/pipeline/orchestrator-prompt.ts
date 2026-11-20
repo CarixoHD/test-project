@@ -121,6 +121,12 @@ function describeBlocked(issues: readonly IssueState[]): string {
   return blocked.length === 0 ? '(none)' : blocked.join('\n');
 }
 
+/** "#3 Title" for a known issue, else the raw id. */
+function issueLabel(id: string, issues: readonly IssueState[]): string {
+  const issue = issues.find((i) => i.id === id);
+  return issue === undefined ? id : `#${String(issue.number)} ${issue.title}`;
+}
+
 function describeTrigger(
   e: Event,
   issues: readonly IssueState[],
@@ -136,11 +142,18 @@ function describeTrigger(
         ': replan as described under "The PRD changed" below.'
       );
     case 'issue.failed': {
-      const issue = issues.find((i) => i.id === e.entityId);
-      const label = issue === undefined ? e.entityId : `#${String(issue.number)} ${issue.title}`;
+      const label = issueLabel(e.entityId, issues);
       return (
         `- Issue ${label} failed after ${String(e.data.attemptCount)} attempts: ${clip(e.data.reason)}. ` +
         'Rewrite it (smaller or clearer, using the feedback), split it into new issues, or ask the owner.'
+      );
+    }
+    case 'issue.cancelled': {
+      const stranded = (e.data.stranded ?? []).map((id) => issueLabel(id, issues));
+      return (
+        `- The owner cancelled issue ${issueLabel(e.entityId, issues)}; ${stranded.join(', ')} ` +
+        `${stranded.length === 1 ? 'depends' : 'depend'} on it and can never start. ` +
+        'Edit their dependencies or cancel them (see "Depends on cancelled issues" above).'
       );
     }
     case 'question.answered': {
