@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emptyState } from '../../shared/state.ts';
-import { ApiError, getState, request, savePrdDraft, sendSparMessage } from './api.ts';
+import {
+  ApiError,
+  getState,
+  handoffProduct,
+  request,
+  savePrdDraft,
+  sendSparMessage,
+} from './api.ts';
 import { z } from 'zod';
 
 type FetchArgs = [input: string, init: RequestInit];
@@ -89,5 +96,14 @@ describe('api', () => {
     expect(url).toBe('/api/products/p%201/prd-draft');
     expect(init.method).toBe('PUT');
     expect(JSON.parse(String(init.body))).toEqual({ markdown: '# PRD' });
+  });
+
+  it('handoffProduct POSTs without a body to the product handoff endpoint', async () => {
+    const fetchFn = stubFetch(json({ ok: true }));
+    await expect(handoffProduct('p 1')).resolves.toEqual({ ok: true });
+    const [url, init] = fetchFn.mock.calls[0] as FetchArgs;
+    expect(url).toBe('/api/products/p%201/handoff');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeUndefined();
   });
 });
