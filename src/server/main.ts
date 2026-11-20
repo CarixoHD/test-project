@@ -21,6 +21,7 @@ import {
   sparTurn,
   type OrchestratorDeps,
 } from './pipeline/index.ts';
+import { recover } from './recovery/index.ts';
 import { createPreviews, selectRuntime } from './sandbox/index.ts';
 import { createSecrets, redactor } from './security/index.ts';
 import { createStore, type Store } from './store/index.ts';
@@ -117,6 +118,18 @@ export async function start(
   const runtime = selectRuntime(config, {
     ...(config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {}),
     ...(options.dockerCommand === undefined ? {} : { docker: options.dockerCommand }),
+  });
+  // Restart recovery (§4.11): nothing of the previous process is live; reconcile it before the
+  // scheduler can start new runs.
+  await recover({
+    store,
+    db,
+    git,
+    runtime,
+    clock,
+    log: (line) => {
+      console.warn(redactor.redact(line));
+    },
   });
   const previews = createPreviews({
     store,
