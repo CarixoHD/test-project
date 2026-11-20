@@ -56,7 +56,7 @@ export type Harness = {
   modelCalls: ModelCall[];
   deps: AttemptDeps;
   addIssue(title: string): IssueId;
-  run(issueId: IssueId): Promise<void>;
+  run(issueId: IssueId, handle?: RunHandle): Promise<void>;
   mainLog(): Promise<string[]>;
   rawGit(args: string[]): Promise<string>;
   expectNoLeftovers(): Promise<void>;
@@ -185,7 +185,7 @@ export async function setupAttempt(dataDir: string, o: HarnessOptions = {}): Pro
       if (!r.ok) throw new Error(r.reason);
       return r.issueId;
     },
-    run: (issueId) => runAttempt(deps, issueId, runHandle(ids)),
+    run: (issueId, handle) => runAttempt(deps, issueId, handle ?? runHandle(ids)),
     mainLog: async () => (await rawGit(['log', '--format=%s', 'main'])).split('\n'),
     rawGit,
     async expectNoLeftovers() {

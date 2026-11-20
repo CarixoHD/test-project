@@ -45,6 +45,8 @@ export const CHECK_TIMEOUT_MS = 30 * 60_000;
 export const ERROR_RETRY_DELAY_MS = 60_000;
 export const NO_CHECK_REASON = 'No check command configured (.vibecode/project.json)';
 export const NO_CHANGES_FEEDBACK = 'no changes: the implementer finished without changing any file';
+/** An aborted check (stop, restart) is an interruption, never a counted check_failed (ADR 7). */
+export const CHECK_ABORTED_REASON = 'the check was aborted (the run was stopped)';
 /** Check output lines kept as feedback for the next attempt. */
 const CHECK_FEEDBACK_LINES = 200;
 
@@ -192,6 +194,7 @@ async function attempt(ctx: Ctx): Promise<Ended> {
   recordStep(ctx, 'check');
   const check = await runCheck(ctx, project, ctx.wt.dir, 'check.log');
   await ctx.deps.git.cleanWorktree(ctx.wt.dir);
+  if (check.aborted) return fail(CHECK_ABORTED_REASON, { headSha });
   if (check.code !== 0) {
     const what = `The check \`${project.check.join(' ')}\``;
     return counted('check_failed', checkFailedFeedback(what, check), {
@@ -353,7 +356,8 @@ function assertNever(x: never): never {
   throw new Error(`unhandled case: ${JSON.stringify(x)}`);
 }
 
-type CheckRun = { code: number | null; output: string };
+/** `aborted`: the run's signal fired (stop or restart), so the result says nothing about the work. */
+type CheckRun = { code: number | null; output: string; aborted: boolean };
 
 /** The project's check in a one-shot container with no network; the output goes to `logName`. */
 async function runCheck(
@@ -392,7 +396,7 @@ async function runCheck(
   await appendFile(path.join(ctx.artifacts, logName), output === '' ? '' : `${output}\n`, {
     mode: 0o600,
   });
-  return { code: r.code, output };
+  return { code: r.code, output, aborted: r.aborted };
 }
 
 /** Under the merge lock: re-read the issue, integrate, (re-check,) advance main, complete. */
@@ -422,6 +426,7 @@ async function merge(
     case 'merged':
       try {
         const recheck = await runCheck(ctx, project, r.dir, 'integration-check.log');
+        if (recheck.aborted) return fail(CHECK_ABORTED_REASON, done);
         if (recheck.code !== 0) {
           const what = `The check \`${project.check.join(' ')}\` on the merge with main`;
           return counted('check_failed', checkFailedFeedback(what, recheck), {

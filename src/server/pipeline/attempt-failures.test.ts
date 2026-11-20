@@ -176,6 +176,48 @@ describe('runAttempt: counted failures', () => {
     await harness.expectNoLeftovers();
   });
 
+  it.each([
+    ['the check', false],
+    ['the re-check on the merge with main', true],
+  ])('aborting %s (stop, restart) is not counted', async (_name, onMerge) => {
+    const abort = new AbortController();
+    harness = await setup(
+      onMerge
+        ? {
+            // the first check passes and fires the signal; the re-check then sees it aborted
+            check: () => {
+              abort.abort();
+              return { code: 0, stdout: '' };
+            },
+            withMergeLock: async (productId, fn) => {
+              await harness.git.commitFilesOnMain(productId, { 'other.txt': 'x\n' }, 'other');
+              return fn();
+            },
+          }
+        : { check: () => ({ code: 1, stdout: 'never seen\n' }) },
+    );
+    const h = harness;
+    const id = h.addIssue('Scaffold');
+    const unsubscribe = h.store.subscribe(() => {
+      const step = h.store.eventsSince(0).findLast((e) => e.type === 'attempt.step');
+      if (!onMerge && step?.type === 'attempt.step' && step.data.step === 'check') abort.abort();
+    });
+
+    await h.run(id, { runId: h.ids.next('run'), signal: abort.signal, shouldStop: () => false });
+    unsubscribe();
+
+    const [attempt] = attemptsOf(h.store, id);
+    expect(attempt).toMatchObject({
+      status: 'error',
+      counted: false,
+      step: onMerge ? 'merge' : 'check',
+    });
+    expect(attempt?.feedback).toContain('aborted');
+    expect(h.store.q.issue(id)).toMatchObject({ status: 'open', attemptCount: 0 });
+    await h.expectNoLeftovers();
+    expectSnapshotMatchesReplay(h.store);
+  });
+
   it('a missing check command stays an uncounted error', async () => {
     const h = await setup({ project: null });
     const id = h.addIssue('Scaffold');
