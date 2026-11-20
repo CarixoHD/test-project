@@ -114,7 +114,18 @@ export async function start(
       console.error(redactor.redact(`sparring turn failed: ${String(err)}`));
     },
   });
-  const app = createApp({ store, ids, git, redactor, webRoot, settings, sparring });
+  const app = createApp({
+    store,
+    ids,
+    git,
+    redactor,
+    webRoot,
+    settings,
+    sparring,
+    // apply-prd commits docs/PRD.md under the merge lock; `scheduler` is created below and read
+    // only when a request arrives.
+    withMergeLock: (productId, fn) => scheduler.withMergeLock(productId, fn),
+  });
   const runtime = selectRuntime(config, {
     ...(config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {}),
     ...(options.dockerCommand === undefined ? {} : { docker: options.dockerCommand }),
