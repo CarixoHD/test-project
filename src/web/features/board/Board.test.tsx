@@ -223,10 +223,19 @@ describe('Board', () => {
       () => issueCreated({ n: 2, title: 'B' }),
     ]);
     const user = userEvent.setup();
-    await user.tab();
-    expect(screen.getByRole('link', { name: '#2 B' })).toHaveFocus();
-    await user.tab();
-    expect(screen.getByRole('link', { name: '#1 A' })).toHaveFocus();
+    const order = [
+      screen.getByRole('button', { name: 'Add issue' }),
+      screen.getByRole('link', { name: '#2 B' }),
+      screen.getByRole('button', { name: 'Edit issue #2' }),
+      screen.getByRole('button', { name: 'Cancel issue #2' }),
+      screen.getByRole('link', { name: '#1 A' }),
+      screen.getByRole('button', { name: 'Edit issue #1' }),
+      screen.getByRole('button', { name: 'Cancel issue #1' }),
+    ];
+    for (const el of order) {
+      await user.tab();
+      expect(el).toHaveFocus();
+    }
   });
 });
 

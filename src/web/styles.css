@@ -570,7 +570,20 @@ a {
   color: var(--ink-muted);
 }
 
-/* Board: six status columns that scroll sideways on narrow screens. */
+/* Board: header with the "Add issue" button, then six status columns that scroll sideways. */
+.board__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.board__header > h2 {
+  margin: 0;
+}
+
 .board__columns {
   display: grid;
   grid-auto-flow: column;
@@ -637,6 +650,38 @@ a {
 
 .issue-card__blocked {
   margin: var(--space-1) 0 0;
+}
+
+.issue-card__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* Owner issue dialogs (add, edit, cancel). */
+.issue-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.issue-dialog__stale {
+  margin: var(--space-3) 0;
+}
+
+.issue-dialog__latest {
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+.issue-dialog__latest > h3 {
+  margin: 0 0 var(--space-2);
+  font-size: 1rem;
 }
 
 .spec-handoff {

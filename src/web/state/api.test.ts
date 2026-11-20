@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emptyState } from '../../shared/state.ts';
+import { IssueIdSchema } from '../../shared/ids.ts';
 import {
+  addIssue,
   ApiError,
+  cancelIssue,
+  editIssue,
   getState,
   handoffProduct,
   request,
@@ -105,5 +109,32 @@ describe('api', () => {
     expect(url).toBe('/api/products/p%201/handoff');
     expect(init.method).toBe('POST');
     expect(init.body).toBeUndefined();
+  });
+
+  it('addIssue POSTs the new issue to the product issues endpoint', async () => {
+    const fetchFn = stubFetch(json({ ok: true, issueId: 'i9', number: 9 }));
+    const body = { title: 'Dark mode', body: 'Please', dependsOn: [], priority: 1 };
+    await expect(addIssue('p 1', body)).resolves.toEqual({ ok: true, issueId: 'i9', number: 9 });
+    const [url, init] = fetchFn.mock.calls[0] as FetchArgs;
+    expect(url).toBe('/api/products/p%201/issues');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBe(JSON.stringify(body));
+  });
+
+  it('editIssue PATCHes the issue with its base rev', async () => {
+    const fetchFn = stubFetch(json({ ok: true, rev: 3 }));
+    await expect(editIssue('i1', { title: 'New', rev: 2 })).resolves.toEqual({ ok: true, rev: 3 });
+    const [url, init] = fetchFn.mock.calls[0] as FetchArgs;
+    expect(url).toBe('/api/issues/i1');
+    expect(init.method).toBe('PATCH');
+    expect(init.body).toBe(JSON.stringify({ title: 'New', rev: 2 }));
+  });
+
+  it('cancelIssue POSTs to the issue cancel endpoint', async () => {
+    const fetchFn = stubFetch(json({ ok: true }));
+    await cancelIssue(IssueIdSchema.parse('i1'));
+    const [url, init] = fetchFn.mock.calls[0] as FetchArgs;
+    expect(url).toBe('/api/issues/i1/cancel');
+    expect(init.method).toBe('POST');
   });
 });
