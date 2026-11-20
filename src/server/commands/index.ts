@@ -16,3 +16,15 @@ export {
   type EditIssueResult,
   type IssueCommandFailure,
 } from './issues.ts';
+export {
+  createAccountSettings,
+  SETTING_KEYS,
+  SettingsUpdateSchema,
+  type AccountSettings,
+  type AccountSettingsDeps,
+  type KeyedProvider,
+  type ProviderView,
+  type SettingsUpdate,
+  type SettingsView,
+  type StoredSettings,
+} from './settings.ts';

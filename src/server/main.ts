@@ -4,7 +4,8 @@ import { ensureDataDir, parseConfig, type Config } from './config.ts';
 import { open } from './db/index.ts';
 import { createApp } from './http/index.ts';
 import { createScheduler, type Runners } from './scheduler/index.ts';
-import { redactor } from './security/index.ts';
+import { createAccountSettings } from './commands/index.ts';
+import { createSecrets, redactor } from './security/index.ts';
 import { createStore } from './store/index.ts';
 import { systemClock } from './util/clock.ts';
 import { createIdGen } from './util/id-gen.ts';
@@ -27,9 +28,13 @@ const NO_OP_RUNNERS: Runners = {
 export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise<Running> {
   ensureDataDir(config.dataDir);
   const db = open(config.dbPath);
+  // Registers every stored secret with the redactor before anything can log or emit.
+  const secrets = createSecrets({ db, clock: systemClock, redactor });
   const store = createStore({ db, clock: systemClock, redactor });
   const ids = createIdGen(systemClock);
-  const app = createApp({ store, redactor, ids, webRoot });
+  // settings.modelDeps() is what agent runs pass to the LLM registry (keys read at call time).
+  const settings = createAccountSettings({ store, db, secrets });
+  const app = createApp({ store, redactor, ids, webRoot, settings });
   const scheduler = createScheduler({
     store,
     clock: systemClock,
