@@ -1,10 +1,17 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { exec } from '../util/exec.ts';
-import { AGENT_IDENTITY, GIT_SAFETY_FLAGS, createGit, gitVersionOk, type Git } from './index.ts';
+import {
+  AGENT_IDENTITY,
+  GIT_SAFETY_FLAGS,
+  MainMovedError,
+  createGit,
+  gitVersionOk,
+  type Git,
+} from './index.ts';
 
 type Call = { cmd: string; argv: readonly string[] };
 
@@ -271,5 +278,133 @@ describe('readFileAtMain', () => {
   it('returns null for a missing file', async () => {
     await git.initRepo('p1');
     expect(await git.readFileAtMain('p1', 'nope.txt')).toBeNull();
+  });
+});
+
+describe('integrate and advanceMain', () => {
+  beforeEach(async () => {
+    await git.initRepo('p1');
+  });
+
+  /** Simulates an attempt: a worktree on its own branch with `files` written and committed. */
+  async function attempt(
+    runId: string,
+    files: Record<string, string>,
+  ): Promise<{ branch: string; baseSha: string; dir: string }> {
+    const wt = await git.addWorktree('p1', runId);
+    for (const [path, content] of Object.entries(files)) {
+      await mkdir(dirname(join(wt.dir, path)), { recursive: true });
+      await writeFile(join(wt.dir, path), content);
+    }
+    await git.commitAll(wt.dir, `work ${runId}`);
+    if (wt.branch === null) throw new Error('expected a branch');
+    return { branch: wt.branch, baseSha: wt.baseSha, dir: wt.dir };
+  }
+  const subjects = async (): Promise<string[]> =>
+    (await rawGit(['--git-dir', repoOf('p1'), 'log', '--format=%s', 'main'])).split('\n');
+
+  it('fast path: main == baseSha gives one commit with the attempt tree on top of main', async () => {
+    const a = await attempt('r1', { 'a.txt': 'a\n' });
+    await writeFile(join(a.dir, 'b.txt'), 'b\n');
+    await git.commitAll(a.dir, 'second commit on the branch');
+
+    const r = await git.integrate('p1', a.branch, a.baseSha, '#1 Add a');
+
+    expect(r.kind).toBe('fast');
+    if (r.kind !== 'fast') return;
+    expect(r.tree).toBe(await rawGit(['--git-dir', repoOf('p1'), 'rev-parse', `${a.branch}^{tree}`]));
+    expect(await rawGit(['--git-dir', repoOf('p1'), 'rev-parse', `${r.commitSha}^{tree}`])).toBe(
+      r.tree,
+    );
+    expect(await rawGit(['--git-dir', repoOf('p1'), 'rev-parse', `${r.commitSha}^`])).toBe(
+      a.baseSha,
+    );
+    // integrate never moves main by itself
+    expect(await git.mainSha('p1')).toBe(a.baseSha);
+
+    await git.advanceMain('p1', r.commitSha, a.baseSha);
+    expect(await git.mainSha('p1')).toBe(r.commitSha);
+    expect(await subjects()).toEqual(['#1 Add a', 'Initial commit']);
+    expect(await git.readFileAtMain('p1', 'b.txt')).toBe('b\n');
+  });
+
+  it('clean concurrent merge: returns a merged commit on main and a worktree checked out at it', async () => {
+    const a = await attempt('r1', { 'a.txt': 'a\n' });
+    const b = await attempt('r2', { 'src/b.txt': 'b\n' });
+    const ra = await git.integrate('p1', a.branch, a.baseSha, '#1 Add a');
+    if (ra.kind !== 'fast') throw new Error(`expected fast, got ${ra.kind}`);
+    await git.advanceMain('p1', ra.commitSha, a.baseSha);
+    const mainBefore = await git.mainSha('p1');
+
+    const rb = await git.integrate('p1', b.branch, b.baseSha, '#2 Add b');
+
+    expect(rb.kind).toBe('merged');
+    if (rb.kind !== 'merged') return;
+    expect(await rawGit(['--git-dir', repoOf('p1'), 'rev-parse', `${rb.commitSha}^`])).toBe(
+      mainBefore,
+    );
+    expect(await rawGit(['rev-parse', 'HEAD'], rb.dir)).toBe(rb.commitSha);
+    expect(await readFile(join(rb.dir, 'a.txt'), 'utf8')).toBe('a\n');
+    expect(await readFile(join(rb.dir, 'src', 'b.txt'), 'utf8')).toBe('b\n');
+    expect(rb.dir.startsWith(join(dataDir, 'worktrees'))).toBe(true);
+    expect(await git.mainSha('p1')).toBe(mainBefore);
+
+    await git.advanceMain('p1', rb.commitSha, mainBefore);
+    await git.removeWorktree(rb.dir);
+    expect(existsSync(rb.dir)).toBe(false);
+    expect(await git.readFileAtMain('p1', 'src/b.txt')).toBe('b\n');
+  });
+
+  it('conflict: reports the conflicting paths and leaves main alone', async () => {
+    const a = await attempt('r1', { 'README.md': 'from a\n', 'same.txt': 'x\n' });
+    const b = await attempt('r2', { 'README.md': 'from b\n', 'docs/PRD.md': 'b prd\n' });
+    const ra = await git.integrate('p1', a.branch, a.baseSha, '#1 A');
+    if (ra.kind !== 'fast') throw new Error(`expected fast, got ${ra.kind}`);
+    await git.advanceMain('p1', ra.commitSha, a.baseSha);
+
+    const rb = await git.integrate('p1', b.branch, b.baseSha, '#2 B');
+
+    expect(rb).toEqual({ kind: 'conflict', paths: ['README.md'] });
+    expect(await git.mainSha('p1')).toBe(ra.commitSha);
+  });
+
+  it('advanceMain refuses with MainMovedError when main moved since expectedOld', async () => {
+    const a = await attempt('r1', { 'a.txt': 'a\n' });
+    const r = await git.integrate('p1', a.branch, a.baseSha, '#1 A');
+    if (r.kind !== 'fast') throw new Error(`expected fast, got ${r.kind}`);
+    const moved = await git.commitFilesOnMain('p1', { 'docs/PRD.md': 'new\n' }, 'prd');
+
+    const err = await git.advanceMain('p1', r.commitSha, a.baseSha).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MainMovedError);
+    expect(await git.mainSha('p1')).toBe(moved);
+  });
+
+  it('history has exactly one commit per merged issue with message "#<n> <title>"', async () => {
+    const attempts = [
+      await attempt('r1', { 'one.txt': '1\n' }),
+      await attempt('r2', { 'two.txt': '2\n' }),
+      await attempt('r3', { 'three.txt': '3\n' }),
+    ];
+    for (const [i, a] of attempts.entries()) {
+      await writeFile(join(a.dir, `extra-${String(i)}.txt`), 'more\n');
+      await git.commitAll(a.dir, 'another branch commit');
+    }
+    const titles = ['One', 'Two', 'Three'];
+    for (const [i, a] of attempts.entries()) {
+      const old = await git.mainSha('p1');
+      const r = await git.integrate('p1', a.branch, a.baseSha, `#${String(i + 1)} ${titles[i]}`);
+      if (r.kind === 'conflict') throw new Error('unexpected conflict');
+      await git.advanceMain('p1', r.commitSha, old);
+      if (r.kind === 'merged') await git.removeWorktree(r.dir);
+    }
+
+    expect(await subjects()).toEqual(['#3 Three', '#2 Two', '#1 One', 'Initial commit']);
+    expect(await commitCount('p1')).toBe('4');
+    const merges = await rawGit(['--git-dir', repoOf('p1'), 'rev-list', '--merges', 'main']);
+    expect(merges).toBe('');
+    for (const f of ['one.txt', 'two.txt', 'three.txt', 'extra-0.txt', 'extra-2.txt']) {
+      expect(await git.readFileAtMain('p1', f)).not.toBeNull();
+    }
   });
 });
