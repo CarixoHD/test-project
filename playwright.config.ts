@@ -17,6 +17,9 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   forbidOnly: true,
+  // Generous: each test drives real agent runs (fake LLM) and git merges, and CI machines are slow.
+  timeout: 240_000,
+  expect: { timeout: 15_000 },
   reporter: 'list',
   use: {
     baseURL: `http://127.0.0.1:${String(PORT)}`,
