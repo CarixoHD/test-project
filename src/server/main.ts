@@ -1,5 +1,6 @@
 import { join, resolve } from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
+import type { Hono } from 'hono';
 import { ensureDataDir, parseConfig, type Config } from './config.ts';
 import { open } from './db/index.ts';
 import { createGit } from './git/index.ts';
@@ -7,12 +8,18 @@ import { createApp } from './http/index.ts';
 import { inboxHook } from './notify/index.ts';
 import { createScheduler, type Runners } from './scheduler/index.ts';
 import { createAccountSettings, createSparring, type SparTurnRunner } from './commands/index.ts';
-import type { FakeScript } from './llm/index.ts';
-import { createOrchestrator, sparTurn, type OrchestratorDeps } from './pipeline/index.ts';
+import type { FakeScript, ModelDeps } from './llm/index.ts';
+import { DEMO_RUNTIME_SCRIPT, demoFake } from './demo/index.ts';
+import {
+  createOrchestrator,
+  runAttempt,
+  sparTurn,
+  type OrchestratorDeps,
+} from './pipeline/index.ts';
 import { selectRuntime } from './sandbox/index.ts';
 import { createSecrets, redactor } from './security/index.ts';
 import { createStore, type Store } from './store/index.ts';
-import { systemClock } from './util/clock.ts';
+import { systemClock, type Clock } from './util/clock.ts';
 import { createIdGen } from './util/id-gen.ts';
 
 const DEFAULT_WEB_ROOT = resolve(import.meta.dirname, '../../dist/web');
@@ -22,12 +29,18 @@ export interface Running {
   address: { host: string; port: number };
   /** The live store (integration tests commit through it to drive hooks and SSE). */
   store: Store;
+  /** The HTTP app (integration tests drive it through `app.request`). */
+  app: Hono;
   close(): Promise<void>;
 }
 
 export interface StartOptions {
-  /** Script for the `fake` model provider (integration tests; demo scripts are #31). */
+  /** Script for the `fake` model provider; replaces the demo scripts (integration tests). */
   fakeScript?: FakeScript;
+  /** Time source for the whole server (tests pass a FakeClock); defaults to the system clock. */
+  clock?: Clock;
+  /** Scheduler tick interval (tests shorten it). */
+  schedulerTickMs?: number;
   /** Wraps each sparring turn (tests hold a turn in flight to observe shutdown). */
   wrapSparTurn?: (run: SparTurnRunner) => SparTurnRunner;
   /** Orchestrator retry policy (tests shorten or lengthen the backoff). */
@@ -36,22 +49,20 @@ export interface StartOptions {
   wrapRunOrchestrator?: (run: Runners['runOrchestrator']) => Runners['runOrchestrator'];
 }
 
-/** Placeholder until the implementer/reviewer pipeline is wired in (#28/#31): does nothing. */
-const NO_OP_RUN_ATTEMPT: Runners['runAttempt'] = () => Promise.resolve();
-
 /** Composition root: config → data dir → DB → store → app → serve. */
 export async function start(
   config: Config,
   webRoot = DEFAULT_WEB_ROOT,
   options: StartOptions = {},
 ): Promise<Running> {
+  const clock = options.clock ?? systemClock;
   ensureDataDir(config.dataDir);
   const db = open(config.dbPath);
   // Registers every stored secret with the redactor before anything can log or emit.
-  const secrets = createSecrets({ db, clock: systemClock, redactor });
-  const ids = createIdGen(systemClock);
+  const secrets = createSecrets({ db, clock, redactor });
+  const ids = createIdGen(clock);
   // inboxHook turns owner-relevant events into inbox.created in the same commit (§4.2).
-  const store = createStore({ db, clock: systemClock, redactor, hooks: [inboxHook({ ids })] });
+  const store = createStore({ db, clock, redactor, hooks: [inboxHook({ ids })] });
   const git = createGit({ dataDir: config.dataDir });
   // settings.modelDeps() is what agent runs pass to the LLM registry (keys read at call time).
   const settings = createAccountSettings({ store, db, secrets });
@@ -60,12 +71,17 @@ export async function start(
     wrapSparTurn = (run) => run,
     wrapRunOrchestrator = (run) => run,
     orchestratorBackoff,
+    schedulerTickMs,
   } = options;
   const logsDir = join(config.dataDir, 'logs');
-  const modelDeps = () => ({
-    ...settings.modelDeps(),
-    ...(fakeScript === undefined ? {} : { fake: { script: fakeScript } }),
-  });
+  // Demo mode answers every role from its default script (src/server/demo) unless a test
+  // passes one; the fake provider is only used when no real model is configured.
+  const demo = config.demo ? demoFake(store) : undefined;
+  const modelDeps = (): ModelDeps => {
+    const deps = settings.modelDeps();
+    if (fakeScript !== undefined) return { ...deps, fake: { script: fakeScript } };
+    return demo === undefined ? deps : { ...deps, fake: demo };
+  };
   const sparring = createSparring({
     store,
     ids,
@@ -74,7 +90,7 @@ export async function start(
         {
           store,
           ids,
-          clock: systemClock,
+          clock,
           redactor,
           logsDir,
           modelDeps: modelDeps(),
@@ -89,13 +105,13 @@ export async function start(
     },
   });
   const app = createApp({ store, ids, git, redactor, webRoot, settings, sparring });
-  const runtime = selectRuntime(config);
+  const runtime = selectRuntime(config, config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {});
   // The orchestrator merges under the scheduler's lock and the scheduler runs the orchestrator:
   // the lock closure reads `scheduler` only during a run, after it has been created below.
   const orchestrator = createOrchestrator({
     store,
     ids,
-    clock: systemClock,
+    clock,
     redactor,
     logsDir,
     git,
@@ -110,12 +126,33 @@ export async function start(
   });
   const scheduler = createScheduler({
     store,
-    clock: systemClock,
+    clock,
     ids,
     runners: {
       runOrchestrator: wrapRunOrchestrator(orchestrator.runOrchestrator),
-      runAttempt: NO_OP_RUN_ATTEMPT,
+      runAttempt: (issueId, run) =>
+        runAttempt(
+          {
+            store,
+            ids,
+            clock,
+            redactor,
+            logsDir,
+            artifactsDir: join(config.dataDir, 'artifacts'),
+            git,
+            runtime,
+            // A getter, as for the orchestrator: keys and provider settings at call time.
+            get modelDeps() {
+              return modelDeps();
+            },
+            withMergeLock: (productId, fn) => scheduler.withMergeLock(productId, fn),
+            demo: config.demo,
+          },
+          issueId,
+          run,
+        ),
     },
+    ...(schedulerTickMs === undefined ? {} : { tickMs: schedulerTickMs }),
     orchestratorNotBefore: orchestrator.orchestratorNotBefore,
     onError: (err) => {
       console.error(redactor.redact(`scheduler run failed: ${String(err)}`));
@@ -136,6 +173,7 @@ export async function start(
   return {
     address,
     store,
+    app,
     close: async () => {
       // First: live orchestrator runs see shouldStop() and settle before anything closes.
       await scheduler.stop();
