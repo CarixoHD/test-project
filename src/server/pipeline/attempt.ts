@@ -7,7 +7,7 @@ import {
   type ProjectConfig,
   type ReviewResult,
 } from '../../shared/agent-results.ts';
-import type { IssueId, ProductId } from '../../shared/ids.ts';
+import type { AgentId, IssueId, ProductId } from '../../shared/ids.ts';
 import type { Role } from '../../shared/models.ts';
 import type { IssueState } from '../../shared/state.ts';
 import { toolsForRole, type AgentLimits, type AgentResult } from '../agents/index.ts';
@@ -22,9 +22,11 @@ import {
   startAttempt,
   type AttemptOutcome,
   type AttemptRef,
+  type QuestionDraft,
 } from './attempt-events.ts';
 import {
   agentFailed,
+  asked,
   counted,
   discarded,
   fail,
@@ -46,7 +48,8 @@ import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
 // none) → squash merge to main under the merge lock. Counted failures (check_failed, rejected,
 // conflict, empty diff, agent error) store their feedback for the next attempt and count against
 // maxAttempts. Interruptions (pause, budget, shutdown, rate limit, login, an owner edit) end it
-// as `interrupted`, not counted; an owner cancel discards it. Both stop after the current step.
+// as `interrupted`, not counted, and so does an implementer question, which also holds the issue
+// until the owner answers; an owner cancel discards it. Both stop after the current step.
 // Any other outcome is an uncounted error and the issue goes back to open later.
 
 export const DEFAULT_ATTEMPT_LIMITS: Record<'implementer' | 'reviewer', AgentLimits> = {
@@ -152,6 +155,7 @@ async function attempt(ctx: Ctx): Promise<Ended> {
   recordStep(ctx, 'implement');
   const impl = await implement(ctx, issue, product.name, project);
   if (!impl.ok) return agentFailed(ctx, impl);
+  if (impl.value !== null) return isCancelled(ctx) ? discarded() : asked(impl.value);
   if (stopRequested(ctx)) return stopped(ctx, 'the run was stopped after the implementer');
 
   const commit = await ctx.deps.git.commitAll(ctx.wt.dir, mergeMessage(issue));
@@ -191,12 +195,13 @@ async function attempt(ctx: Ctx): Promise<Ended> {
 
 type Check<T> = { ok: true; value: T } | Failed;
 
+/** The implementer's work is done (null) or it asked the owner a question (flow 4.3). */
 async function implement(
   ctx: Ctx,
   issue: IssueState,
   productName: string,
   project: ProjectConfig,
-): Promise<Check<null>> {
+): Promise<Check<QuestionDraft | null>> {
   const { instructions, prompt } = await implementerPrompt({
     store: ctx.deps.store,
     issue,
@@ -212,12 +217,13 @@ async function implement(
     prompt,
     schema: ImplResultSchema,
     runId: ctx.run.runId,
+    waitsForOwner: (r) => r.question !== undefined,
   });
   if (!result.ok) return result;
-  if (result.value.question !== undefined) {
-    return { ok: false, reason: `the implementer asked: ${result.value.question}` };
-  }
-  return { ok: true, value: null };
+  const text = result.value.question;
+  if (text === undefined) return { ok: true, value: null };
+  const question = { id: ctx.deps.ids.next('question'), agentId: result.agentId, text };
+  return { ok: true, value: question };
 }
 
 async function reviewChange(
@@ -255,8 +261,9 @@ async function runAgentIn<T>(
     instructions: string;
     prompt: string;
     schema: ZodType<T>;
+    waitsForOwner?: (result: T) => boolean;
   },
-): Promise<Check<T>> {
+): Promise<{ ok: true; value: T; agentId: AgentId } | Failed> {
   const { deps } = ctx;
   const resolved = resolveModel(deps.store, ctx.productId, role, { demo: deps.demo === true });
   if (!resolved.ok) return resolved;
@@ -281,7 +288,7 @@ async function runAgentIn<T>(
   });
   ctx.sandboxes.add(sandbox);
   try {
-    const { result } = await runRecordedAgent(deps, {
+    const { agentId, result } = await runRecordedAgent(deps, {
       productId: ctx.productId,
       issueId: ctx.issueId,
       attemptId: ctx.attemptId,
@@ -290,6 +297,7 @@ async function runAgentIn<T>(
       instructions: o.instructions,
       prompt: o.prompt,
       schema: o.schema,
+      ...(o.waitsForOwner === undefined ? {} : { waitsForOwner: o.waitsForOwner }),
       sandbox,
       tools: toolsForRole(role).map((t) => t.name),
       limits: deps.limits?.[role] ?? DEFAULT_ATTEMPT_LIMITS[role],
@@ -297,7 +305,7 @@ async function runAgentIn<T>(
       // Not spread: the registry reads the provider settings when the model is created.
       modelDeps: deps.modelDeps,
     });
-    if (result.kind === 'ok') return { ok: true, value: result.result };
+    if (result.kind === 'ok') return { ok: true, value: result.result, agentId };
     const reason = `${role}: ${agentFailure(result)}`;
     if (result.kind === 'error') return { ok: false, reason, counted: true };
     return { ok: false, reason, agent: result };
