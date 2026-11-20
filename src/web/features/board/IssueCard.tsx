@@ -1,20 +1,24 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import type { IssueState } from '../../../shared/state.ts';
+import type { IssueState, UsageTotals } from '../../../shared/state.ts';
 import { Button, StatusBadge } from '../../ui/index.ts';
 import { CancelIssueDialog, EditIssueDialog, isCancellable, isEditable } from '../issues/index.ts';
 import { ISSUE_STATUS_BADGE } from '../issues/issue-status.ts';
+import { issueCostText } from '../products/cost-format.ts';
 
 export interface IssueCardProps {
   issue: IssueState;
   /** Dependencies that are not completed yet. */
   blockedBy: readonly IssueState[];
   maxAttempts: number;
+  /** The issue's usage totals from ClientState; undefined before any usage. */
+  usage?: UsageTotals | undefined;
 }
 
 /** One issue on the board. The title links to the issue detail; status is always in words. */
-export function IssueCard({ issue, blockedBy, maxAttempts }: IssueCardProps) {
+export function IssueCard({ issue, blockedBy, maxAttempts, usage }: IssueCardProps) {
   const badge = ISSUE_STATUS_BADGE[issue.status];
+  const cost = issueCostText(usage);
   return (
     <li className="issue-card">
       <Link className="issue-card__title" to={`/products/${issue.productId}/issues/${issue.id}`}>
@@ -31,6 +35,7 @@ export function IssueCard({ issue, blockedBy, maxAttempts }: IssueCardProps) {
         <span>
           Attempt {issue.attemptCount} of {maxAttempts}
         </span>
+        {cost !== null && <span>Cost: {cost}</span>}
       </p>
       {blockedBy.length > 0 && (
         <p className="issue-card__blocked">
