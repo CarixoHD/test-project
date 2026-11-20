@@ -132,7 +132,9 @@ function buildTools<T>(run: Run<T>, wantsSearch: boolean): ToolSet {
       tools[agentTool.name] = dynamicTool({
         description: agentTool.description,
         inputSchema: agentTool.inputSchema,
-        execute: (input) => agentTool.execute(input, sandbox),
+        // The step's abort signal (run wall clock + step timeout) cancels the sandbox exec.
+        execute: (input, { abortSignal }) =>
+          agentTool.execute(input, sandbox, { signal: abortSignal }),
       });
     }
   }

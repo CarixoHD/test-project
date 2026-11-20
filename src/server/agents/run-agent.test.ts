@@ -297,6 +297,36 @@ describe('runAgent with the API backend', () => {
     expect(result.kind === 'error' && result.message).toMatch(/time limit/i);
   });
 
+  it('passes its abort signal into tool execution, cancelling a hanging run', async () => {
+    vi.useFakeTimers();
+    const signals: (AbortSignal | undefined)[] = [];
+    const hanging: Sandbox = {
+      name: sandbox.name,
+      close: () => sandbox.close(),
+      exec: (argv, o) => {
+        signals.push(o.signal);
+        // Runs until aborted; without the signal this call would never return.
+        return new Promise((resolve, reject) => {
+          o.signal?.addEventListener('abort', () => {
+            sandbox.exec(argv, o).then(resolve, reject);
+          });
+        });
+      },
+    };
+    const { spec: s } = spec(
+      [{ toolCalls: [{ name: 'run', input: { command: 'sleep 3600' } }] }, { hang: true }],
+      { sandbox: hanging, limits: { maxSteps: 5, wallClockMs: 5_000 } },
+    );
+
+    const pending = runAgent(s);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const result = await pending;
+    expect(result).toMatchObject({ kind: 'error', transient: false });
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
   it('checks the wall clock between steps', async () => {
     const { spec: s, rec } = spec([{ text: 'slow step' }, { toolCalls: [finish('late')] }], {
       limits: { maxSteps: 5, wallClockMs: 5_000 },
