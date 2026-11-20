@@ -283,7 +283,7 @@ describe('runAttempt: feedback reaches the next attempt', () => {
 });
 
 describe('runAttempt: feedback is scoped to the issue rev', () => {
-  it('a retry at the same rev says (none) only before the first attempt', async () => {
+  it("a retry at the same rev still gets the previous attempt's feedback", async () => {
     const h = await setup({ check: (n) => (n === 0 ? failingCheck('red at rev 1\n')() : PASSING) });
     const id = h.addIssue('Scaffold');
 
