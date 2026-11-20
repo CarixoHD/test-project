@@ -124,7 +124,7 @@ describe('ProductsPage', () => {
     expect(item).toHaveTextContent('Sparring');
   });
 
-  it('creates a product with the keyboard and opens its page once it arrives', async () => {
+  it('creates a product with the keyboard and opens its Spec tab for sparring', async () => {
     const user = userEvent.setup();
     const router = await renderApp();
     screen.getByText('No products yet.');
@@ -141,7 +141,7 @@ describe('ProductsPage', () => {
     expect(posts).toEqual([
       { url: '/api/products', body: { name: 'Todo app', idea: 'Track my todos' } },
     ]);
-    await vi.waitFor(() => expect(router.state.location.pathname).toBe('/products/p-new'));
+    await vi.waitFor(() => expect(router.state.location.pathname).toBe('/products/p-new/spec'));
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Opening product…' }),
     ).toBeInTheDocument();
@@ -149,6 +149,7 @@ describe('ProductsPage', () => {
     act(() => stream().send(productCreated(1, 'p-new', 'Todo app')));
     // The re-render can land after the router's navigation transition settles.
     expect(await screen.findByRole('heading', { level: 1, name: 'Todo app' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Spec' })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('shows validation messages next to the fields and does not submit', async () => {

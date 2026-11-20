@@ -37,7 +37,11 @@ const PREVIEW_PROJECT = {
   preview: { command: ['npm', 'start'], port: 3000 },
 };
 
-function product(pause?: 'owner' | 'budget', project?: object): ProductState {
+function product(
+  pause?: 'owner' | 'budget',
+  project?: object,
+  phase: 'sparring' | 'building' | 'complete' = 'building',
+): ProductState {
   const events = [
     ev(1, 'product.created', {
       name: 'Todo app',
@@ -48,7 +52,8 @@ function product(pause?: 'owner' | 'budget', project?: object): ProductState {
       models: {},
       gitRemote: null,
     }),
-    ...(pause === undefined ? [] : [ev(2, 'product.paused', { reason: pause })]),
+    ...(phase === 'sparring' ? [] : [ev(2, 'product.phase_changed', { phase })]),
+    ...(pause === undefined ? [] : [ev(4, 'product.paused', { reason: pause })]),
     ...(project === undefined ? [] : [ev(3, 'product.settings_changed', { project })]),
   ];
   const p = events.reduce(reduce, emptyState).products[P];
@@ -95,6 +100,22 @@ describe('BuildControls', () => {
     expect(button).toHaveFocus();
     await user.keyboard('{Enter}');
     expect(posts).toEqual(['/api/products/p1/pause']);
+  });
+
+  it('says the build starts after handoff and offers no Pause while sparring', () => {
+    render(<BuildControls product={product(undefined, undefined, 'sparring')} />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('Build: Starts after handoff');
+    expect(screen.queryByText('Running')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pause build' })).not.toBeInTheDocument();
+  });
+
+  it('says Complete, not Running, for a completed product and still lets the owner pause', () => {
+    render(<BuildControls product={product(undefined, undefined, 'complete')} />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('Build: Complete');
+    expect(screen.queryByText('Running')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Pause build' })).toBeInTheDocument();
   });
 
   it('toggles to Resume when the product is paused by the owner', async () => {
