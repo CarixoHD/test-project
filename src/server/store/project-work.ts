@@ -30,10 +30,11 @@ function issueCreated(db: Db, e: EventOf<'issue.created'>): void {
 }
 
 function issueEdited(db: Db, e: EventOf<'issue.edited'>): void {
-  const { rev, title, body, dependsOn } = e.data;
+  const { rev, title, body, dependsOn, priority } = e.data;
   const set: IssueRow = { rev, updatedAt: e.ts };
   if (title !== undefined) set.title = title;
   if (body !== undefined) set.body = body;
+  if (priority !== undefined) set.priority = priority;
   const changed = db.update(issues).set(set).where(eq(issues.id, e.entityId)).run().changes;
   if (changed > 0 && dependsOn !== undefined) replaceDeps(db, e.entityId, dependsOn);
 }

@@ -21,6 +21,7 @@ function issueEdited(i: IssueState, d: EventOf<'issue.edited'>['data']): IssueSt
   if (d.title !== undefined) next.title = d.title;
   if (d.body !== undefined) next.body = d.body;
   if (d.dependsOn !== undefined) next.dependsOn = d.dependsOn;
+  if (d.priority !== undefined) next.priority = d.priority;
   return next;
 }
 

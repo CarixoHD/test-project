@@ -497,6 +497,31 @@ describe('event catalogue', () => {
   });
 });
 
+describe('issue.edited priority', () => {
+  const edited = (data: Record<string, unknown>) => ({
+    seq: 7,
+    ts: T0,
+    type: 'issue.edited',
+    productId: P,
+    entityId: I,
+    v: 1,
+    data,
+  });
+
+  it('keeps an integer priority', () => {
+    const raw = edited({ rev: 2, priority: -1 });
+    expect(parseEvent(raw)).toEqual(raw);
+  });
+
+  it('still parses events written before priority was editable', () => {
+    expect(parseEvent(edited({ rev: 2, title: 'Old' }))?.data).toEqual({ rev: 2, title: 'Old' });
+  });
+
+  it('rejects a fractional priority', () => {
+    expect(EventSchema.safeParse(edited({ rev: 2, priority: 1.5 })).success).toBe(false);
+  });
+});
+
 describe('event envelope', () => {
   const issueCreated = SAMPLES['issue.created'].valid;
   const backendCleared = SAMPLES['backend.cleared'].valid;
