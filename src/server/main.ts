@@ -91,6 +91,10 @@ export async function start(
     if (fakeScript !== undefined) return { ...deps, fake: { script: fakeScript } };
     return demo === undefined ? deps : { ...deps, fake: demo };
   };
+  const runtime = selectRuntime(config, {
+    ...(config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {}),
+    ...(options.dockerCommand === undefined ? {} : { docker: options.dockerCommand }),
+  });
   const sparring = createSparring({
     store,
     ids,
@@ -105,6 +109,9 @@ export async function start(
           afterUsage,
           modelDeps: modelDeps(),
           demo: config.demo,
+          // Claude Code sparring runs in a container on a scratch worktree.
+          runtime,
+          dataDir: config.dataDir,
         },
         productId,
         message,
@@ -113,10 +120,6 @@ export async function start(
     onError: (err) => {
       console.error(redactor.redact(`sparring turn failed: ${String(err)}`));
     },
-  });
-  const runtime = selectRuntime(config, {
-    ...(config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {}),
-    ...(options.dockerCommand === undefined ? {} : { docker: options.dockerCommand }),
   });
   const previews = createPreviews({
     store,

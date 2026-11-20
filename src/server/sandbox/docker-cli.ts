@@ -308,7 +308,9 @@ export class DockerCliRuntime implements ContainerRuntime {
     const pidFile = `/tmp/vibecode-exec-${randomUUID()}.pid`;
     const client = new AbortController();
     let grace: NodeJS.Timeout | undefined;
+    let stopped = false;
     const onAbort = (): void => {
+      stopped = true;
       void this.#signalInContainer(name, pidFile, SIGNAL_NAMES[killSignal]);
       grace = setTimeout(() => {
         void this.#signalInContainer(name, pidFile, 'KILL');
@@ -322,7 +324,7 @@ export class DockerCliRuntime implements ContainerRuntime {
         { ...o, signal: client.signal },
         'SIGKILL',
       );
-      return { ...r, aborted: r.aborted || o.signal?.aborted === true };
+      return { ...r, aborted: r.aborted || stopped };
     } finally {
       clearTimeout(grace);
       o.signal?.removeEventListener('abort', onAbort);
