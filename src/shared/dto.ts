@@ -137,6 +137,25 @@ const ApiKeySchema = z
   .max(4096)
   .regex(/^\S+$/, 'An API key must not contain whitespace');
 
+/** `PUT /api/products/:id/git-token`: the git remote's access token (write-only); null removes it. */
+export const GitTokenUpdateRequestSchema = z.strictObject({
+  token: z
+    .string()
+    .min(API_KEY_MIN_LENGTH, `A token must be at least ${API_KEY_MIN_LENGTH} characters`)
+    .max(4096, 'A token must be at most 4096 characters')
+    .regex(/^\S+$/, 'A token must not contain whitespace')
+    .nullable(),
+});
+export type GitTokenUpdateRequest = z.infer<typeof GitTokenUpdateRequestSchema>;
+
+/** `GET|PUT /api/products/:id/git-token`: never the token, at most its last 4 characters. */
+export const GitTokenViewSchema = z.strictObject({
+  set: z.boolean(),
+  /** null when no token is set or it is too short to show any of it. */
+  last4: z.string().length(4).nullable(),
+});
+export type GitTokenView = z.infer<typeof GitTokenViewSchema>;
+
 /** `PUT /api/settings`: every section optional; keys are set (string) or cleared (null). */
 export const SettingsUpdateRequestSchema = z
   .strictObject({

@@ -3,6 +3,7 @@ import {
   AddIssueResponseSchema,
   CreateProductResponseSchema,
   EditIssueResponseSchema,
+  GitTokenViewSchema,
   OkResponseSchema,
   SessionResponseSchema,
   SettingsResponseSchema,
@@ -16,6 +17,7 @@ import {
   type CreateProductResponse,
   type EditIssueRequest,
   type EditIssueResponse,
+  type GitTokenView,
   type OkResponse,
   type PasswordChangeRequest,
   type ProductSettingsUpdateRequest,
@@ -215,6 +217,28 @@ export function updateProductSettings(
     method: 'PATCH',
     body,
     schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Whether the product's git remote token is set; never the token, at most its last 4 chars. */
+export function getGitToken(productId: string, signal?: AbortSignal): Promise<GitTokenView> {
+  return request(`/api/products/${encodeURIComponent(productId)}/git-token`, {
+    schema: GitTokenViewSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Sets (string) or removes (null) the product's git remote token (write-only). */
+export function updateGitToken(
+  productId: string,
+  token: string | null,
+  signal?: AbortSignal,
+): Promise<GitTokenView> {
+  return request(`/api/products/${encodeURIComponent(productId)}/git-token`, {
+    method: 'PUT',
+    body: { token },
+    schema: GitTokenViewSchema,
     ...(signal ? { signal } : {}),
   });
 }
