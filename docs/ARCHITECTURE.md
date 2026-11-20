@@ -29,7 +29,7 @@ Design rules:
 
 | Concern | Choice |
 |---|---|
-| Runtime | Node 22 (≥22.18). TypeScript 6.0 (`erasableSyntaxOnly`). The server runs `.ts` directly through Node type stripping, with no server build step. ESM only. |
+| Runtime | Node 22 (≥22.18). TypeScript 6.0 (`erasableSyntaxOnly`). The server runs `.ts` directly through Node type stripping, with no server build step and no loader fallback (ADR 12). This needs an official Node build with type stripping (`process.features.typescript`); distro builds such as the Debian/Ubuntu apt `nodejs` package may lack it. `scripts/preflight.mjs` (plain JS) checks this first: `npm` scripts that run `.ts` (`start`, `set-password`, `docker:images`, `docker:prune`) prefix it, and `dev.mjs` calls its `nodeProblem()` before spawning the API. `.nvmrc` pins 22. ESM only. |
 | Package layout | One npm package with `src/shared`, `src/server` and `src/web`, plus `package-lock.json` |
 | HTTP / SSE | Hono 4 + @hono/node-server (`streamSSE`) |
 | Validation | zod 4 (API bodies, events, agent results, `.vibecode/project.json`) |
@@ -85,7 +85,7 @@ src/
     scene/           ScenePanel.tsx, Scene3D.tsx (lazy), scene-model.ts (pure mapping), figures.ts (primitive figures/pieces; assets/ + LICENSE.md once GLBs are vendored)
     ui/              shared accessible primitives (Button, Dialog, Markdown, Tabs, …)
 docker/              base.Dockerfile (vibecode/base:<hash>), claude-code.Dockerfile
-scripts/             dev.mjs, update-prices.mjs, set-password.ts, build-images.ts (`npm run -s docker:images`), prune-images.ts (`npm run -s docker:prune`)
+scripts/             preflight.mjs, dev.mjs, update-prices.mjs, set-password.ts, build-images.ts (`npm run -s docker:images`), prune-images.ts (`npm run -s docker:prune`)
 tests/
   e2e/               Playwright (demo mode: fake LLM + fake runtime)
   docker/            Vitest suite needing a real Docker daemon
@@ -700,7 +700,7 @@ The harness runs these commands on every change, so the scaffold issue MUST defi
 | `test:docker` | `vitest run --project docker` |
 | `dev` | `node scripts/dev.mjs`. It reads `$PORT` (default 5173), starts the API with `node --watch src/server/main.ts` on 127.0.0.1:`$PORT+1` with `VIBECODE_DEMO=1 VIBECODE_FAKE_DOCKER=1 VIBECODE_DATA_DIR=.data/dev`, and starts Vite on 0.0.0.0:`$PORT` with `/api` proxied (SSE buffering off). |
 | `build` | `vite build` (SPA → `dist/web`; the server is not built) |
-| `start` | `node src/server/main.ts` |
+| `start` | `node scripts/preflight.mjs && node src/server/main.ts` |
 | `db:generate` | `drizzle-kit generate` |
 
 Additional requirements:
@@ -712,6 +712,8 @@ Additional requirements:
 ## 9. Running locally
 
 Requires Node ≥ 22.18, git ≥ 2.38, and Docker Engine or Desktop (only for real builds and the docker suite).
+
+Node must be an official build with native type stripping (nodejs.org, nvm/fnm with the repo `.nvmrc`, or NodeSource). Distro builds may lack it even on 22.18+: the Debian/Ubuntu apt `nodejs` package ships without amaro, so `process.features.typescript` is false and every `.ts` entry point fails with `ERR_UNKNOWN_FILE_EXTENSION`; `NODE_OPTIONS=--no-experimental-strip-types` has the same effect. The `npm` scripts check this first (`scripts/preflight.mjs`, stderr only, exit 1) and name the Node binary and version in use.
 
 ```
 npm ci

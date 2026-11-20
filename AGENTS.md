@@ -11,7 +11,7 @@ src/shared/   pure TS shared by server + web (events, reduce, issue state machin
 src/server/   Node: db/ store/ http/ commands/ scheduler/ pipeline/ agents/ llm/ sandbox/ git/ security/ recovery/ notify/ util/
 src/web/      React SPA: state/ features/ scene/ ui/
 docker/       vibecode/base and vibecode/claude-code images
-scripts/      dev.mjs, update-prices.mjs, set-password.ts
+scripts/      preflight.mjs, dev.mjs, update-prices.mjs, set-password.ts
 tests/e2e/    Playwright (demo mode)      tests/docker/  needs a real Docker daemon
 ```
 Unit tests sit next to the code: `foo.ts` → `foo.test.ts`, and `Board.tsx` → `Board.test.tsx`.
@@ -65,7 +65,7 @@ Before you finish, run `npm run typecheck && npm run lint && npm test`. All thre
 - Prompts for agents live in `src/server/pipeline/prompts/*.md`, not inline strings.
 
 ## Environment
-- Node ≥ 22.18 (runs `.ts` natively) and git ≥ 2.38. Docker is optional for `npm test`.
+- Node ≥ 22.18 (runs `.ts` natively) and git ≥ 2.38. Node must be an official build with type stripping (`.nvmrc`: 22); distro builds such as Debian/Ubuntu apt `nodejs` may lack it. `npm` scripts check this first via `scripts/preflight.mjs`; no tsx or other loader (ADR 12). Docker is optional for `npm test`.
 - Env vars: `VIBECODE_DATA_DIR`, `VIBECODE_HOST` (default 127.0.0.1), `VIBECODE_PORT` (default 4317), `VIBECODE_DEMO=1`, `VIBECODE_FAKE_DOCKER=1`.
 - Never commit `.data/`, `data/`, `.env*` or API keys.
 
