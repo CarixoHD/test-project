@@ -287,6 +287,9 @@ handoff({store, ids, git}, productId): Promise<{ok; events}>   // flow 2; phase 
 //   product.phase_changed{building}; phase and draft are re-checked inside the commit. One handoff per product
 //   at a time (in-memory) → conflict.
 // SparRequestSchema / SavePrdDraftRequestSchema in shared/dto.ts. Spar message ids: nextSparMessageId(deps).
+pauseProduct({store, ids}, productId) → {ok; events}    // flow 5; product.paused{owner}; already paused → conflict
+resumeProduct({store, ids}, productId) → {ok; events}   // product.resumed; not paused, or budget still exhausted → conflict
+//   POST /api/products/:id/pause | resume → 200 {ok:true}. The scheduler reacts through the store bus.
 createProduct({store, ids, git}, {name, idea}): Promise<{ok:true; id: ProductId} | {ok:false; reason}>;
 // CreateProductRequestSchema (shared/dto.ts): trimmed name 1–80, idea 1–4000. git.initRepo(id) runs first,
 // then ONE commit: product.created with DEFAULT_PRODUCT_SETTINGS (budget null, maxParallel 3, maxAttempts 3,
