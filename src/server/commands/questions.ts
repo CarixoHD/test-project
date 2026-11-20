@@ -1,11 +1,33 @@
 import type { Event, EventDraft } from '../../shared/events.ts';
-import { QuestionIdSchema } from '../../shared/ids.ts';
+import { QuestionIdSchema, type IssueId } from '../../shared/ids.ts';
+import type { Queries } from '../store/index.ts';
 import type { CommandDeps } from './apply-plan.ts';
 
 // Owner command: answer an agent's question (ARCHITECTURE §6 flow 8). `question.answered`, and
 // for an issue question that still holds its issue also `issue.released`, so the scheduler picks
 // the issue up again and the next attempt's prompt carries the Q&A. An answered orchestrator
-// question is an orchestrator trigger (shared/triggers.ts).
+// question is an orchestrator trigger (shared/triggers.ts). Cancelling an issue withdraws its
+// open questions in the cancel commit; a withdrawn question can no longer be answered.
+
+/** `question.withdrawn` reason when the question's issue is cancelled. */
+export const ISSUE_CANCELLED_REASON = 'The issue was cancelled.';
+
+/**
+ * `question.withdrawn` drafts for every open (unanswered, not withdrawn) question on `issueId`,
+ * for the commit that emits its `issue.cancelled` (owner and orchestrator cancels).
+ */
+export function withdrawIssueQuestions(q: Queries, issueId: IssueId): EventDraft[] {
+  return q
+    .questionsByIssue(issueId)
+    .filter((question) => question.answer === null && question.withdrawnAt === null)
+    .map((question) => ({
+      type: 'question.withdrawn',
+      productId: question.productId,
+      entityId: question.id,
+      v: 1,
+      data: { reason: ISSUE_CANCELLED_REASON },
+    }));
+}
 
 export type AnswerQuestionResult =
   { ok: true; events: Event[] } | { ok: false; reason: string; code: 'not_found' | 'conflict' };
@@ -28,6 +50,10 @@ export function answerQuestion(
     }
     if (question.answer !== null) {
       outcome = { ok: false, code: 'conflict', reason: 'The question is already answered' };
+      return [];
+    }
+    if (question.withdrawnAt !== null) {
+      outcome = { ok: false, code: 'conflict', reason: 'The question was withdrawn' };
       return [];
     }
     const answered: EventDraft = {

@@ -119,6 +119,9 @@ export const QuestionStateSchema = z.object({
   answer: z.string().nullable(),
   createdAt: EpochMs,
   answeredAt: EpochMs.nullable(),
+  /** Set by question.withdrawn: the question will never be answered. */
+  withdrawnAt: EpochMs.nullable(),
+  withdrawnReason: z.string().nullable(),
 });
 
 export const InboxItemSchema = z.object({

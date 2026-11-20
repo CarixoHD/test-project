@@ -1,6 +1,7 @@
 import type { InboxKind } from '../../shared/domain.ts';
 import type { EventDraft } from '../../shared/events.ts';
-import type { IssueId, ProductId } from '../../shared/ids.ts';
+import type { InboxId, IssueId, ProductId, QuestionId } from '../../shared/ids.ts';
+import type { InboxItem, QuestionState } from '../../shared/state.ts';
 
 // Inbox rules (ARCHITECTURE §3 notify/): which domain events deserve the owner's attention,
 // and how the inbox item reads. Pure: names come from `lookup`, time zone from `opts`.
@@ -20,6 +21,12 @@ export interface InboxDraft {
 export interface InboxLookup {
   product(id: ProductId): { name: string } | null;
   issue(id: IssueId): { number: number; title: string } | null;
+}
+
+/** Lookups for `inboxReadsFor` (`store.q` satisfies it). */
+export interface InboxReadLookup {
+  question(id: QuestionId): QuestionState | null;
+  unreadInboxItems(productId: ProductId): InboxItem[];
 }
 
 export interface InboxRuleOptions {
@@ -61,6 +68,9 @@ function clockTime(ms: number, timeZone: string | undefined): string {
   }).format(ms);
 }
 
+const questionLink = (productId: ProductId, issueId: IssueId | null) =>
+  issueId === null ? productLink(productId) : issueLink(productId, issueId);
+
 function questionAsked(e: DraftOf<'question.asked'>, lookup: InboxLookup): InboxDraft {
   const { issueId, text } = e.data;
   const name = productName(lookup, e.productId) ?? 'the product';
@@ -70,7 +80,7 @@ function questionAsked(e: DraftOf<'question.asked'>, lookup: InboxLookup): Inbox
     title:
       issueId === null ? `Question about ${name}` : `Question on ${issueLabel(lookup, issueId)}`,
     body: text,
-    link: issueId === null ? productLink(e.productId) : issueLink(e.productId, issueId),
+    link: questionLink(e.productId, issueId),
   };
 }
 
@@ -178,4 +188,20 @@ export function inboxFor(
     default:
       return null;
   }
+}
+
+/**
+ * Unread inbox items that `event` settles, to be marked read (no new item). A withdrawn
+ * question's item is the unread `question` item with that question's link and text (items
+ * carry no question id; the title is skipped because issue titles can change).
+ */
+export function inboxReadsFor(event: EventDraft, lookup: InboxReadLookup): InboxId[] {
+  if (event.type !== 'question.withdrawn') return [];
+  const question = lookup.question(event.entityId);
+  if (question === null) return [];
+  const link = questionLink(question.productId, question.issueId);
+  return lookup
+    .unreadInboxItems(question.productId)
+    .filter((i) => i.kind === 'question' && i.link === link && i.body === question.text)
+    .map((i) => i.id);
 }

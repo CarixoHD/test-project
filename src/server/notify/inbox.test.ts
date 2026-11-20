@@ -355,3 +355,48 @@ describe('POST /api/inbox/:id/read', () => {
     });
   });
 });
+
+describe('inbox hook for question.withdrawn', () => {
+  const asked = (id: string, text: string): EventDraft => ({
+    type: 'question.asked',
+    productId: P,
+    entityId: QuestionIdSchema.parse(id),
+    v: 1,
+    data: { target: 'issue', issueId: I, agentId: null, text },
+  });
+  const withdrawn = (id: string): EventDraft => ({
+    type: 'question.withdrawn',
+    productId: P,
+    entityId: QuestionIdSchema.parse(id),
+    v: 1,
+    data: { reason: 'The issue was cancelled.' },
+  });
+
+  it("marks the question's inbox item read in the same commit and creates no item", () => {
+    const { store } = seeded();
+    const [, created] = store.commit(() => [asked('question-1', 'OAuth?')]);
+    const [, other] = store.commit(() => [asked('question-2', 'Which theme?')]);
+
+    const committed = store.commit(() => [withdrawn('question-1')]);
+
+    expect(committed.map((e) => [e.type, e.entityId])).toEqual([
+      ['question.withdrawn', 'question-1'],
+      ['inbox.read', created?.entityId],
+    ]);
+    const inbox = store.snapshot().state.inbox;
+    expect(Object.keys(inbox)).toHaveLength(2);
+    expect(inbox[InboxIdSchema.parse(created?.entityId)]?.read).toBe(true);
+    expect(inbox[InboxIdSchema.parse(other?.entityId)]?.read).toBe(false);
+    expectSnapshotMatchesReplay(store);
+  });
+
+  it('emits nothing more when the item was already read', () => {
+    const { store } = seeded();
+    const [, created] = store.commit(() => [asked('question-1', 'OAuth?')]);
+    expect(markInboxRead(store, InboxIdSchema.parse(created?.entityId)).ok).toBe(true);
+
+    const committed = store.commit(() => [withdrawn('question-1')]);
+
+    expect(committed.map((e) => e.type)).toEqual(['question.withdrawn']);
+  });
+});

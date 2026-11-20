@@ -72,6 +72,7 @@ export function reduce(s: ClientState, e: Event): ClientState {
     case 'usage.recorded':
     case 'question.asked':
     case 'question.answered':
+    case 'question.withdrawn':
     case 'inbox.created':
     case 'inbox.read':
     case 'backend.limited':

@@ -74,6 +74,7 @@ type AccountEvent = EventOf<
   | 'usage.recorded'
   | 'question.asked'
   | 'question.answered'
+  | 'question.withdrawn'
   | 'inbox.created'
   | 'inbox.read'
   | 'backend.limited'
@@ -92,6 +93,12 @@ export function projectAccountEvent(db: Db, e: AccountEvent): void {
     case 'question.answered':
       db.update(questions)
         .set({ answer: e.data.answer, answeredAt: e.ts })
+        .where(eq(questions.id, e.entityId))
+        .run();
+      return;
+    case 'question.withdrawn':
+      db.update(questions)
+        .set({ withdrawnAt: e.ts, withdrawnReason: e.data.reason })
         .where(eq(questions.id, e.entityId))
         .run();
       return;

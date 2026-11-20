@@ -32,6 +32,7 @@ const AT2 = AttemptIdSchema.parse('attempt-2');
 const AG1 = AgentIdSchema.parse('agent-1');
 const AG2 = AgentIdSchema.parse('agent-2');
 const Q1 = QuestionIdSchema.parse('question-1');
+const Q2 = QuestionIdSchema.parse('question-2');
 const IN1 = InboxIdSchema.parse('inbox-1');
 const IN2 = InboxIdSchema.parse('inbox-2');
 const SHA = 'a'.repeat(40);
@@ -244,6 +245,16 @@ function commands(): EventDraft[][] {
       on('issue.released', I1, { questionId: Q1 }),
       on('inbox.read', IN1, {}),
     ],
+    // an orchestrator question that is withdrawn unanswered
+    [
+      on('question.asked', Q2, {
+        target: 'orchestrator',
+        issueId: null,
+        agentId: null,
+        text: 'Which host?',
+      }),
+    ],
+    [on('question.withdrawn', Q2, { reason: 'no longer needed' })],
     // attempt 2: merged
     [
       on('issue.status_changed', I1, {

@@ -9,7 +9,7 @@ import {
   ProductIdSchema,
   QuestionIdSchema,
 } from '../../shared/ids.ts';
-import { inboxFor, type InboxLookup } from './index.ts';
+import { inboxFor, inboxReadsFor, type InboxLookup, type InboxReadLookup } from './index.ts';
 
 const P = ProductIdSchema.parse('product-1');
 const I = IssueIdSchema.parse('issue-1');
@@ -329,5 +329,70 @@ describe('inboxFor', () => {
       data: { from: 'in_progress', attemptCount: 1, reason: 'boom' },
     };
     expect(inboxFor(draft, lookup)).toMatchObject({ body: 'Failed after 1 attempt: boom' });
+  });
+});
+
+describe('inboxReadsFor', () => {
+  const item = (id: string, kind: 'question' | 'failed', link: string, body: string) => ({
+    id: InboxIdSchema.parse(id),
+    productId: P,
+    kind,
+    title: 'Question on #3 Login form',
+    body,
+    link,
+    read: false,
+    createdAt: 1,
+  });
+  const readLookup: InboxReadLookup = {
+    question: (id) =>
+      id === Q
+        ? {
+            id: Q,
+            productId: P,
+            issueId: I,
+            agentId: null,
+            target: 'issue',
+            text: 'OAuth?',
+            answer: null,
+            createdAt: 1,
+            answeredAt: null,
+            withdrawnAt: 2,
+            withdrawnReason: 'The issue was cancelled.',
+          }
+        : null,
+    unreadInboxItems: () => [
+      item('inbox-1', 'question', issueLink, 'OAuth?'),
+      item('inbox-2', 'question', issueLink, 'Which theme?'),
+      item('inbox-3', 'failed', issueLink, 'OAuth?'),
+      item('inbox-4', 'question', productLink, 'OAuth?'),
+    ],
+  };
+  const withdrawn = (entityId: string): EventDraft =>
+    ({
+      type: 'question.withdrawn',
+      productId: P,
+      entityId,
+      v: 1,
+      data: { reason: 'The issue was cancelled.' },
+    }) as EventDraft;
+
+  it("question.withdrawn settles exactly the question's own item", () => {
+    expect(inboxReadsFor(withdrawn(Q), readLookup)).toEqual(['inbox-1']);
+  });
+
+  it('settles nothing for an unknown question or another event type', () => {
+    expect(inboxReadsFor(withdrawn('question-x'), readLookup)).toEqual([]);
+    const answered: EventDraft = {
+      type: 'question.answered',
+      productId: P,
+      entityId: Q,
+      v: 1,
+      data: { answer: 'yes' },
+    };
+    expect(inboxReadsFor(answered, readLookup)).toEqual([]);
+  });
+
+  it('question.withdrawn creates no new item', () => {
+    expect(inboxFor(withdrawn(Q), lookup)).toBeNull();
   });
 });

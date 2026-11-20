@@ -85,6 +85,7 @@ function storeFrom(events: Event[]) {
       return () => listeners.delete(l);
     },
     start: () => () => undefined,
+    onLiveEvent: () => () => undefined,
   };
   const apply = (e: Event) => {
     snapshot = { ...snapshot, state: reduce(snapshot.state, e), lastSeq: e.seq };
