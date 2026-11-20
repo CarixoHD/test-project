@@ -189,14 +189,14 @@ Hooks run inside the transaction after the builder's drafts are appended and pro
 **Invariant (tested):** `events.reduce(reduce, emptyState)` equals `snapshot().state` after any command sequence. Tests call `expectSnapshotMatchesReplay(store)` from `store/testing.ts`.
 
 ### 4.3 server/http
-These are thin routes. Each one validates with zod, calls a command, and returns `{ok}` or a typed error.
+These are thin routes. Each one validates with zod, calls a command, and returns `{ok}` or a typed error. `createApp({store, ids, git, redactor, webRoot?, heartbeatMs?})` gets the command dependencies from the composition root (`main.ts`).
 
 ```
 GET  /api/state                         → {state, lastSeq}
 GET  /api/events                        SSE; id=seq; replays seq > Last-Event-ID; ':hb' every 15s
 GET  /api/agents/:id/log?follow=1       full redacted agent log (NDJSON file), SSE when follow
 GET  /api/attempts/:id/diff | /check    artifacts
-POST /api/products                      {name, idea}
+POST /api/products                      {name, idea}       → 201 {id}
 POST /api/products/:id/spar             {message}           → 202; reply arrives as event
 PUT  /api/products/:id/prd-draft        {markdown}
 POST /api/products/:id/handoff | apply-prd | pause | resume
@@ -258,6 +258,10 @@ editIssue(deps, issueId, {title?, body?, dependsOn?, rev}) → {ok; events; rev}
 //   open|failed|in_progress|in_review only (else conflict); rev ≠ current → conflict; rev+1; no cycles
 cancelIssue(deps, issueId) → {ok; events}   // via transition(); completed/cancelled → conflict; by:'owner'
 // codes: invalid → 400, not_found → 404, conflict → 409
+createProduct({store, ids, git}, {name, idea}): Promise<{ok:true; id: ProductId} | {ok:false; reason}>;
+// CreateProductRequestSchema (shared/dto.ts): trimmed name 1–80, idea 1–4000. git.initRepo(id) runs first,
+// then ONE commit: product.created with DEFAULT_PRODUCT_SETTINGS (budget null, maxParallel 3, maxAttempts 3,
+// models {}, gitRemote null); a failed initRepo throws and commits nothing.
 ```
 
 The result schemas above are defined in `src/shared/agent-results.ts`. The pipeline imports them from there and does not redefine them.

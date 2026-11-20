@@ -8,6 +8,7 @@ import {
   type ProductId,
 } from '../../shared/ids.ts';
 import { open } from '../db/index.ts';
+import { createGit } from '../git/index.ts';
 import { createApp } from '../http/index.ts';
 import { Redactor } from '../security/index.ts';
 import { createStore } from '../store/index.ts';
@@ -43,7 +44,13 @@ function setup() {
       draft('product.handed_off', p, null, { prdVersion: 1 }),
     ]);
   }
-  const app = createApp({ store, redactor, ids });
+  const app = createApp({
+    store,
+    redactor,
+    ids,
+    // These routes never touch git.
+    git: createGit({ dataDir: '/nonexistent/vibecode-issues-tests' }),
+  });
   return { store, ids, app };
 }
 

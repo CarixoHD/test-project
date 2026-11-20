@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { StateResponseSchema, type StateResponse } from '../../shared/dto.ts';
+import {
+  CreateProductResponseSchema,
+  StateResponseSchema,
+  type CreateProductRequest,
+  type CreateProductResponse,
+  type StateResponse,
+} from '../../shared/dto.ts';
 
 // Typed HTTP client for the Vibecode API (ARCHITECTURE §4.3). Every call validates the
 // response with the DTO schema from src/shared/dto.ts, sends JSON bodies, and turns every
@@ -94,4 +100,16 @@ function errorFromResponse(res: Response, body: unknown): ApiError {
 
 export function getState(signal?: AbortSignal): Promise<StateResponse> {
   return request('/api/state', { schema: StateResponseSchema, ...(signal ? { signal } : {}) });
+}
+
+export function createProduct(
+  body: CreateProductRequest,
+  signal?: AbortSignal,
+): Promise<CreateProductResponse> {
+  return request('/api/products', {
+    method: 'POST',
+    body,
+    schema: CreateProductResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
 }
