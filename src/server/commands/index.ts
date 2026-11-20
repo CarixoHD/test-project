@@ -71,6 +71,12 @@ export {
 export { clearBackendLimit, type ClearBackendLimitResult } from './backend-limits.ts';
 export { answerQuestion, type AnswerQuestionResult } from './questions.ts';
 export {
+  createClaudeCodeToken,
+  type ClaudeCodeToken,
+  type ClaudeCodeTokenDeps,
+  type ClaudeCodeTokenResult,
+} from './claude-token.ts';
+export {
   createGitTokens,
   type GitTokenResult,
   type GitTokens,
