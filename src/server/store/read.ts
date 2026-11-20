@@ -1,4 +1,4 @@
-import { and, asc, eq, max } from 'drizzle-orm';
+import { and, asc, eq, isNull, max } from 'drizzle-orm';
 import {
   AgentViewSchema,
   AttemptStateSchema,
@@ -178,6 +178,8 @@ export interface Queries {
   productUsage(productId: ProductId): UsageTotals;
   issueUsage(issueId: IssueId): UsageTotals;
   inboxItem(id: InboxId): InboxItem | null;
+  /** A product's unread inbox items, oldest first. */
+  unreadInboxItems(productId: ProductId): InboxItem[];
   question(id: QuestionId): QuestionState | null;
   /** Questions an issue's agents asked (target issue), oldest first. */
   questionsByIssue(issueId: IssueId): QuestionState[];
@@ -240,6 +242,15 @@ export function createQueries(db: Db): Queries {
     inboxItem(id) {
       const r = db.select().from(s.inbox).where(eq(s.inbox.id, id)).get();
       return r === undefined ? null : InboxItemSchema.parse(inboxView(r));
+    },
+    unreadInboxItems(productId) {
+      return db
+        .select()
+        .from(s.inbox)
+        .where(and(eq(s.inbox.productId, productId), isNull(s.inbox.readAt)))
+        .orderBy(asc(s.inbox.createdAt), asc(s.inbox.id))
+        .all()
+        .map((r) => InboxItemSchema.parse(inboxView(r)));
     },
     question(id) {
       const r = db.select().from(s.questions).where(eq(s.questions.id, id)).get();
