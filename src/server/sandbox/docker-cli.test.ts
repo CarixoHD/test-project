@@ -21,9 +21,12 @@ import {
   type ExecResult,
   type StreamOptions,
 } from '../util/exec.ts';
+import { redactor } from '../security/index.ts';
 import {
   DOCKER_NOT_RUNNING,
   DockerCliRuntime,
+  ICC_UNSUPPORTED,
+  IccUnsupportedError,
   baseImageTag,
   buildRunArgs,
   fileOpArgv,
@@ -180,6 +183,83 @@ describe('ensureNetworks', () => {
       ['network', 'inspect', 'vibecode-egress'],
       ['network', 'inspect', 'vibecode-preview'],
     ]);
+  });
+
+  /** The daemon's stderr on a host without br_netfilter (Docker 29.10.0, captured in #177). */
+  const NO_BR_NETFILTER =
+    'Error response from daemon: cannot restrict inter-container communication or run without ' +
+    'the userland proxy: stat /proc/sys/net/bridge/bridge-nf-call-iptables: no such file or ' +
+    'directory: set environment variable DOCKER_IGNORE_BR_NETFILTER_ERROR=1 to ignore';
+
+  it('fails closed with an actionable error when the host cannot turn ICC off (no br_netfilter)', async () => {
+    const stub = stubDocker((argv) => {
+      if (argv[1] === 'inspect') return { code: 1, stderr: 'network not found' };
+      if (argv.includes('vibecode-egress')) return { code: 1, stderr: NO_BR_NETFILTER };
+      return {};
+    });
+    const err: unknown = await runtime(stub)
+      .ensureNetworks()
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(IccUnsupportedError);
+    expect(err).toMatchObject({ code: ICC_UNSUPPORTED });
+    const message = err instanceof Error ? err.message : '';
+    expect(message).toContain("Docker can't turn off inter-container traffic on this host");
+    expect(message).toContain('br_netfilter');
+    expect(message).toContain('sudo modprobe br_netfilter');
+    expect(message).toContain('/etc/modules-load.d/br_netfilter.conf');
+    expect(message).toContain('restart Vibecode');
+    expect(message).toContain('bridge-nf-call-iptables: no such file or directory');
+    // Fail closed: exactly one create, the ICC-off one; no ICC-on egress retry, nothing after it.
+    const creates = stub.argvs().filter((a) => a[1] === 'create');
+    expect(creates).toEqual([
+      [
+        'network',
+        'create',
+        '--driver',
+        'bridge',
+        '--opt',
+        'com.docker.network.bridge.enable_icc=false',
+        'vibecode-egress',
+      ],
+    ]);
+    expect(stub.argvs()).not.toContainEqual(['network', 'inspect', 'vibecode-preview']);
+  });
+
+  it('redacts secrets in the daemon stderr it quotes', async () => {
+    const secret = 'sk-ant-api03-icc-redaction-test-secret-0123456789';
+    redactor.register(secret);
+    const stub = stubDocker((argv) =>
+      argv[1] === 'inspect'
+        ? { code: 1, stderr: 'network not found' }
+        : { code: 1, stderr: `${NO_BR_NETFILTER} ${secret}` },
+    );
+    const err = await runtime(stub)
+      .ensureNetworks()
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(IccUnsupportedError);
+    expect(err instanceof Error ? err.message : '').not.toContain(secret);
+  });
+
+  it('keeps the generic error for other egress create failures', async () => {
+    const stub = stubDocker((argv) =>
+      argv[1] === 'inspect'
+        ? { code: 1, stderr: 'network not found' }
+        : {
+            code: 1,
+            stderr:
+              'Error response from daemon: all predefined address pools have been fully subnetted',
+          },
+    );
+    const err = await runtime(stub)
+      .ensureNetworks()
+      .catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(IccUnsupportedError);
+    expect(err instanceof Error ? err.message : '').toContain(
+      'Could not create the Docker network vibecode-egress: Error response from daemon: all predefined',
+    );
   });
 });
 
