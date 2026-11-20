@@ -7,7 +7,12 @@ import { createGit } from './git/index.ts';
 import { createApp } from './http/index.ts';
 import { inboxHook } from './notify/index.ts';
 import { createScheduler, type Runners } from './scheduler/index.ts';
-import { createAccountSettings, createSparring, type SparTurnRunner } from './commands/index.ts';
+import {
+  budgetAfterUsage,
+  createAccountSettings,
+  createSparring,
+  type SparTurnRunner,
+} from './commands/index.ts';
 import type { FakeScript, ModelDeps } from './llm/index.ts';
 import { DEMO_RUNTIME_SCRIPT, demoFake } from './demo/index.ts';
 import {
@@ -74,6 +79,8 @@ export async function start(
     schedulerTickMs,
   } = options;
   const logsDir = join(config.dataDir, 'logs');
+  // Every agent run checks the budget after each usage step (§6 flow 5).
+  const afterUsage = budgetAfterUsage({ store, ids });
   // Demo mode answers every role from its default script (src/server/demo) unless a test
   // passes one; the fake provider is only used when no real model is configured.
   const demo = config.demo ? demoFake(store) : undefined;
@@ -93,6 +100,7 @@ export async function start(
           clock,
           redactor,
           logsDir,
+          afterUsage,
           modelDeps: modelDeps(),
           demo: config.demo,
         },
@@ -114,6 +122,7 @@ export async function start(
     clock,
     redactor,
     logsDir,
+    afterUsage,
     git,
     runtime,
     // A getter: every run reads the settings again (provider config and keys at call time).
@@ -138,6 +147,7 @@ export async function start(
             clock,
             redactor,
             logsDir,
+            afterUsage,
             artifactsDir: join(config.dataDir, 'artifacts'),
             git,
             runtime,

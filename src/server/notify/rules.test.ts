@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { EventDraft } from '../../shared/events.ts';
+import type { AttemptStatus } from '../../shared/domain.ts';
 import {
   AgentIdSchema,
+  AttemptIdSchema,
   InboxIdSchema,
   IssueIdSchema,
   ProductIdSchema,
@@ -13,6 +15,30 @@ const P = ProductIdSchema.parse('product-1');
 const I = IssueIdSchema.parse('issue-1');
 const Q = QuestionIdSchema.parse('question-1');
 const A = AgentIdSchema.parse('agent-1');
+const AT = AttemptIdSchema.parse('attempt-1');
+
+function attemptEnded(
+  status: Exclude<AttemptStatus, 'running'>,
+  feedback: string | null,
+  counted = false,
+): EventDraft {
+  return {
+    type: 'attempt.ended',
+    productId: P,
+    entityId: AT,
+    v: 1,
+    data: {
+      issueId: I,
+      status,
+      counted,
+      headSha: null,
+      feedback,
+      review: null,
+      checkExit: null,
+      interruptReason: status === 'interrupted' ? 'issue_changed' : null,
+    },
+  };
+}
 
 const lookup: InboxLookup = {
   product: (id) => (id === P ? { name: 'Todo' } : null),
@@ -179,9 +205,30 @@ const cases: { name: string; draft: EventDraft; expected: object }[] = [
       link: productLink,
     },
   },
+  {
+    name: 'attempt.ended{error} (uncounted infrastructure fault)',
+    draft: attemptEnded('error', 'git worktree add failed: disk full'),
+    expected: {
+      productId: P,
+      kind: 'error',
+      title: 'Attempt on #3 Login form hit an error',
+      body: 'git worktree add failed: disk full\n\nThe issue goes back to open and is retried automatically.',
+      link: issueLink,
+    },
+  },
 ];
 
 const ignored: { name: string; draft: EventDraft }[] = [
+  { name: 'attempt.ended{merged}', draft: attemptEnded('merged', null) },
+  { name: 'attempt.ended{check_failed}', draft: attemptEnded('check_failed', 'exit 1', true) },
+  { name: 'attempt.ended{rejected}', draft: attemptEnded('rejected', 'missing tests', true) },
+  { name: 'attempt.ended{conflict}', draft: attemptEnded('conflict', 'merge conflict', true) },
+  { name: 'attempt.ended{interrupted}', draft: attemptEnded('interrupted', null) },
+  { name: 'attempt.ended{discarded}', draft: attemptEnded('discarded', null) },
+  {
+    name: 'attempt.ended{error, counted} (agent failure, surfaces via issue.failed)',
+    draft: attemptEnded('error', 'agent produced no changes', true),
+  },
   {
     name: 'product.paused{owner}',
     draft: {
@@ -260,6 +307,17 @@ describe('inboxFor', () => {
     const paused = cases.find((c) => c.name === 'product.paused{budget}')?.draft as EventDraft;
     expect(inboxFor(failed, empty)).toMatchObject({ title: `Issue ${I} failed` });
     expect(inboxFor(paused, empty)).toMatchObject({ title: 'Product paused: budget exhausted' });
+  });
+
+  it('falls back to the issue id and a generic message for an attempt error', () => {
+    const empty: InboxLookup = { product: () => null, issue: () => null };
+    expect(inboxFor(attemptEnded('error', null), empty)).toEqual({
+      productId: P,
+      kind: 'error',
+      title: `Attempt on ${I} hit an error`,
+      body: 'Unknown error.\n\nThe issue goes back to open and is retried automatically.',
+      link: issueLink,
+    });
   });
 
   it('says "1 attempt" in the singular', () => {

@@ -86,6 +86,26 @@ function issueFailed(e: DraftOf<'issue.failed'>, lookup: InboxLookup): InboxDraf
   };
 }
 
+const RETRY_NOTE = 'The issue goes back to open and is retried automatically.';
+
+/**
+ * Uncounted `error` endings are infrastructure faults caught by the pipeline run wrapper
+ * (CODING_STANDARDS §5). Counted failures surface through `issue.failed`, limits through
+ * `backend.limited`. `feedback` is the reason, already redacted by the pipeline and the store.
+ */
+function attemptErrored(e: DraftOf<'attempt.ended'>, lookup: InboxLookup): InboxDraft | null {
+  const { issueId, status, counted, feedback } = e.data;
+  if (status !== 'error' || counted) return null;
+  const message = feedback === null || feedback.trim() === '' ? 'Unknown error.' : feedback;
+  return {
+    productId: e.productId,
+    kind: 'error',
+    title: `Attempt on ${issueLabel(lookup, issueId)} hit an error`,
+    body: `${message}\n\n${RETRY_NOTE}`,
+    link: issueLink(e.productId, issueId),
+  };
+}
+
 function budgetWarned(e: DraftOf<'budget.warned'>, lookup: InboxLookup): InboxDraft {
   const { spentUsd, budgetUsd } = e.data;
   const pct = budgetUsd > 0 ? Math.floor((spentUsd / budgetUsd) * 100) : 100;
@@ -131,6 +151,8 @@ export function inboxFor(
       return questionAsked(event, lookup);
     case 'issue.failed':
       return issueFailed(event, lookup);
+    case 'attempt.ended':
+      return attemptErrored(event, lookup);
     case 'budget.warned':
       return budgetWarned(event, lookup);
     case 'product.paused':

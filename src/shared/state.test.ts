@@ -327,6 +327,32 @@ const PRODUCT_CASES: Case[] = [
     then: (s) => expect(product(s).budgetWarned).toBe(true),
   },
   {
+    name: 'settings_changed{budgetWarned:false} clears the budget warning',
+    given: () =>
+      apply(
+        withProduct(),
+        ev({
+          type: 'budget.warned',
+          productId: P,
+          entityId: null,
+          v: 1,
+          data: { spentUsd: 16, budgetUsd: 20 },
+        }),
+      ),
+    when: () =>
+      ev({
+        type: 'product.settings_changed',
+        productId: P,
+        entityId: null,
+        v: 1,
+        data: { budgetUsd: 40, budgetWarned: false },
+      }),
+    then: (s) => {
+      expect(product(s).budgetWarned).toBe(false);
+      expect(product(s).settings.budgetUsd).toBe(40);
+    },
+  },
+  {
     name: 'preview.started records the running preview',
     when: () =>
       ev(
