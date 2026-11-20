@@ -747,7 +747,12 @@ describe('open and Sandbox', () => {
       const sb = await rtWith(docker, 200).open(spec());
       const ac = new AbortController();
       const running = sb.exec(
-        ['sh', '-c', "trap 'echo got-int' INT; touch ready; while :; do sleep 0.05; done"],
+        [
+          'sh',
+          '-c',
+          // No busy loop: `sleep` (async, so it ignores SIGINT) keeps running; `wait` resumes.
+          "trap 'echo got-int' INT; sleep 300 & touch ready; while :; do wait; done",
+        ],
         { timeoutMs: 60_000, signal: ac.signal, killSignal: 'SIGINT' },
       );
       await expect.poll(() => existsSync(path.join(wt, 'ready'))).toBe(true);
