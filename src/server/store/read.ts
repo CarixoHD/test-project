@@ -3,15 +3,17 @@ import {
   AttemptStateSchema,
   ClientStateSchema,
   EMPTY_USAGE_TOTALS,
+  InboxItemSchema,
   IssueStateSchema,
   ProductStateSchema,
   type AttemptState,
   type ClientState,
+  type InboxItem,
   type IssueState,
   type ProductState,
   type UsageTotals,
 } from '../../shared/state.ts';
-import type { AttemptId, IssueId, ProductId } from '../../shared/ids.ts';
+import type { AttemptId, InboxId, IssueId, ProductId } from '../../shared/ids.ts';
 import { type Db, schema } from '../db/index.ts';
 import { totalsFromRow } from './project-account.ts';
 
@@ -157,6 +159,7 @@ export interface Queries {
   /** Running totals; zero when nothing was recorded. */
   productUsage(productId: ProductId): UsageTotals;
   issueUsage(issueId: IssueId): UsageTotals;
+  inboxItem(id: InboxId): InboxItem | null;
 }
 
 export function createQueries(db: Db): Queries {
@@ -201,5 +204,9 @@ export function createQueries(db: Db): Queries {
     },
     productUsage: (productId) => usageTotals('product', productId),
     issueUsage: (issueId) => usageTotals('issue', issueId),
+    inboxItem(id) {
+      const r = db.select().from(s.inbox).where(eq(s.inbox.id, id)).get();
+      return r === undefined ? null : InboxItemSchema.parse(inboxView(r));
+    },
   };
 }
