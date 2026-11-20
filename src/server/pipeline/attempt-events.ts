@@ -1,5 +1,5 @@
 import type { ReviewResult } from '../../shared/agent-results.ts';
-import type { AttemptStep } from '../../shared/domain.ts';
+import type { AttemptStep, InterruptReason } from '../../shared/domain.ts';
 import type { EventDraft, EventOf } from '../../shared/events.ts';
 import type { AttemptId, IssueId, ProductId } from '../../shared/ids.ts';
 import { transition, type IssueTransitionEvent } from '../../shared/issues.ts';
@@ -23,14 +23,20 @@ export type AttemptOutcome = {
   checkExit: number | null;
 };
 
-/** issue → in_progress and attempt.started; false when the issue can no longer start. */
-export function startAttempt(ref: AttemptRef, wt: { baseSha: string; branch: string }): boolean {
-  let started = false;
+/**
+ * issue → in_progress and attempt.started{issueRev}; returns the issue as the attempt got it
+ * (the content the agents work on), or null when the issue can no longer start.
+ */
+export function startAttempt(
+  ref: AttemptRef,
+  wt: { baseSha: string; branch: string },
+): IssueState | null {
+  let started: IssueState | null = null;
   ref.store.commit((tx) => {
     const issue = tx.q.issue(ref.issueId);
     const moved = issue === null ? null : statusDraft(tx, issue, { type: 'start' });
     if (issue === null || moved === null) return [];
-    started = true;
+    started = issue;
     const n = tx.q.attemptsByIssue(ref.issueId).length + 1;
     return [
       moved,
@@ -138,9 +144,7 @@ function failureDrafts(tx: Tx, issue: IssueState, reason: string): EventDraft[] 
 
 /**
  * attempt.ended{error}, uncounted, and the issue back to open (not before `runAfter`) when it is
- * still in progress or in review. For uncounted outcomes that are not yet proper interruptions
- * (stop, rate limit, question, missing setup); the `interrupted` transition is the legal way back
- * to open without counting.
+ * still in progress or in review: an infrastructure fault or missing setup, not an interruption.
  */
 export function endWithError(
   ref: AttemptRef,
@@ -148,15 +152,77 @@ export function endWithError(
   outcome: AttemptOutcome,
   runAfter: number,
 ): void {
+  ref.store.commit((tx) => [
+    endedDraft(ref, 'error', feedback, outcome),
+    ...reopenDrafts(tx, ref, { type: 'interrupted', runAfter }),
+  ]);
+}
+
+/** An account-wide backend limit recorded with an interruption (backend.limited). */
+export type BackendLimitDraft = {
+  backend: string;
+  until: number | null;
+  needsLogin: boolean;
+  reason: string;
+};
+
+/**
+ * attempt.ended{interrupted, interruptReason}, uncounted (ADR 7), and the issue back to open
+ * (not before `runAfter`) when it is still in progress or in review. `limit` also commits
+ * backend.limited, but only when it changes the backend's projected limit, so parallel attempts
+ * hitting the same limit record it (and its inbox item) once.
+ */
+export function interruptAttempt(
+  ref: AttemptRef,
+  reason: InterruptReason,
+  feedback: string,
+  outcome: AttemptOutcome,
+  o: { runAfter?: number; limit?: BackendLimitDraft } = {},
+): void {
   ref.store.commit((tx) => {
-    const issue = tx.q.issue(ref.issueId);
-    const reopened =
-      issue === null
-        ? null
-        : statusDraft(tx, issue, { type: 'interrupted', reason: 'shutdown', runAfter });
-    return [endedDraft(ref, 'error', feedback, outcome), ...(reopened === null ? [] : [reopened])];
+    const { limit, runAfter } = o;
+    const limited = limit !== undefined && limitChanged(tx, limit) ? [limitedDraft(limit)] : [];
+    return [
+      endedDraft(ref, 'interrupted', feedback, outcome, false, reason),
+      ...reopenDrafts(tx, ref, {
+        type: 'interrupted',
+        reason,
+        ...(runAfter === undefined ? {} : { runAfter }),
+      }),
+      ...limited,
+    ];
   });
 }
+
+/** attempt.ended{discarded}, uncounted: the issue was cancelled, so its work is thrown away. */
+export function discardAttempt(ref: AttemptRef, feedback: string, outcome: AttemptOutcome): void {
+  ref.store.commit(() => [endedDraft(ref, 'discarded', feedback, outcome)]);
+}
+
+function reopenDrafts(
+  tx: Tx,
+  ref: AttemptRef,
+  ev: Extract<IssueTransitionEvent, { type: 'interrupted' }>,
+): EventDraft[] {
+  const issue = tx.q.issue(ref.issueId);
+  const reopened = issue === null ? null : statusDraft(tx, issue, ev);
+  return reopened === null ? [] : [reopened];
+}
+
+function limitChanged(tx: Tx, limit: BackendLimitDraft): boolean {
+  const current = tx.q.backendLimit(limit.backend);
+  return (
+    current === null || current.until !== limit.until || current.needsLogin !== limit.needsLogin
+  );
+}
+
+const limitedDraft = (data: BackendLimitDraft): EventDraft => ({
+  type: 'backend.limited',
+  productId: null,
+  entityId: null,
+  v: 1,
+  data,
+});
 
 const config = (tx: Tx, issue: IssueState) => ({
   maxAttempts: tx.q.product(issue.productId)?.settings.maxAttempts ?? 1,
@@ -182,10 +248,26 @@ function statusDraft(tx: Tx, issue: IssueState, ev: IssueTransitionEvent): Event
 
 function endedDraft(
   ref: AttemptRef,
-  status: 'merged' | CountedStatus,
+  status: 'merged' | 'discarded' | CountedStatus,
+  feedback: string | null,
+  outcome: AttemptOutcome,
+  counted?: boolean,
+): EventDraft;
+function endedDraft(
+  ref: AttemptRef,
+  status: 'interrupted',
+  feedback: string,
+  outcome: AttemptOutcome,
+  counted: false,
+  interruptReason: InterruptReason,
+): EventDraft;
+function endedDraft(
+  ref: AttemptRef,
+  status: 'merged' | 'discarded' | 'interrupted' | CountedStatus,
   feedback: string | null,
   outcome: AttemptOutcome,
   counted = false,
+  interruptReason: InterruptReason | null = null,
 ): EventDraft {
   return attemptDraft(ref, 'attempt.ended', {
     issueId: ref.issueId,
@@ -193,7 +275,7 @@ function endedDraft(
     counted,
     ...outcome,
     feedback,
-    interruptReason: null,
+    interruptReason,
   });
 }
 

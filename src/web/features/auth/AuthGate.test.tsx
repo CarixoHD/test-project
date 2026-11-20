@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -90,6 +90,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount first: React may still owe the store's mount effect (which opens the EventSource),
+  // and it must run while the fakes are still installed.
+  cleanup();
   vi.unstubAllGlobals();
 });
 

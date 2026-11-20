@@ -13,7 +13,13 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ExecError, type ExecOptions, type ExecResult, type StreamOptions } from '../util/exec.ts';
+import {
+  ExecError,
+  exec as realExec,
+  type ExecOptions,
+  type ExecResult,
+  type StreamOptions,
+} from '../util/exec.ts';
 import {
   DOCKER_NOT_RUNNING,
   DockerCliRuntime,
@@ -61,6 +67,25 @@ function stubDocker(respond: (argv: string[]) => Reply = () => ({})) {
     });
   };
   return { calls, exec, spawnStream, argvs: () => calls.map((c) => c.argv) };
+}
+
+/**
+ * The user argv of a Sandbox.exec, after checking the `docker exec` + pid wrapper prefix
+ * (`sh -c <wrapper> sh <pidFile> ...argv`).
+ */
+function wrapped(argv: string[] | undefined): string[] {
+  expect(argv?.slice(0, 7)).toEqual([
+    'exec',
+    '-i',
+    '-w',
+    '/workspace',
+    'vibecode-01RUN',
+    'sh',
+    '-c',
+  ]);
+  expect(argv?.[8]).toBe('sh');
+  expect(argv?.[9]).toMatch(/^\/tmp\/vibecode-exec-[0-9a-f-]{36}\.pid$/);
+  return argv?.slice(10) ?? [];
 }
 
 let base: string;
@@ -459,7 +484,7 @@ describe('open and Sandbox', () => {
     await expect(runtime(stub).open(spec())).rejects.toThrow(/name is in use/);
   });
 
-  it('execs in /workspace with stdin, timeout, abort signal and SIGINT', async () => {
+  it('execs in /workspace under the pid wrapper, with stdin and a client backstop timeout', async () => {
     const stub = stubDocker((argv) =>
       argv[0] === 'exec' ? { code: 0, stdout: 'hello\n', stderr: '' } : {},
     );
@@ -475,13 +500,11 @@ describe('open and Sandbox', () => {
       truncated: false,
     });
     const call = stub.calls[1];
-    expect(call?.argv).toEqual(['exec', '-i', '-w', '/workspace', 'vibecode-01RUN', 'cat']);
-    expect(call?.o).toMatchObject({
-      input: 'hello\n',
-      timeoutMs: 1234,
-      signal: ac.signal,
-      killSignal: 'SIGINT',
-    });
+    expect(wrapped(call?.argv)).toEqual(['cat']);
+    expect(call?.o).toMatchObject({ input: 'hello\n', killSignal: 'SIGKILL' });
+    // The deadline is enforced in the container first; the client's own timeout is a backstop.
+    expect(call?.o.timeoutMs).toBeGreaterThan(1234);
+    expect(stub.argvs()).toHaveLength(2); // no kill when the command ends on its own
   });
 
   it('runs file ops through the shared fileOpArgv protocol', async () => {
@@ -490,14 +513,7 @@ describe('open and Sandbox', () => {
     const op = fileOpArgv({ op: 'write', path: 'src/a.ts' });
     if (!op.ok) throw new Error(op.reason);
     await sb.exec(op.argv, { stdin: 'x', timeoutMs: 1000 });
-    expect(stub.calls[1]?.argv).toEqual([
-      'exec',
-      '-i',
-      '-w',
-      '/workspace',
-      'vibecode-01RUN',
-      ...op.argv,
-    ]);
+    expect(wrapped(stub.calls[1]?.argv)).toEqual(op.argv);
   });
 
   it('streams output lines when onLine is given and still returns the output', async () => {
@@ -511,7 +527,7 @@ describe('open and Sandbox', () => {
       onLine: (l, s) => lines.push(`${s}:${l}`),
     });
     expect(stub.calls[1]?.streamed).toBe(true);
-    expect(stub.calls[1]?.o).toMatchObject({ killSignal: 'SIGINT', timeoutMs: 1000 });
+    expect(wrapped(stub.calls[1]?.argv)).toEqual(['make']);
     expect(lines).toEqual(['stdout:a', 'stdout:b', 'stderr:oops']);
     expect(r).toMatchObject({ code: 3, stdout: 'a\nb\n', stderr: 'oops\n' });
   });
@@ -635,6 +651,191 @@ describe('open and Sandbox', () => {
       });
       expect(r).toMatchObject({ code: null, aborted: true });
       expect(docker.argvs()).toHaveLength(1);
+    });
+  });
+
+  describe('stopping the process inside the container (timeout, abort)', () => {
+    /**
+     * A docker stub that runs the in-container part for real, on the host: `docker exec [-i]
+     * [-w dir] <name> ...cmd` runs `cmd` (so the real wrapper and kill script), with pid files
+     * under the test dir. Like real `docker exec`, killing the client does NOT reach the
+     * command: the client's signal is ignored, only the in-container kill can stop it.
+     */
+    function localDocker(o: { startDelayMs?: number; logs?: string[] } = {}) {
+      const calls: Call[] = [];
+      const local = (argv: readonly string[]) => {
+        let i = 1;
+        while (argv[i] === '-i' || argv[i] === '-w') i += argv[i] === '-w' ? 2 : 1;
+        return argv
+          .slice(i + 1)
+          .map((a) =>
+            a.startsWith('/tmp/vibecode-exec-') ? path.join(base, path.basename(a)) : a,
+          );
+      };
+      const exec = async (_cmd: string, argv: readonly string[], opts: ExecOptions) => {
+        calls.push({ argv: [...argv], o: opts, streamed: false });
+        if (argv[0] !== 'exec') return { ...OK };
+        const [cmd = '', ...rest] = local(argv);
+        const isMain = argv[1] === '-i';
+        if (isMain && o.startDelayMs !== undefined) {
+          await new Promise((r) => setTimeout(r, o.startDelayMs));
+        }
+        return realExec(cmd, rest, { input: opts.input, cwd: wt, timeoutMs: 20_000 });
+      };
+      const spawnStream = () => Promise.reject(new Error('not used'));
+      return { calls, exec, spawnStream, argvs: () => calls.map((c) => c.argv) };
+    }
+    const OK: ExecResult = {
+      code: 0,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      timedOut: false,
+      aborted: false,
+      truncated: false,
+    };
+    const rtWith = (
+      docker: ReturnType<typeof localDocker>,
+      killGraceMs = 60_000,
+      logs?: string[],
+    ) =>
+      new DockerCliRuntime({
+        dataDir,
+        uid: 1000,
+        gid: 1000,
+        exec: docker.exec,
+        spawnStream: docker.spawnStream,
+        killGraceMs,
+        log: (l) => logs?.push(l),
+      });
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    /** Runs a background `sleep 300` (a grandchild of the wrapper) and records its pid. */
+    const SLEEPER = ['sh', '-c', 'sleep 300 & echo $! > child.pid; echo started; wait'];
+    const childPid = async () => Number(await readFile(path.join(wt, 'child.pid'), 'utf8'));
+
+    it('on timeout, kills the exec process group inside the container', async () => {
+      const docker = localDocker();
+      const sb = await rtWith(docker).open(spec());
+      const started = Date.now();
+      const r = await sb.exec(SLEEPER, { timeoutMs: 300 });
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(r).toMatchObject({ timedOut: true, aborted: false, stdout: 'started\n' });
+      const pidFile = docker.argvs()[1]?.[9];
+      expect(docker.argvs()[2]).toEqual([
+        'exec',
+        'vibecode-01RUN',
+        'sh',
+        '-c',
+        expect.stringContaining('kill -s "$1" -- "-$pid"'),
+        'sh',
+        'TERM',
+        pidFile,
+      ]);
+      const pid = await childPid();
+      await expect.poll(() => alive(pid)).toBe(false);
+    });
+
+    it('on abort, delivers killSignal first, then SIGKILL after the grace period', async () => {
+      const docker = localDocker();
+      const sb = await rtWith(docker, 200).open(spec());
+      const ac = new AbortController();
+      const running = sb.exec(
+        [
+          'sh',
+          '-c',
+          // No busy loop: `sleep` (async, so it ignores SIGINT) keeps running; `wait` resumes.
+          "trap 'echo got-int' INT; sleep 300 & touch ready; while :; do wait; done",
+        ],
+        { timeoutMs: 60_000, signal: ac.signal, killSignal: 'SIGINT' },
+      );
+      await expect.poll(() => existsSync(path.join(wt, 'ready'))).toBe(true);
+      ac.abort();
+      const r = await running;
+      expect(r.stdout).toContain('got-int'); // SIGINT arrived and was survived, so SIGKILL ended it
+      expect(r).toMatchObject({ aborted: true, timedOut: false });
+      expect(
+        docker
+          .argvs()
+          .slice(2)
+          .map((a) => a[6]),
+      ).toEqual(['INT', 'KILL']);
+    });
+
+    it('stops the command when the abort arrives before the wrapper wrote its pid file', async () => {
+      const docker = localDocker({ startDelayMs: 300 });
+      const logs: string[] = [];
+      const sb = await rtWith(docker, 60_000, logs).open(spec());
+      const ac = new AbortController();
+      const running = sb.exec(['sh', '-c', 'touch ran; sleep 300'], {
+        timeoutMs: 60_000,
+        signal: ac.signal,
+      });
+      await Promise.resolve();
+      ac.abort(); // the kill runs while `docker exec` has not started the wrapper yet
+      const r = await running;
+      expect(r).toMatchObject({ aborted: true, code: 143 });
+      expect(existsSync(path.join(wt, 'ran'))).toBe(false);
+      expect(logs).toEqual([]);
+    });
+
+    it('logs a failed in-container kill with container, signal and reason', async () => {
+      const logs: string[] = [];
+      const stub = stubDocker((argv) =>
+        argv[0] === 'exec' && argv[1] !== '-i'
+          ? { code: 1, stderr: 'Error response from daemon: container abc is not running' }
+          : argv[0] === 'exec'
+            ? { code: null, timedOut: true }
+            : {},
+      );
+      const rt = new DockerCliRuntime({
+        dataDir,
+        uid: 1000,
+        gid: 1000,
+        exec: stub.exec,
+        spawnStream: stub.spawnStream,
+        log: (l) => logs.push(l),
+      });
+      const sb = await rt.open(spec());
+      const ac = new AbortController();
+      const running = sb.exec(['x'], { timeoutMs: 60_000, signal: ac.signal });
+      ac.abort();
+      await running;
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toMatch(/SIGTERM.*vibecode-01RUN.*abort.*is not running/);
+
+      logs.length = 0;
+      const throwing = stubDocker((argv) =>
+        argv[0] === 'exec' && argv[1] !== '-i'
+          ? new ExecError('Could not run "docker": EACCES', 'EACCES')
+          : argv[0] === 'exec'
+            ? { code: null }
+            : {},
+      );
+      const sb2 = await new DockerCliRuntime({
+        dataDir,
+        uid: 1000,
+        gid: 1000,
+        exec: throwing.exec,
+        spawnStream: throwing.spawnStream,
+        log: (l) => logs.push(l),
+      }).open(spec());
+      const ac2 = new AbortController();
+      const running2 = sb2.exec(['x'], {
+        timeoutMs: 60_000,
+        signal: ac2.signal,
+        killSignal: 'SIGINT',
+      });
+      ac2.abort();
+      expect(await running2).toMatchObject({ aborted: true });
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toMatch(/SIGINT.*vibecode-01RUN.*EACCES/);
     });
   });
 
@@ -822,5 +1023,33 @@ describe('Docker unavailable', () => {
     await expect(runtime(down).open(spec())).rejects.toThrow(DOCKER_NOT_RUNNING);
     await expect(runtime(down).ensureNetworks()).rejects.toThrow(DOCKER_NOT_RUNNING);
     await expect(runtime(down).remove('vibecode-x')).rejects.toThrow(DOCKER_NOT_RUNNING);
+  });
+
+  it('maps a daemon that stops mid-attempt to DOCKER_NOT_RUNNING for Sandbox.exec and runOnce', async () => {
+    const DOWN =
+      'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?';
+    let daemonUp = true;
+    const stub = stubDocker((argv) =>
+      daemonUp ? {} : { code: argv[0] === 'run' ? 125 : 1, stderr: `${DOWN}\n` },
+    );
+    const rt = runtime(stub);
+    const sb = await rt.open(spec());
+    daemonUp = false;
+    await expect(sb.exec(['npm', 'test'], T)).rejects.toThrow(DOCKER_NOT_RUNNING);
+    await expect(sb.exec(['npm', 'test'], { ...T, onLine: () => {} })).rejects.toThrow(
+      DOCKER_NOT_RUNNING,
+    );
+    await expect(rt.runOnce(spec({ role: 'check' }), ['npm', 'test'], T)).rejects.toThrow(
+      DOCKER_NOT_RUNNING,
+    );
+  });
+
+  it('keeps a failing command that merely prints the daemon message a command result', async () => {
+    const stub = stubDocker(() => ({
+      code: 2,
+      stderr: 'Cannot connect to the Docker daemon (from the product tests)\n',
+    }));
+    const r = await runtime(stub).runOnce(spec({ role: 'check' }), ['npm', 'test'], T);
+    expect(r.code).toBe(2);
   });
 });

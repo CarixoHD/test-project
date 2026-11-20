@@ -17,15 +17,26 @@ import type { ContainerRuntime, ExecResult, Sandbox, SandboxSpec } from '../sand
 import type { RunHandle } from '../scheduler/index.ts';
 import {
   completeAttempt,
-  endWithError,
-  failAttempt,
   moveIssue,
   recordStep,
   startAttempt,
   type AttemptOutcome,
   type AttemptRef,
-  type CountedStatus,
 } from './attempt-events.ts';
+import {
+  agentFailed,
+  counted,
+  discarded,
+  fail,
+  interrupted,
+  isCancelled,
+  ISSUE_CHANGED_FEEDBACK,
+  recordEnd,
+  stopped,
+  stopRequested,
+  type Ended,
+  type Failed,
+} from './attempt-outcome.ts';
 import { implementerPrompt, reviewerPrompt, tailLines } from './attempt-prompt.ts';
 import { resolveModel } from './resolve-model.ts';
 import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
@@ -34,15 +45,16 @@ import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
 // sandbox (egress, rw) → host commit → check (network none) → fresh reviewer (read-only, network
 // none) → squash merge to main under the merge lock. Counted failures (check_failed, rejected,
 // conflict, empty diff, agent error) store their feedback for the next attempt and count against
-// maxAttempts; any other outcome is an uncounted error and the issue goes back to open later.
+// maxAttempts. Interruptions (pause, budget, shutdown, rate limit, login, an owner edit) end it
+// as `interrupted`, not counted; an owner cancel discards it. Both stop after the current step.
+// Any other outcome is an uncounted error and the issue goes back to open later.
 
 export const DEFAULT_ATTEMPT_LIMITS: Record<'implementer' | 'reviewer', AgentLimits> = {
   implementer: { maxSteps: 150, wallClockMs: 60 * 60_000 },
   reviewer: { maxSteps: 60, wallClockMs: 20 * 60_000 },
 };
 export const CHECK_TIMEOUT_MS = 30 * 60_000;
-/** An errored attempt's issue waits this long before the scheduler starts it again. */
-export const ERROR_RETRY_DELAY_MS = 60_000;
+export { ERROR_RETRY_DELAY_MS } from './attempt-outcome.ts';
 export const NO_CHECK_REASON = 'No check command configured (.vibecode/project.json)';
 export const NO_CHANGES_FEEDBACK = 'no changes: the implementer finished without changing any file';
 /** An aborted check (stop, restart) is an interruption, never a counted check_failed (ADR 7). */
@@ -67,20 +79,13 @@ export interface AttemptDeps extends RecordedRunContext {
 type Ctx = AttemptRef & {
   deps: AttemptDeps;
   run: RunHandle;
-  issueRev: number;
+  /** The issue as attempt.started recorded it: the content the agents work on. */
+  issue: IssueState;
   wt: Worktree & { branch: string };
   artifacts: string;
   /** Warm sandboxes still open; closed in `finally`. */
   sandboxes: Set<Sandbox>;
 };
-
-/** What the attempt ends with; the outcome fields go into attempt.ended. */
-type Ended = AttemptOutcome &
-  (
-    | { kind: 'merged' }
-    | { kind: 'failed'; status: CountedStatus; feedback: string }
-    | { kind: 'error'; reason: string }
-  );
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -94,72 +99,35 @@ export async function runAttempt(deps: AttemptDeps, issueId: IssueId, run: RunHa
     await deps.git.removeWorktree(wt.dir);
     throw new Error('runAttempt: the attempt worktree has no branch');
   }
-  const ctx: Ctx = {
-    store: deps.store,
-    deps,
-    run,
-    productId: issue.productId,
-    issueId,
-    attemptId,
-    issueRev: issue.rev,
-    wt: { ...wt, branch },
-    artifacts: path.join(deps.artifactsDir, attemptId),
-    sandboxes: new Set(),
-  };
+  const sandboxes = new Set<Sandbox>();
   try {
-    if (!startAttempt(ctx, ctx.wt)) return;
+    const ref = { store: deps.store, productId: issue.productId, issueId, attemptId };
+    const started = startAttempt(ref, { ...wt, branch });
+    if (started === null) return;
+    const ctx: Ctx = {
+      ...ref,
+      deps,
+      run,
+      issue: started,
+      wt: { ...wt, branch },
+      artifacts: path.join(deps.artifactsDir, attemptId),
+      sandboxes,
+    };
     let ended: Ended;
     try {
       ended = await attempt(ctx);
     } catch (err) {
-      ended = {
-        kind: 'error',
-        reason: errorText(err),
-        headSha: null,
-        review: null,
-        checkExit: null,
-      };
+      ended = fail(errorText(err));
     }
-    if (ended.kind === 'failed') {
-      const { kind: _kind, status, feedback, ...outcome } = ended;
-      failAttempt(ctx, status, deps.redactor.redact(feedback), outcome);
-    } else if (ended.kind === 'error') {
-      const { kind: _kind, reason, ...outcome } = ended;
-      const runAfter = deps.clock.now() + ERROR_RETRY_DELAY_MS;
-      endWithError(ctx, deps.redactor.redact(reason), outcome, runAfter);
-    }
+    recordEnd(ctx, ended);
   } finally {
     try {
-      await Promise.all([...ctx.sandboxes].map((s) => s.close()));
+      await Promise.all([...sandboxes].map((s) => s.close()));
     } finally {
       await deps.git.removeWorktree(wt.dir);
     }
   }
 }
-
-const outcomeOf = (p: Partial<AttemptOutcome>): AttemptOutcome => ({
-  headSha: p.headSha ?? null,
-  review: p.review ?? null,
-  checkExit: p.checkExit ?? null,
-});
-
-/** An uncounted error: the issue goes back to open after ERROR_RETRY_DELAY_MS. */
-const fail = (reason: string, p: Partial<AttemptOutcome> = {}): Ended => ({
-  kind: 'error',
-  reason,
-  ...outcomeOf(p),
-});
-
-/** A counted failure whose feedback goes to the next attempt. */
-const counted = (
-  status: CountedStatus,
-  feedback: string,
-  p: Partial<AttemptOutcome> = {},
-): Ended => ({ kind: 'failed', status, feedback, ...outcomeOf(p) });
-
-/** A failed agent run: agent errors count, everything else (stop, rate limit, …) does not. */
-const agentFailed = (r: Failed, p: Partial<AttemptOutcome> = {}): Ended =>
-  r.counted === true ? counted('error', r.reason, p) : fail(r.reason, p);
 
 function checkFailedFeedback(what: string, check: CheckRun): string {
   const output = tailLines(check.output, CHECK_FEEDBACK_LINES);
@@ -176,14 +144,15 @@ function rejectedFeedback(review: ReviewResult): string {
 
 async function attempt(ctx: Ctx): Promise<Ended> {
   const product = ctx.deps.store.q.product(ctx.productId);
-  const issue = ctx.deps.store.q.issue(ctx.issueId);
-  if (product === null || issue === null) return fail('product or issue disappeared');
+  if (product === null) return fail('the product disappeared');
+  const { issue } = ctx;
   const project = product.project;
   if (project === null || project.check.length === 0) return fail(NO_CHECK_REASON);
 
   recordStep(ctx, 'implement');
   const impl = await implement(ctx, issue, product.name, project);
-  if (!impl.ok) return agentFailed(impl);
+  if (!impl.ok) return agentFailed(ctx, impl);
+  if (stopRequested(ctx)) return stopped(ctx, 'the run was stopped after the implementer');
 
   const commit = await ctx.deps.git.commitAll(ctx.wt.dir, mergeMessage(issue));
   if (commit.sha === null) return counted('error', NO_CHANGES_FEEDBACK);
@@ -194,7 +163,7 @@ async function attempt(ctx: Ctx): Promise<Ended> {
   recordStep(ctx, 'check');
   const check = await runCheck(ctx, project, ctx.wt.dir, 'check.log');
   await ctx.deps.git.cleanWorktree(ctx.wt.dir);
-  if (check.aborted) return fail(CHECK_ABORTED_REASON, { headSha });
+  if (check.aborted) return stopped(ctx, CHECK_ABORTED_REASON, { headSha });
   if (check.code !== 0) {
     const what = `The check \`${project.check.join(' ')}\``;
     return counted('check_failed', checkFailedFeedback(what, check), {
@@ -203,24 +172,23 @@ async function attempt(ctx: Ctx): Promise<Ended> {
     });
   }
 
+  const done = { headSha, checkExit: check.code };
+  if (stopRequested(ctx)) return stopped(ctx, 'the run was stopped after the check', done);
   if (!moveIssue(ctx, { type: 'checks_passed' }, 'review')) {
-    return fail('the issue changed during the check', { headSha, checkExit: 0 });
+    return isCancelled(ctx) ? discarded(done) : fail('the issue changed during the check', done);
   }
   const review = await reviewChange(ctx, issue, product.name, project, check.output, commit.diff);
-  const done = { headSha, checkExit: check.code };
-  if (!review.ok) return agentFailed(review, done);
+  if (!review.ok) return agentFailed(ctx, review, done);
   if (!review.value.approve) {
     return counted('rejected', rejectedFeedback(review.value), { ...done, review: review.value });
   }
 
+  const reviewed = { ...done, review: review.value };
+  if (stopRequested(ctx)) return stopped(ctx, 'the run was stopped after the review', reviewed);
   recordStep(ctx, 'merge');
-  return ctx.deps.withMergeLock(ctx.productId, () =>
-    merge(ctx, issue, project, { ...done, review: review.value }),
-  );
+  return ctx.deps.withMergeLock(ctx.productId, () => merge(ctx, issue, project, reviewed));
 }
 
-/** A failed step; `counted` marks agent errors (ADR 7), which count against maxAttempts. */
-type Failed = { ok: false; reason: string; counted?: boolean };
 type Check<T> = { ok: true; value: T } | Failed;
 
 async function implement(
@@ -325,16 +293,14 @@ async function runAgentIn<T>(
       sandbox,
       tools: toolsForRole(role).map((t) => t.name),
       limits: deps.limits?.[role] ?? DEFAULT_ATTEMPT_LIMITS[role],
-      shouldStop: () => ctx.run.shouldStop(),
+      shouldStop: () => stopRequested(ctx),
       // Not spread: the registry reads the provider settings when the model is created.
       modelDeps: deps.modelDeps,
     });
     if (result.kind === 'ok') return { ok: true, value: result.result };
-    return {
-      ok: false,
-      reason: `${role}: ${agentFailure(result)}`,
-      counted: result.kind === 'error',
-    };
+    const reason = `${role}: ${agentFailure(result)}`;
+    if (result.kind === 'error') return { ok: false, reason, counted: true };
+    return { ok: false, reason, agent: result };
   } finally {
     ctx.sandboxes.delete(sandbox);
     await sandbox.close();
@@ -350,7 +316,7 @@ function agentFailure(result: Exclude<AgentResult<unknown>, { kind: 'ok' }>): st
     case 'rate_limited':
       return `${result.backend} is rate limited`;
     case 'auth_required':
-      return `${result.backend} needs a login`;
+      return `${result.backend} needs you to log in again: log in from Settings`;
     default:
       return assertNever(result);
   }
@@ -403,7 +369,11 @@ async function runCheck(
   return { code: r.code, output, aborted: r.aborted };
 }
 
-/** Under the merge lock: re-read the issue, integrate, (re-check,) advance main, complete. */
+/**
+ * Under the merge lock: re-read the issue (cancelled → discarded; title, body or dependencies
+ * edited since attempt.started → interrupted{issue_changed}; a priority-only edit merges), then
+ * integrate, (re-check,) advance main, complete.
+ */
 async function merge(
   ctx: Ctx,
   issue: IssueState,
@@ -412,9 +382,10 @@ async function merge(
 ): Promise<Ended> {
   const { git, store } = ctx.deps;
   const now = store.q.issue(ctx.issueId);
-  if (now?.status !== 'in_review' || now.rev !== ctx.issueRev) {
-    return fail('the issue changed or was cancelled before the merge', done);
-  }
+  if (now === null || now.status === 'cancelled') return discarded(done);
+  if (contentChanged(ctx.issue, now))
+    return interrupted('issue_changed', ISSUE_CHANGED_FEEDBACK, done);
+  if (now.status !== 'in_review') return fail(`the issue is ${now.status}, not in review`, done);
   const main = await git.mainSha(ctx.productId);
   const r = await git.integrate(ctx.productId, ctx.wt.branch, ctx.wt.baseSha, mergeMessage(issue));
   switch (r.kind) {
@@ -430,7 +401,7 @@ async function merge(
     case 'merged':
       try {
         const recheck = await runCheck(ctx, project, r.dir, 'integration-check.log');
-        if (recheck.aborted) return fail(CHECK_ABORTED_REASON, done);
+        if (recheck.aborted) return stopped(ctx, CHECK_ABORTED_REASON, done);
         if (recheck.code !== 0) {
           const what = `The check \`${project.check.join(' ')}\` on the merge with main`;
           return counted('check_failed', checkFailedFeedback(what, recheck), {
@@ -448,6 +419,13 @@ async function merge(
   await git.advanceMain(ctx.productId, r.commitSha, main);
   completeAttempt(ctx, r.commitSha, done);
   return { kind: 'merged', ...done };
+}
+
+/** What the agents worked on differs: an edit of title, body or dependencies (not priority). */
+function contentChanged(was: IssueState, now: IssueState): boolean {
+  if (now.rev === was.rev) return false;
+  const deps = (i: IssueState) => [...i.dependsOn].sort().join(',');
+  return now.title !== was.title || now.body !== was.body || deps(now) !== deps(was);
 }
 
 function mergeMessage(issue: IssueState): string {
