@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PlanResult } from '../../shared/agent-results.ts';
 import type { Event, EventDraft } from '../../shared/events.ts';
 import { ProductIdSchema, type IssueId, type ProductId } from '../../shared/ids.ts';
-import { applyPlan } from '../commands/index.ts';
+import { applyPlan, cancelIssue } from '../commands/index.ts';
 import { open } from '../db/index.ts';
 import { Redactor, redactor as sharedRedactor } from '../security/index.ts';
 import { createStore, type Store } from '../store/index.ts';
@@ -77,6 +77,8 @@ function createProduct(
     maxParallel?: number;
     budgetUsd?: number | null;
     handOff?: boolean;
+    /** false: no `.vibecode/project.json` yet (before the first orchestrator run). */
+    project?: boolean;
     models?: Record<string, { provider: string; model: string }>;
   } = {},
 ) {
@@ -92,8 +94,13 @@ function createProduct(
     }),
     draft('prd.applied', p, null, { version: 1, markdown: '# v1', summary: null }),
     ...(opts.handOff === false ? [] : [draft('product.handed_off', p, null, { prdVersion: 1 })]),
+    ...(opts.project === false
+      ? []
+      : [draft('product.settings_changed', p, null, { project: PROJECT })]),
   ]);
 }
+
+const PROJECT = { check: ['npm', 'test'], imageInputs: [] };
 
 const create = (key: string, dependsOn: string[] = [], priority?: number) => ({
   op: 'create' as const,
@@ -166,10 +173,25 @@ function setup(
     await stopped;
   }
 
-  return { store, clock, scheduler, timer, plan, complete, shutdown, ...fake };
+  return { store, clock, ids, scheduler, timer, plan, complete, shutdown, ...fake };
 }
 
 describe('scheduler: attempts', () => {
+  it('starts no attempt before the product has a check command (project.json), then starts it', async () => {
+    const t = setup({ project: false });
+    const ids = t.plan([create('a')]);
+    t.scheduler.start();
+    t.timer.fire();
+    expect(t.attempts()).toHaveLength(0);
+
+    // The first orchestrator run's plan writes project.json; its commit ticks the scheduler.
+    t.store.commit(() => [draft('product.settings_changed', P, null, { project: PROJECT })]);
+    expect(t.attempts()).toHaveLength(1);
+    const first = nth(t.attempts(), 0);
+    expect(first.kind === 'attempt' && first.issueId).toBe(ids.a);
+    await t.shutdown();
+  });
+
   it('starts at most maxParallel (default 3) attempts and fills a freed slot on the next tick', async () => {
     const t = setup();
     t.plan(['a', 'b', 'c', 'd', 'e'].map((k) => create(k)));
@@ -437,6 +459,32 @@ describe('scheduler: orchestrator', () => {
   it('skips the orchestrator while its backend is blocked', () => {
     const t = setup({}, { isBackendBlocked: (_p, role) => role === 'orchestrator' });
     t.scheduler.start();
+    expect(t.orchestrators()).toHaveLength(0);
+  });
+
+  it('owner-cancelling an issue that others wait on wakes the orchestrator (stranded dependents)', () => {
+    const t = setup();
+    const ids = t.plan([create('a'), create('b', ['a']), create('c')]);
+    t.scheduler.start();
+    expect(t.orchestrators()).toHaveLength(0);
+
+    const r = cancelIssue({ store: t.store, ids: t.ids }, idOf(ids, 'a'));
+    expect(r.ok).toBe(true);
+    // No timer tick: the issue.cancelled event itself wakes the scheduler.
+    expect(t.orchestrators()).toHaveLength(1);
+    const o = nth(t.orchestrators(), 0);
+    if (o.kind !== 'orchestrator') throw new Error('expected orchestrator');
+    expect(o.triggers).toMatchObject([
+      { type: 'issue.cancelled', entityId: idOf(ids, 'a'), data: { stranded: [idOf(ids, 'b')] } },
+    ]);
+  });
+
+  it('owner-cancelling an issue nothing waits on does not wake the orchestrator', () => {
+    const t = setup();
+    const ids = t.plan([create('a'), create('b', ['a']), create('c')]);
+    t.scheduler.start();
+    expect(cancelIssue({ store: t.store, ids: t.ids }, idOf(ids, 'c')).ok).toBe(true);
+    t.timer.fire();
     expect(t.orchestrators()).toHaveLength(0);
   });
 

@@ -140,6 +140,39 @@ describe('demo mode: create → spar → handoff → plan → build → merge', 
     expectSnapshotMatchesReplay(r.store);
   }, 60_000);
 
+  it('an owner issue added before handoff waits for the check command, then merges without an error', async () => {
+    const r = await startDemo();
+    const created = await r.app.request('/api/products', post({ name: 'Todo', idea: 'todos' }));
+    const id = ProductIdSchema.parse(CreateProductResponseSchema.parse(await created.json()).id);
+    await spar(r, id, 'a');
+    await spar(r, id, 'b');
+    await spar(r, id, 'c');
+    const added = await r.app.request(
+      `/api/products/${id}/issues`,
+      post({ title: 'x', body: 'y' }),
+    );
+    expect(added.status).toBe(200);
+    expect((await r.app.request(`/api/products/${id}/handoff`, post())).status).toBe(200);
+
+    // The clock is frozen: an error retry (runAfter = now + 60 s) would never come due.
+    const issues = () => Object.values(r.store.snapshot().state.issues);
+    await waitFor(
+      () => issues().length === 4 && issues().every((i) => i.status === 'completed'),
+      '4 completed issues',
+    );
+    const events = r.store.eventsSince(0);
+    const projectSet = events.findIndex(
+      (e) => e.type === 'product.settings_changed' && e.data.project !== undefined,
+    );
+    const firstStart = events.findIndex((e) => e.type === 'attempt.started');
+    expect(projectSet).toBeGreaterThanOrEqual(0);
+    expect(firstStart).toBeGreaterThan(projectSet);
+    expect(events.filter((e) => e.type === 'attempt.ended' && e.data.status === 'error')).toEqual(
+      [],
+    );
+    expect(events.filter((e) => e.type === 'inbox.created' && e.data.kind === 'error')).toEqual([]);
+  }, 60_000);
+
   it('attempts use the settings saved after start (keys and provider config, no restart)', async () => {
     // A local OpenAI-compatible endpoint that records requests and refuses them.
     const seen: IncomingHttpHeaders[] = [];

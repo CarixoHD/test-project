@@ -264,6 +264,23 @@ describe('access control with a password', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('set-cookie')).toMatch(new RegExp(`^${SESSION_COOKIE}=;.*Max-Age=0`));
   });
+
+  it('logout ends the session on the server: the old cookie no longer works (#188)', async () => {
+    const { post, req, login } = await withPassword();
+    const { cookie = '' } = await login();
+    const other = (await login()).cookie ?? '';
+    expect((await req('/api/state', { headers: { cookie } })).status).toBe(200);
+
+    expect((await post('/api/logout', {}, { cookie })).status).toBe(200);
+
+    expect((await req('/api/state', { headers: { cookie } })).status).toBe(401);
+    expect(await session(await req('/api/session', { headers: { cookie } }))).toMatchObject({
+      authenticated: false,
+    });
+    expect((await post('/api/logout', {}, { cookie })).status).toBe(401);
+    // Other sessions (another device) stay logged in.
+    expect((await req('/api/state', { headers: { cookie: other } })).status).toBe(200);
+  });
 });
 
 describe('POST /api/settings/password', () => {

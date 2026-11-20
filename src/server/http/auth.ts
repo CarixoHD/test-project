@@ -107,6 +107,9 @@ export function registerAuthRoutes(app: Hono, access: Access, clientKey: ClientK
   });
 
   app.post('/api/logout', (c) => {
+    // End the session on the server too: a copied cookie must not outlive the logout.
+    const token = getCookie(c, SESSION_COOKIE);
+    if (token !== undefined) access.sessions.revoke(token);
     deleteCookie(c, SESSION_COOKIE, sessionCookieOptions(isHttps(c)));
     const body: OkResponse = { ok: true };
     return c.json(body);
