@@ -204,7 +204,7 @@ These are thin routes. Each one validates with zod, calls a command, and returns
 ```
 GET  /api/state                         → {state, lastSeq}
 GET  /api/events                        SSE; id=seq; replays seq > Last-Event-ID; ':hb' every 15s
-GET  /api/agents/:id/log?follow=1       full redacted agent log (NDJSON file), SSE when follow
+GET  /api/agents/:id/log?follow=1       full redacted agent log as JSON lines {ts, line}; follow → SSE (see below); 404 unknown agent
 GET  /api/attempts/:id/diff | /check    artifacts
 POST /api/products                      {name, idea}       → 201 {id}
 POST /api/products/:id/spar             {message}           → 202; reply arrives as event
@@ -221,6 +221,8 @@ GET|PUT /api/settings                   providers, keys (write-only, masked on r
 POST /api/settings/password             {current?, next}
 POST /api/login {password} · POST /api/logout · GET /api/session
 ```
+
+**Agent log** (`routes/agents.ts`, mounted when `AppDeps.logsDir` is given; `main.ts` passes `data/logs`): the agent must exist (`store.q.agent`), else 404. Every stored line is parsed (`{ts, line}`; malformed lines dropped) and `line` passes through `redactor.redact` again on the way out, so secrets registered after the line was written are masked too. Plain → `application/x-ndjson`, empty before the first line. `?follow=1` → SSE: one unnamed message per line (`data: {ts, line}`), existing lines first, then new complete lines (a line without its newline yet is held back), woken by the agent's events and a `logPollMs` poll (default 500 ms), `:hb` heartbeats; once the agent has exited and its log is fully sent, `event: end` and the stream closes.
 
 **Product settings** (`routes/product-settings.ts`, `commands/product-settings.ts`): `PATCH /api/products/:id/settings` takes `ProductSettingsUpdateRequestSchema` (`shared/dto.ts`, strict, at least one field): `budgetUsd` null or > 0, `maxParallel` and `maxAttempts` integers 1–10, `models` a partial `Record<Role, ModelRef|null>` (null = back to the global default; other roles keep their override), `gitRemote` `{url}`|null. `updateProductSettings({store, ids}, productId, input)` → `{ok; events}` | `{ok:false; code:'invalid'|'not_found'; reason}` commits one `product.settings_changed` with the given fields (`models` = the merged map). In the same commit the budget is re-checked against the new value: a warned product back under 80 % gets `budgetWarned:false` on the event (the next crossing warns again), and `budgetDrafts` adds `budget.warned` / `product.paused{budget}` when the new budget is already 80 % / 100 % spent. Invalid → 400, unknown product → 404, else `{ok:true}`.
 

@@ -140,7 +140,17 @@ export async function start(
     redactor,
     dataDir: config.dataDir,
   });
-  const app = createApp({ store, ids, git, redactor, webRoot, settings, sparring, previews });
+  const app = createApp({
+    store,
+    ids,
+    git,
+    redactor,
+    webRoot,
+    settings,
+    sparring,
+    previews,
+    logsDir,
+  });
   // The orchestrator merges under the scheduler's lock and the scheduler runs the orchestrator:
   // the lock closure reads `scheduler` only during a run, after it has been created below.
   const orchestrator = createOrchestrator({
