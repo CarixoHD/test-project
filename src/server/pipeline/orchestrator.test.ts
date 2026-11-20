@@ -19,6 +19,7 @@ import { FakeIdGen } from '../util/id-gen.ts';
 import {
   createOrchestrator,
   ORCHESTRATOR_BACKOFF_MS,
+  orchestratorPrompt,
   type Orchestrator,
   type OrchestratorDeps,
 } from './index.ts';
@@ -362,5 +363,83 @@ describe('runOrchestrator: backoff and the error inbox', () => {
     expect(h.store.q.issuesByProduct(P).length).toBe(3);
     expect(h.orchestrator.orchestratorNotBefore(P)).toBe(0);
     expect(h.cursor()).toBe(applied?.seq);
+  });
+});
+
+describe('orchestrator prompt', () => {
+  const SHA = 'a'.repeat(40);
+
+  it('lists issues with status and feedback, cancelled dependencies, triggers and the research note', async () => {
+    const h = await setup();
+    await h.run(setupScript());
+    const [scaffold, list] = h.store.q.issuesByProduct(P);
+    if (scaffold === undefined || list === undefined) throw new Error('plan not applied');
+    h.store.commit(() => [
+      draft('issue.cancelled', scaffold.id, { from: 'open', by: 'owner', reason: 'not needed' }),
+      draft('issue.status_changed', list.id, {
+        from: 'open',
+        to: 'in_progress',
+        attemptCount: 0,
+        runAfter: 0,
+      }),
+      draft('attempt.started', 'attempt-1', {
+        issueId: list.id,
+        n: 1,
+        issueRev: 1,
+        baseSha: SHA,
+        branch: 'attempt/1',
+      }),
+      draft('attempt.ended', 'attempt-1', {
+        issueId: list.id,
+        status: 'check_failed',
+        counted: true,
+        headSha: null,
+        feedback: 'FAIL list.test.ts: expected 2 todos',
+        review: null,
+        checkExit: 1,
+        interruptReason: null,
+      }),
+      draft('issue.failed', list.id, {
+        from: 'in_progress',
+        attemptCount: 3,
+        reason: 'check failed',
+      }),
+      draft('question.asked', 'question-q', {
+        target: 'orchestrator',
+        issueId: null,
+        agentId: null,
+        text: 'Which database?',
+      }),
+      draft('question.answered', 'question-q', { answer: 'SQLite' }),
+    ]);
+
+    const { instructions, prompt } = orchestratorPrompt({
+      store: h.store,
+      productId: P,
+      triggers: triggersOf(h.store, P),
+      prd: '# Todo PRD',
+      webSearch: false,
+    });
+
+    expect(instructions).toContain('# Todo PRD');
+    expect(instructions).toMatch(/#2 \[failed\] List todos/);
+    expect(instructions).toContain('Last attempt feedback: FAIL list.test.ts: expected 2 todos');
+    expect(instructions).toMatch(/#3 Add a todo .*depends on cancelled #1/);
+    expect(instructions).toMatch(/Issue #2 List todos failed after 3 attempts: check failed/);
+    expect(instructions).toContain('The owner answered your question "Which database?": SQLite');
+    expect(instructions).toMatch(/Web search is NOT available/);
+    expect(instructions).toMatch(/Debian\/glibc/);
+    expect(instructions).toContain('.vibecode/project.json');
+    expect(instructions).toMatch(/thin vertical slice/);
+    expect(prompt).toMatch(/finish/);
+
+    const withSearch = orchestratorPrompt({
+      store: h.store,
+      productId: P,
+      triggers: [],
+      prd: null,
+      webSearch: true,
+    }).instructions;
+    expect(withSearch).toMatch(/Web search is available/);
   });
 });

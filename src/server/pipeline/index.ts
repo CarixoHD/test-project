@@ -33,3 +33,4 @@ export {
   ORCHESTRATOR_MAX_FAILURES,
   OrchestratorBackoff,
 } from './orchestrator-backoff.ts';
+export { orchestratorPrompt, type OrchestratorPromptInput } from './orchestrator-prompt.ts';
