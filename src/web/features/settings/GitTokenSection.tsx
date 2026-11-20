@@ -1,12 +1,7 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
-import type { GitTokenView } from '../../../shared/dto.ts';
+import { useCallback, useId, useRef, useState, type FormEvent } from 'react';
 import { ApiError, getGitToken, updateGitToken } from '../../state/api.ts';
 import { Button, Field } from '../../ui/index.ts';
-
-type Load =
-  | { kind: 'loading' }
-  | { kind: 'loaded'; view: GitTokenView }
-  | { kind: 'failed'; message: string };
+import { useRetryableLoad } from './use-retryable-load.ts';
 
 const messageOf = (err: unknown): string =>
   err instanceof ApiError ? err.message : 'Unexpected error.';
@@ -18,29 +13,22 @@ const messageOf = (err: unknown): string =>
  */
 export function GitTokenSection({ productId }: { productId: string }) {
   const headingId = useId();
-  const [load, setLoad] = useState<Load>({ kind: 'loading' });
+  const fetchToken = useCallback(
+    (signal: AbortSignal) => getGitToken(productId, signal),
+    [productId],
+  );
+  const { load, setView, retry } = useRetryableLoad(fetchToken, messageOf);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    const ac = new AbortController();
-    getGitToken(productId, ac.signal).then(
-      (view) => setLoad({ kind: 'loaded', view }),
-      (err: unknown) => {
-        if (!ac.signal.aborted) setLoad({ kind: 'failed', message: messageOf(err) });
-      },
-    );
-    return () => ac.abort();
-  }, [productId]);
-
   async function save(token: string | null): Promise<boolean> {
     setBusy(true);
     try {
       const view = await updateGitToken(productId, token);
-      setLoad({ kind: 'loaded', view });
+      setView(view);
       setError(null);
       return true;
     } catch (err) {
@@ -84,7 +72,12 @@ export function GitTokenSection({ productId }: { productId: string }) {
       </p>
       {load.kind === 'loading' ? <p>Loading…</p> : null}
       {load.kind === 'failed' ? (
-        <p className="ui-field__error">Could not load the token status: {load.message}</p>
+        <div className="settings-provider__stored">
+          <p role="alert" className="ui-field__error">
+            Could not load the token status: {load.message}
+          </p>
+          <Button onClick={retry}>Try again</Button>
+        </div>
       ) : null}
       {load.kind === 'loaded' && load.view.set ? (
         <div className="settings-provider__stored">
