@@ -18,7 +18,9 @@ import {
   RECORD_LIMITS,
   RECORD_ROLE,
   RecordResultSchema,
+  USAGE,
   loadStoredSecrets,
+  registerEnvSecrets,
   parseRecordArgs,
   recordClaudeStream,
   type RecordDeps,
@@ -30,7 +32,12 @@ const STREAM =
   `{"type":"system","subtype":"init","claude_code_version":"2.1.329","note":"${SECRET}"}\n` +
   `{"type":"result","subtype":"success","structured_output":{"ok":true}}\n`;
 
-type Call = { cmd: string; argv: readonly string[]; input: unknown };
+type Call = {
+  cmd: string;
+  argv: readonly string[];
+  input: unknown;
+  env: Record<string, string | undefined> | undefined;
+};
 
 function ok(stdout: string, code = 0): ExecResult {
   return {
@@ -57,7 +64,7 @@ function setup(overrides: Partial<RecordDeps> = {}) {
     gid: 20,
     redactor,
     exec: async (cmd, argv, o) => {
-      calls.push({ cmd, argv, input: o.input });
+      calls.push({ cmd, argv, input: o.input, env: o.env });
       return argv.includes('--version') ? ok('2.1.329 (Claude Code)\n') : ok(STREAM);
     },
     writeFile: async (path, text) => {
@@ -235,6 +242,87 @@ describe('recordClaudeStream', () => {
     const run = calls.find((c) => !c.argv.includes('--version'))?.argv ?? [];
     expect(run.join(' ')).toContain(`--tmpfs ${AGENT_HOME}:rw`);
     expect(run[run.indexOf('--workdir') + 1]).toBe('/tmp');
+  });
+});
+
+describe('recordClaudeStream with CLAUDE_CODE_OAUTH_TOKEN', () => {
+  const TOKEN = 'sk-ant-oat01-subscriptiontoken-abcdefghij0123456789';
+  const runOf = (calls: Call[]) => calls.find((c) => !c.argv.includes('--version'));
+
+  it('passes the token by name only and does not mount the login volume', async () => {
+    const { deps, calls } = setup({ oauthToken: TOKEN });
+    expect(await recordClaudeStream(options, deps)).toBe(0);
+    const run = runOf(calls);
+    const argv = run?.argv ?? [];
+    expect(argv[argv.indexOf('CLAUDE_CODE_OAUTH_TOKEN') - 1]).toBe('--env');
+    expect(argv.join(' ')).not.toContain(TOKEN);
+    expect(argv).not.toContain('--mount');
+    expect(argv.join(' ')).not.toContain(CLAUDE_CONFIG_VOLUME);
+    expect(run?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: TOKEN });
+    for (const c of calls) expect(c.argv.join(' ')).not.toContain(TOKEN);
+  });
+
+  it('keeps the volume mount and passes no env without a token', async () => {
+    const { deps, calls } = setup();
+    await recordClaudeStream(options, deps);
+    const run = runOf(calls);
+    expect(run?.argv).not.toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(run?.argv).toContain('--mount');
+    expect(run?.env).toBeUndefined();
+  });
+
+  it('treats an empty token as unset', async () => {
+    const { deps, calls } = setup({ oauthToken: '' });
+    await recordClaudeStream(options, deps);
+    expect(runOf(calls)?.argv).toContain('--mount');
+    expect(runOf(calls)?.argv).not.toContain('CLAUDE_CODE_OAUTH_TOKEN');
+  });
+
+  it('logs which auth source was used, never the value', async () => {
+    const withToken = setup({ oauthToken: TOKEN });
+    await recordClaudeStream(options, withToken.deps);
+    expect(withToken.logs.join('\n')).toContain('token from environment');
+    expect(withToken.logs.join('\n')).not.toContain(TOKEN);
+    const withVolume = setup();
+    await recordClaudeStream(options, withVolume.deps);
+    expect(withVolume.logs.join('\n')).toContain('login volume');
+  });
+
+  it('redacts the env token from the written fixture and the logged stderr', async () => {
+    const redactor = new Redactor();
+    registerEnvSecrets({ CLAUDE_CODE_OAUTH_TOKEN: TOKEN, PATH: '/usr/bin' }, redactor);
+    const { deps, writes, logs } = setup({
+      redactor,
+      oauthToken: TOKEN,
+      exec: async (_cmd, argv) =>
+        argv.includes('--version')
+          ? ok('2.1.329\n')
+          : {
+              ...ok(`{"type":"result","structured_output":{"ok":true},"leak":"${TOKEN}"}\n`, 1),
+              stderr: `auth failed for ${TOKEN}`,
+            },
+    });
+    expect(await recordClaudeStream(options, deps)).toBe(1);
+    expect(writes[0]?.text).not.toContain(TOKEN);
+    expect(writes[0]?.text).toContain(`"leak":"***${TOKEN.slice(-4)}"`);
+    const logged = logs.join('\n');
+    expect(logged).toContain('auth failed for ***');
+    expect(logged).not.toContain(TOKEN);
+  });
+
+  it('registerEnvSecrets registers only secret-looking names', () => {
+    const redactor = new Redactor();
+    registerEnvSecrets(
+      { CLAUDE_CODE_OAUTH_TOKEN: TOKEN, HOME_DIR_PATH: '/home/someone-long' },
+      redactor,
+    );
+    expect(redactor.redact(TOKEN)).not.toContain(TOKEN);
+    expect(redactor.redact('/home/someone-long')).toBe('/home/someone-long');
+  });
+
+  it('USAGE describes both auth sources', () => {
+    expect(USAGE).toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(USAGE).toContain(CLAUDE_CONFIG_VOLUME);
   });
 });
 
