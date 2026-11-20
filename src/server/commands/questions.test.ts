@@ -4,7 +4,7 @@ import { QuestionIdSchema, type IssueId } from '../../shared/ids.ts';
 import { createApp } from '../http/index.ts';
 import { productCreated, setupStore, TEST_PRODUCT } from '../http/testing.ts';
 import { expectSnapshotMatchesReplay } from '../store/testing.ts';
-import { addIssue, answerQuestion } from './index.ts';
+import { addIssue, answerQuestion, applyPlan, cancelIssue } from './index.ts';
 
 // Owner answers to agent questions (ARCHITECTURE §6 flow 8): question.answered, and for an
 // issue question that holds its issue also issue.released. A second answer is a conflict.
@@ -143,6 +143,97 @@ describe('POST /api/questions/:id/answer', () => {
     expect((await post(s.app, 'question-x', { text: 'Email' })).status).toBe(404);
     expect((await post(s.app, 'question-1', { text: '   ' })).status).toBe(400);
     expect((await post(s.app, 'question-1', {})).status).toBe(400);
+    expect(question(s, 'question-1')?.answer).toBeNull();
+  });
+});
+
+describe('cancelling a held issue withdraws its open questions', () => {
+  it('owner cancel commits issue.cancelled and question.withdrawn atomically', () => {
+    const s = setup();
+    askIssueQuestion(s, 'question-1');
+    const before = s.store.snapshot().lastSeq;
+
+    const r = cancelIssue(s, s.issueId);
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.events.map((e) => [e.type, e.entityId])).toEqual([
+      ['issue.cancelled', s.issueId],
+      ['question.withdrawn', 'question-1'],
+    ]);
+    // One commit: every event of the command shares its timestamp and follows `before` directly.
+    expect(typesSince(s, before)).toEqual(['issue.cancelled', 'question.withdrawn']);
+    const state = s.store.snapshot().state;
+    expect(state.questions[QuestionIdSchema.parse('question-1')]).toMatchObject({
+      answer: null,
+      withdrawnAt: expect.any(Number),
+      withdrawnReason: expect.stringContaining('cancelled'),
+    });
+    expectSnapshotMatchesReplay(s.store);
+  });
+
+  it('withdraws only unanswered questions of that issue', () => {
+    const s = setup();
+    askIssueQuestion(s, 'question-1', false);
+    expect(answerQuestion(s, 'question-1', 'Email').ok).toBe(true);
+    askIssueQuestion(s, 'question-2');
+    askOrchestratorQuestion(s, 'question-3');
+    const before = s.store.snapshot().lastSeq;
+
+    expect(cancelIssue(s, s.issueId).ok).toBe(true);
+
+    expect(s.store.eventsSince(before).map((e) => [e.type, e.entityId])).toEqual([
+      ['issue.cancelled', s.issueId],
+      ['question.withdrawn', 'question-2'],
+    ]);
+    expect(question(s, 'question-1')?.withdrawnAt).toBeNull();
+    expect(question(s, 'question-3')?.withdrawnAt).toBeNull();
+    expectSnapshotMatchesReplay(s.store);
+  });
+
+  it('an orchestrator cancel op on a held issue withdraws its question in the plan commit', () => {
+    const s = setup();
+    s.store.commit(() => [
+      draft('prd.applied', null, { version: 1, markdown: '# PRD', summary: null }),
+      draft('product.handed_off', null, { prdVersion: 1 }),
+    ]);
+    askIssueQuestion(s, 'question-1');
+    const before = s.store.snapshot().lastSeq;
+
+    const r = applyPlan(
+      s,
+      TEST_PRODUCT,
+      {
+        issueOps: [{ op: 'cancel', id: s.issueId, reason: 'not needed' }],
+        questions: [],
+        summary: 'Drop it',
+      },
+      before,
+    );
+
+    expect(r).toMatchObject({ ok: true });
+    expect(typesSince(s, before)).toEqual([
+      'issue.cancelled',
+      'question.withdrawn',
+      'orchestrator.cursor_advanced',
+    ]);
+    expect(question(s, 'question-1')?.withdrawnAt).toEqual(expect.any(Number));
+    expectSnapshotMatchesReplay(s.store);
+  });
+
+  it('answering a withdrawn question is a conflict and commits nothing', async () => {
+    const s = setup();
+    askIssueQuestion(s, 'question-1');
+    expect(cancelIssue(s, s.issueId).ok).toBe(true);
+    const before = s.store.snapshot().lastSeq;
+
+    expect(answerQuestion(s, 'question-1', 'Email')).toMatchObject({
+      ok: false,
+      code: 'conflict',
+    });
+    const res = await post(s.app, 'question-1', { text: 'Email' });
+    expect(res.status).toBe(409);
+    expect(s.store.snapshot().lastSeq).toBe(before);
     expect(question(s, 'question-1')?.answer).toBeNull();
   });
 });

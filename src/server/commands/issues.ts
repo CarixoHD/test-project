@@ -6,6 +6,7 @@ import type { IssueState } from '../../shared/state.ts';
 import type { Queries } from '../store/index.ts';
 import type { CommandDeps } from './apply-plan.ts';
 import { findDependencyCycle, nextIssueNumber, resolveDependsOn } from './issue-graph.ts';
+import { withdrawIssueQuestions } from './questions.ts';
 
 // Owner issue commands (ARCHITECTURE §6 flow 7): add, edit (rev-guarded) and cancel.
 // Each validates against the projections inside the commit and emits nothing on failure.
@@ -203,6 +204,6 @@ export function cancelIssue(deps: CommandDeps, id: IssueId): CancelIssueResult {
       v: 1,
       data: { from, by: 'owner', reason: 'cancelled by the owner' },
     };
-    return { ok: true, drafts: [draft] };
+    return { ok: true, drafts: [draft, ...withdrawIssueQuestions(q, id)] };
   });
 }

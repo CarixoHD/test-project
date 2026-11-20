@@ -18,6 +18,7 @@ import {
   resolveDependsOn,
   type DependsOnContext,
 } from './issue-graph.ts';
+import { withdrawIssueQuestions } from './questions.ts';
 
 // Applies an orchestrator PlanResult to the issue board (ARCHITECTURE §6 flow 3, ADR 7).
 // Ops are validated in order against a working copy of the product's issues; if any op is
@@ -56,6 +57,7 @@ const fail = (reason: string): Fail => ({ ok: false, reason });
 
 /** Mutable state while the plan's ops are checked one by one. */
 type Board = {
+  q: Queries;
   productId: ProductId;
   product: ProductState;
   /** Every issue of the product, as it will be after the ops so far (incl. new ones). */
@@ -110,6 +112,7 @@ function buildPlan(
   }
   const existing = q.issuesByProduct(productId);
   const board: Board = {
+    q,
     productId,
     product,
     issues: new Map(existing.map(({ productId: _p, ...view }) => [view.id, view])),
@@ -335,6 +338,7 @@ function cancelIssue(board: Board, op: OpOf<'cancel'>): { ok: true } | Fail {
     v: 1,
     data: { from, by: 'orchestrator', reason: op.reason },
   });
+  board.drafts.push(...withdrawIssueQuestions(board.q, issue.id));
   return { ok: true };
 }
 
