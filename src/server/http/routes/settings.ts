@@ -5,7 +5,7 @@ import {
   type SettingsUpdateResponse,
 } from '../../../shared/dto.ts';
 import type { AccountSettings } from '../../commands/index.ts';
-import { fail } from '../errors.ts';
+import { readJson } from '../body.ts';
 
 /**
  * GET|PUT /api/settings (ARCHITECTURE §4.3): account-wide settings. API keys are write-only:
@@ -18,10 +18,7 @@ export function registerSettingsRoutes(app: Hono, settings: AccountSettings): vo
   });
 
   app.put('/api/settings', async (c) => {
-    const body: unknown = await c.req
-      .json()
-      .catch(() => fail({ ok: false, reason: 'The body must be JSON' }));
-    settings.update(SettingsUpdateRequestSchema.parse(body));
+    settings.update(SettingsUpdateRequestSchema.parse(await readJson(c)));
     const res: SettingsUpdateResponse = { ok: true, ...settings.view() };
     return c.json(res);
   });
