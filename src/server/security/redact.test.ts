@@ -119,6 +119,69 @@ describe('Redactor', () => {
       r.register(pem);
       expect(r.redact(`key:${eol}${pem}${eol}done`)).toBe(`key:${eol}${masked(pem)}${eol}done`);
     });
+
+    it.each([
+      ['LF', '\n'],
+      ['CRLF', '\r\n'],
+    ])('does not register PEM armor lines on their own (%s)', (_name, eol) => {
+      const r = new Redactor();
+      r.register(PEM.join(eol));
+      const output = [
+        'generated test cert:',
+        '-----BEGIN PRIVATE KEY-----',
+        'notTheSecretBody',
+        '-----END PRIVATE KEY-----',
+        '-----BEGIN CERTIFICATE-----',
+      ].join(eol);
+      expect(r.redact(output)).toBe(output);
+    });
+
+    it('exempts armor lines with surrounding whitespace and other labels', () => {
+      const r = new Redactor();
+      r.register(
+        ['  -----BEGIN RSA PRIVATE KEY-----  ', ...LINES, '\t-----END EC2 KEY-----'].join('\n'),
+      );
+      expect(r.redact('-----BEGIN RSA PRIVATE KEY-----')).toBe('-----BEGIN RSA PRIVATE KEY-----');
+      expect(r.redact('\t-----END EC2 KEY-----')).toBe('\t-----END EC2 KEY-----');
+      for (const line of LINES) expect(r.redact(line)).toBe(masked(line));
+    });
+
+    it('still registers lines that only resemble armor', () => {
+      const r = new Redactor();
+      const fake = '-----BEGIN private key-----';
+      r.register(['header', fake].join('\n'));
+      expect(r.redact(`x ${fake}`)).toBe(`x ${masked(fake)}`);
+    });
+
+    it('still masks the full PEM and body lines when streamed in chunks', () => {
+      const r = new Redactor();
+      const pem = PEM.join('\n');
+      r.register(pem);
+      const text = `start\n${pem}\nend`;
+      let out = '';
+      let pending = '';
+      for (let i = 0; i < text.length; i += 7) {
+        pending += text.slice(i, i + 7);
+        const cut = r.safeBoundary(pending);
+        out += r.redact(pending.slice(0, cut));
+        pending = pending.slice(cut);
+      }
+      out += r.redact(pending);
+      expect(out).toBe(`start\n${masked(pem)}\nend`);
+      // Line-split stream: each line redacted on its own.
+      const perLine = pem
+        .split('\n')
+        .map((l) => r.redact(l))
+        .join('\n');
+      expect(perLine).toBe(
+        [
+          '-----BEGIN PRIVATE KEY-----',
+          ...LINES.map(masked),
+          SHORT_LINE,
+          '-----END PRIVATE KEY-----',
+        ].join('\n'),
+      );
+    });
   });
 
   it('exports a process-wide default instance', () => {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { GIT_REMOTE_URL_ERROR, validateGitRemoteUrl } from './git-remote.ts';
 import { IssueIdSchema, QuestionIdSchema } from './ids.ts';
 import { RoleModelsSchema } from './models.ts';
 
@@ -92,8 +93,18 @@ export const GitShaSchema = z
   .string()
   .regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/, 'expected a full git sha');
 
+/**
+ * A stored git remote (events, projection, snapshot). Deliberately lenient: rows written before
+ * the URL rule (#97) must still replay. New values go through `GitRemoteInputSchema`, and the
+ * push path re-checks with `validateGitRemoteUrl` before using a stored URL.
+ */
 export const GitRemoteSchema = z.object({ url: Text });
 export type GitRemote = z.infer<typeof GitRemoteSchema>;
+
+/** A git remote set by the owner: same rule on the server (PATCH settings) and in the web form. */
+export const GitRemoteInputSchema = z.object({
+  url: z.string().refine((url) => validateGitRemoteUrl(url).ok, GIT_REMOTE_URL_ERROR),
+});
 
 export const ProductSettingsSchema = z.object({
   budgetUsd: UsdSchema.nullable(),

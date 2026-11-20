@@ -157,6 +157,40 @@ describe('ProductSettingsTab', () => {
     expect(sent).toEqual([]);
   });
 
+  it.each([
+    'https://user:token@example.com/r.git',
+    'ext::sh -c id',
+    'file:///etc/passwd',
+    '../local/repo',
+  ])('shows an inline error for the git remote %s and does not save', async (url) => {
+    const user = userEvent.setup();
+    render(<ProductSettingsTab product={product()} />);
+
+    await user.type(screen.getByLabelText('Git remote URL'), url);
+    await user.click(screen.getByRole('button', { name: 'Save settings' }));
+
+    const remote = screen.getByLabelText('Git remote URL');
+    expect(remote).toHaveAttribute('aria-invalid', 'true');
+    expect(remote).toHaveAccessibleDescription(
+      expect.stringContaining(
+        'Use an https:// or SSH URL without credentials. Set the token separately.',
+      ),
+    );
+    expect(remote).toHaveFocus();
+    expect(sent).toEqual([]);
+  });
+
+  it('saves a valid https git remote', async () => {
+    const user = userEvent.setup();
+    render(<ProductSettingsTab product={product()} />);
+
+    await user.type(screen.getByLabelText('Git remote URL'), 'https://example.com/r.git');
+    await user.click(screen.getByRole('button', { name: 'Save settings' }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Settings saved.');
+    expect(sent[0]?.body).toMatchObject({ gitRemote: { url: 'https://example.com/r.git' } });
+  });
+
   it('shows the server error when saving fails and keeps the input', async () => {
     const user = userEvent.setup();
     response = () =>
