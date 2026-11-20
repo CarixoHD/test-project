@@ -5,6 +5,9 @@ import type { AttemptId, IssueId, ProductId } from '../../shared/ids.ts';
 import { transition, type IssueTransitionEvent } from '../../shared/issues.ts';
 import type { IssueState } from '../../shared/state.ts';
 import type { Store, Tx } from '../store/index.ts';
+import { limitDrafts, type BackendLimitDraft } from './backend-limit.ts';
+
+export type { BackendLimitDraft } from './backend-limit.ts';
 
 // Store commits of an attempt (ARCHITECTURE §6 flow 4). Issue moves always go through the
 // shared `transition()`; a move that is no longer legal (e.g. the owner cancelled) is skipped.
@@ -158,14 +161,6 @@ export function endWithError(
   ]);
 }
 
-/** An account-wide backend limit recorded with an interruption (backend.limited). */
-export type BackendLimitDraft = {
-  backend: string;
-  until: number | null;
-  needsLogin: boolean;
-  reason: string;
-};
-
 /**
  * attempt.ended{interrupted, interruptReason}, uncounted (ADR 7), and the issue back to open
  * (not before `runAfter`) when it is still in progress or in review. `limit` also commits
@@ -181,7 +176,7 @@ export function interruptAttempt(
 ): void {
   ref.store.commit((tx) => {
     const { limit, runAfter } = o;
-    const limited = limit !== undefined && limitChanged(tx, limit) ? [limitedDraft(limit)] : [];
+    const limited = limit === undefined ? [] : limitDrafts(tx, limit);
     return [
       endedDraft(ref, 'interrupted', feedback, outcome, false, reason),
       ...reopenDrafts(tx, ref, {
@@ -208,21 +203,6 @@ function reopenDrafts(
   const reopened = issue === null ? null : statusDraft(tx, issue, ev);
   return reopened === null ? [] : [reopened];
 }
-
-function limitChanged(tx: Tx, limit: BackendLimitDraft): boolean {
-  const current = tx.q.backendLimit(limit.backend);
-  return (
-    current === null || current.until !== limit.until || current.needsLogin !== limit.needsLogin
-  );
-}
-
-const limitedDraft = (data: BackendLimitDraft): EventDraft => ({
-  type: 'backend.limited',
-  productId: null,
-  entityId: null,
-  v: 1,
-  data,
-});
 
 const config = (tx: Tx, issue: IssueState) => ({
   maxAttempts: tx.q.product(issue.productId)?.settings.maxAttempts ?? 1,

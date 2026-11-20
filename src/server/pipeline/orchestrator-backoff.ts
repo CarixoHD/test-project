@@ -41,6 +41,19 @@ export class OrchestratorBackoff {
     return { failures, gaveUp };
   }
 
+  /**
+   * Waits for a backend limit (rate limit or login) without counting a failure: no run starts
+   * before `until`, and an existing failure backoff is never shortened.
+   */
+  waitUntil(productId: ProductId, until: number): void {
+    const s = this.#byProduct.get(productId);
+    if (s === undefined) {
+      this.#byProduct.set(productId, { failures: 0, notBefore: until, gaveUpAtSeq: null });
+      return;
+    }
+    s.notBefore = Math.max(s.notBefore, until);
+  }
+
   recordSuccess(productId: ProductId): void {
     this.#byProduct.delete(productId);
   }

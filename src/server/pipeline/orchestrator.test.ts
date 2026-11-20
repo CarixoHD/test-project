@@ -94,7 +94,11 @@ type Harness = {
 };
 
 async function setup(
-  o: { runtime?: FakeContainerRuntime; failImageBuild?: () => boolean } = {},
+  o: {
+    runtime?: FakeContainerRuntime;
+    failImageBuild?: () => boolean;
+    models?: Record<string, { provider: string; model: string }>;
+  } = {},
 ): Promise<Harness> {
   const clock = new FakeClock(START);
   const ids = new FakeIdGen();
@@ -108,7 +112,7 @@ async function setup(
       budgetUsd: null,
       maxParallel: 3,
       maxAttempts: 3,
-      models: {},
+      models: o.models ?? {},
       gitRemote: null,
     }),
     draft('prd.applied', null, { version: 1, markdown: '# Todo', summary: null }),
@@ -363,6 +367,68 @@ describe('runOrchestrator: backoff and the error inbox', () => {
     expect(h.store.q.issuesByProduct(P).length).toBe(3);
     expect(h.orchestrator.orchestratorNotBefore(P)).toBe(0);
     expect(h.cursor()).toBe(applied?.seq);
+  });
+});
+
+describe('runOrchestrator: rate limits and logins (backend.limited)', () => {
+  const limitedEvents = (store: Store) =>
+    store.eventsSince(0).flatMap((e) => (e.type === 'backend.limited' ? [e.data] : []));
+
+  it('a rate limit records backend.limited{until} once, waits until then and is not counted', async () => {
+    const h = await setup();
+    const rateLimited: FakeScript = [{ error: { status: 429, retryAfterSeconds: 120 } }];
+    const until = START + 120_000;
+
+    for (let i = 0; i < 4; i += 1) await h.run(rateLimited);
+
+    expect(limitedEvents(h.store)).toEqual([
+      expect.objectContaining({ backend: 'fake', until, needsLogin: false }),
+    ]);
+    expect(h.store.q.backendLimit('fake')).toMatchObject({ until, needsLogin: false });
+    // Not a failure: no 30 s backoff, no give-up after 3, no error inbox item.
+    expect(h.orchestrator.orchestratorNotBefore(P)).toBe(until);
+    expect(inboxOf(h.store)).toEqual([]);
+    expect(h.cursor()).toBe(0);
+    expectSnapshotMatchesReplay(h.store);
+
+    h.clock.advance(120_000);
+    await h.run(setupScript());
+    expect(h.store.q.issuesByProduct(P)).toHaveLength(3);
+    expect(h.orchestrator.orchestratorNotBefore(P)).toBe(0);
+  });
+
+  it('a rate limit does not shorten an earlier failure backoff', async () => {
+    const h = await setup();
+    await h.run([{ toolCalls: [write('package.json', '{}')] }, finish(THREE_ISSUES)]);
+    expect(h.orchestrator.orchestratorNotBefore(P)).toBe(START + 30_000);
+    await h.run([{ error: { status: 429, retryAfterSeconds: 5 } }]);
+    expect(h.orchestrator.orchestratorNotBefore(P)).toBe(START + 30_000);
+  });
+
+  it('a needed Claude Code login records backend.limited{needsLogin} and is not counted', async () => {
+    const runtime = new FakeContainerRuntime({
+      dataDir,
+      script: [
+        {
+          match: (argv) => argv[0] === 'env' && argv.includes('claude'),
+          result: { code: 1, stdout: '', stderr: 'Login expired. Please run /login.' },
+        },
+      ],
+    });
+    const h = await setup({
+      runtime,
+      models: { orchestrator: { provider: 'claude-code', model: 'opus' } },
+    });
+
+    for (let i = 0; i < 4; i += 1) await h.run([]);
+
+    expect(limitedEvents(h.store)).toEqual([
+      expect.objectContaining({ backend: 'claude-code', until: null, needsLogin: true }),
+    ]);
+    expect(h.orchestrator.orchestratorNotBefore(P)).toBe(START + 60_000);
+    expect(inboxOf(h.store)).toEqual([]);
+    expect(h.cursor()).toBe(0);
+    expectSnapshotMatchesReplay(h.store);
   });
 });
 
