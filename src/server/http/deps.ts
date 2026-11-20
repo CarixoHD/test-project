@@ -1,6 +1,12 @@
 import type { Context } from 'hono';
 import type { IdGen, ProductId } from '../../shared/ids.ts';
-import type { Access, AccountSettings, GitTokens, Sparring } from '../commands/index.ts';
+import type {
+  Access,
+  AccountSettings,
+  ClaudeCodeToken,
+  GitTokens,
+  Sparring,
+} from '../commands/index.ts';
 import type { Git } from '../git/index.ts';
 import type { ClaudeLoginSource, Previews } from '../sandbox/index.ts';
 import type { Store } from '../store/index.ts';
@@ -30,6 +36,8 @@ export interface AppDeps {
   previews?: Previews | undefined;
   /** Claude Code login commands (GET /api/backends/claude-code/login); that route exists only when given. */
   claudeLogin?: ClaudeLoginSource | undefined;
+  /** Claude subscription token (GET|PUT /api/backends/claude-code/token); routes exist only when given. */
+  claudeCodeToken?: ClaudeCodeToken | undefined;
   /** `data/logs` (agent logs, GET /api/agents/:id/log); that route exists only when given. */
   logsDir?: string | undefined;
   /** `data/artifacts` (GET /api/attempts/:id/diff | /check); those routes exist only when given. */
