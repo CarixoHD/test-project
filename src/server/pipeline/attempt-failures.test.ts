@@ -17,6 +17,7 @@ import {
   type SpawnedAgent,
 } from './attempt-testing.ts';
 import { createOrchestrator } from './index.ts';
+import { editIssue } from '../commands/index.ts';
 
 // Counted attempt failures (ARCHITECTURE §6 flow 4 step 9, ADR 7): check_failed, rejected,
 // conflict, empty diff and agent error each count against maxAttempts, store their feedback and
@@ -44,8 +45,12 @@ const writeAndFinish = (file: string, content: string): FakeScript => [
 
 const attemptsOf = (store: Store, issueId: IssueId) => store.q.attemptsByIssue(issueId);
 const failingCheck = (stdout: string) => () => ({ code: 1, stdout });
+const PASSING = { code: 0, stdout: 'ok\n' };
 const implementerPrompts = (h: Harness, issueId: IssueId) =>
   h.modelCalls.filter((c) => c.role === 'implementer' && c.issueId === issueId);
+
+// model calls are recorded as JSON, so the newlines appear escaped
+const NO_FEEDBACK = JSON.stringify('## Feedback from the previous attempt\n\n(none)').slice(1, -1);
 
 const manyLines = Array.from({ length: 250 }, (_, i) => `line ${i + 1}`).join('\n');
 
@@ -277,6 +282,41 @@ describe('runAttempt: feedback reaches the next attempt', () => {
   });
 });
 
+describe('runAttempt: feedback is scoped to the issue rev', () => {
+  it('a retry at the same rev says (none) only before the first attempt', async () => {
+    const h = await setup({ check: (n) => (n === 0 ? failingCheck('red at rev 1\n')() : PASSING) });
+    const id = h.addIssue('Scaffold');
+
+    await h.run(id);
+    await h.run(id);
+
+    const prompts = implementerPrompts(h, id);
+    expect(prompts[0]?.prompt).toContain(NO_FEEDBACK);
+    expect(prompts.at(-1)?.prompt).toContain('red at rev 1');
+  });
+
+  it('after an owner edit bumps the rev, the old feedback is not included', async () => {
+    const h = await setup({ check: (n) => (n === 0 ? failingCheck('red at rev 1\n')() : PASSING) });
+    const id = h.addIssue('Scaffold');
+
+    await h.run(id);
+    expect(attemptsOf(h.store, id).map((a) => a.issueRev)).toEqual([1]);
+    const edited = editIssue({ store: h.store, ids: h.ids }, id, {
+      rev: 1,
+      body: 'Build Scaffold, edited by the owner.',
+    });
+    expect(edited).toMatchObject({ ok: true, rev: 2 });
+
+    await h.run(id);
+
+    const last = implementerPrompts(h, id).at(-1)?.prompt;
+    expect(last).toContain('Build Scaffold, edited by the owner.');
+    expect(last).not.toContain('red at rev 1');
+    expect(last).toContain(NO_FEEDBACK);
+    expect(attemptsOf(h.store, id).map((a) => a.issueRev)).toEqual([1, 2]);
+  });
+});
+
 describe('runAttempt: max attempts', () => {
   it.each([1, 2, 4])('maxAttempts %i: fails after that many counted failures', async (max) => {
     const h = await setup({ maxAttempts: max, check: failingCheck('still red\n') });
@@ -388,7 +428,11 @@ describe('failed → orchestrator rewrite → completed', () => {
 
     await h.run(id);
 
-    expect(implementerPrompts(h, id).at(-1)?.prompt).toContain('Build Scaffold; keep it small.');
+    const afterRewrite = implementerPrompts(h, id).at(-1)?.prompt;
+    expect(afterRewrite).toContain('Build Scaffold; keep it small.');
+    // feedback written against the old body (rev 1) is not handed to the rewritten issue (rev 2)
+    expect(afterRewrite).not.toContain('Wrong file');
+    expect(afterRewrite).toContain(NO_FEEDBACK);
     expect(h.store.q.issue(id)).toMatchObject({ status: 'completed', attemptCount: 0 });
     expect(attemptsOf(h.store, id).map((a) => a.status)).toEqual([
       'rejected',
