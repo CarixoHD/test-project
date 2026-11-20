@@ -3,7 +3,16 @@
 // buildRunArgs; before that, the worktree is resolved with realpath and confined to
 // realpath(<dataDir>/worktrees), because Docker follows symlinks in bind sources.
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, readFile, readdir, realpath, stat, truncate, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  stat,
+  truncate,
+  writeFile,
+} from 'node:fs/promises';
 import path from 'node:path';
 import { ProjectConfigSchema } from '../../shared/agent-results.ts';
 import { redactor } from '../security/index.ts';
@@ -17,10 +26,13 @@ import {
 import {
   AGENT_HOME,
   CLAUDE_CONFIG_VOLUME,
+  GIT_MASK_DIR,
+  GIT_MASK_FILE,
   NETWORKS,
   WORKSPACE,
   buildRunArgs,
   containerName,
+  type GitMask,
 } from './run-args.ts';
 import type {
   ClaudeLoginCommands,
@@ -570,12 +582,12 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
     return Number(m[1]);
   }
 
-  /** Confinement + mask file + networks, then buildRunArgs (which stays pure). */
+  /** Confinement + .git mountpoint and mask + networks, then buildRunArgs (which stays pure). */
   async #prepare(spec: SandboxSpec): Promise<string[]> {
     const real = await this.#resolve(spec.worktree);
-    await ensureMaskFile(real.dataDir);
+    const gitMask = await prepareGitMask(real.dataDir, real.worktree);
     const host: HostIdentity = { uid: this.#o.uid, gid: this.#o.gid, dataDir: real.dataDir };
-    const args = buildRunArgs({ ...spec, worktree: real.worktree }, host);
+    const args = buildRunArgs({ ...spec, worktree: real.worktree }, host, gitMask);
     if (spec.network !== 'none') await this.#ensureNetworksOnce();
     return args;
   }
@@ -852,8 +864,49 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
 }
 
 /** `<dataDir>/empty` is bind-mounted over /workspace/.git; it must be an empty regular file. */
+/**
+ * Makes sure `<worktree>/.git` exists, so Docker never has to create the mountpoint of the mask
+ * itself (it cannot inside a read-only bind: a new product's scratch worktree, #202), and returns
+ * the mask type matching it. A missing `.git` becomes an empty placeholder file, which is what
+ * Docker itself creates on a writable bind. Anything but a file or directory (e.g. a symlink) is
+ * refused, so the mask always covers the real entry.
+ */
+async function prepareGitMask(dataDir: string, worktree: string): Promise<GitMask> {
+  const gitPath = path.join(worktree, '.git');
+  try {
+    await writeFile(gitPath, '', { flag: 'wx', mode: 0o644 });
+  } catch (err) {
+    if (!isCode(err, 'EEXIST')) throw err;
+  }
+  const st = await lstat(gitPath);
+  if (st.isFile()) {
+    await ensureMaskFile(dataDir);
+    return 'file';
+  }
+  if (st.isDirectory()) {
+    await ensureMaskDir(dataDir);
+    return 'dir';
+  }
+  throw new Error(
+    `Refusing to start a container: ${gitPath} is neither a file nor a directory, so it cannot be masked`,
+  );
+}
+
+async function ensureMaskDir(dataDir: string): Promise<void> {
+  const dir = path.join(dataDir, GIT_MASK_DIR);
+  try {
+    await mkdir(dir, { mode: 0o755 });
+  } catch (err) {
+    if (!isCode(err, 'EEXIST')) throw err;
+  }
+  const st = await lstat(dir);
+  if (!st.isDirectory() || (await readdir(dir)).length > 0) {
+    throw new Error(`${dir} must be an empty directory: remove it and try again`);
+  }
+}
+
 async function ensureMaskFile(dataDir: string): Promise<void> {
-  const file = path.join(dataDir, 'empty');
+  const file = path.join(dataDir, GIT_MASK_FILE);
   try {
     await writeFile(file, '', { flag: 'wx', mode: 0o644 });
   } catch (err) {

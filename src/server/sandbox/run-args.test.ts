@@ -120,6 +120,17 @@ describe('buildRunArgs mandatory flags', () => {
     if (!ro) expect(ws).toBe(`type=bind,src=${WT},dst=/workspace`);
   });
 
+  it.each(ROLES)('%s masks a .git directory with the empty directory data/empty.d', (_n, spec) => {
+    const binds = values(buildRunArgs(spec, HOST, 'dir'), '--mount').filter((m) =>
+      m.includes('type=bind'),
+    );
+    expect(binds).toHaveLength(2);
+    expect(binds).toContain(
+      'type=bind,src=/srv/vibecode/data/empty.d,dst=/workspace/.git,readonly',
+    );
+    expect(binds.join(' ')).not.toContain(`src=${EMPTY},`);
+  });
+
   it('mounts the claude config volume only when spec.claude', () => {
     const args = buildRunArgs({ ...AGENT, claude: true }, HOST);
     expect(values(args, '--mount')).toContain(

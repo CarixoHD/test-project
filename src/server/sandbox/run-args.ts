@@ -29,20 +29,35 @@ const IMAGE_RE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/;
 /** Characters that would break or extend the `--mount` CSV syntax. */
 const UNSAFE_MOUNT_CHARS = /[,"'=\n\r\0]/;
 
+/**
+ * What `<worktree>/.git` is on the host, so the mask over `/workspace/.git` has the same type
+ * (Docker cannot bind a file over a directory or vice versa): a git worktree's pointer file is
+ * masked with `<dataDir>/empty`, a `.git` directory with the empty directory `<dataDir>/empty.d`.
+ * The caller makes sure the entry exists before `docker run` (a read-only bind cannot get a new
+ * mountpoint).
+ */
+export type GitMask = 'file' | 'dir';
+export const GIT_MASK_FILE = 'empty';
+export const GIT_MASK_DIR = 'empty.d';
+
 /** `docker run` options followed by the image; callers add `--detach`/`--rm` before and the command after. */
-export function buildRunArgs(spec: SandboxSpec, host: HostIdentity): string[] {
+export function buildRunArgs(
+  spec: SandboxSpec,
+  host: HostIdentity,
+  gitMask: GitMask = 'file',
+): string[] {
   assertHost(host);
   assertSpec(spec);
   const worktreesDir = path.join(host.dataDir, 'worktrees');
-  const emptyFile = path.join(host.dataDir, 'empty');
-  assertMountSource(emptyFile);
+  const mask = path.join(host.dataDir, gitMask === 'dir' ? GIT_MASK_DIR : GIT_MASK_FILE);
+  assertMountSource(mask);
   assertMountSource(spec.worktree);
   assertInside(spec.worktree, worktreesDir);
 
   const readOnly = spec.readOnly || spec.role === 'preview';
   const mounts = [
     `type=bind,src=${path.resolve(spec.worktree)},dst=${WORKSPACE}${readOnly ? ',readonly' : ''}`,
-    `type=bind,src=${emptyFile},dst=${WORKSPACE}/.git,readonly`,
+    `type=bind,src=${mask},dst=${WORKSPACE}/.git,readonly`,
   ];
   if (spec.claude === true) {
     mounts.push(`type=volume,src=${CLAUDE_CONFIG_VOLUME},dst=${AGENT_HOME}/.claude`);
