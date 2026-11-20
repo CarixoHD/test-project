@@ -178,6 +178,7 @@ interface Store {
 interface Tx { q: Queries; db: Db }   // db: same connection, inside the transaction; write only tables without events (settings, secrets)
 interface Queries { product(id); issuesByProduct(productId) /* by number */; issue(id); attemptsByIssue(issueId) /* by n */;
                     attempt(id); productUsage(productId); issueUsage(issueId); inboxItem(id);
+                    sparMessages(productId) /* seq order */; prdDraft(productId) /* or null */;
                     setting(key) /* raw JSON or undefined; callers validate */ }   // ClientState shapes; usage zero when none
 type CommitHook = (committed: readonly Event[], tx: Tx) => EventDraft[];  // derived drafts, same transaction
 createStore({db, clock, redactor, hooks?: CommitHook[]}): Store;  // main passes hooks: [inboxHook({ids})]     // db from db/open(path) (':memory:' in tests; file created 0600; WAL pragmas; migrations applied)
@@ -190,7 +191,7 @@ Hooks run inside the transaction after the builder's drafts are appended and pro
 **Invariant (tested):** `events.reduce(reduce, emptyState)` equals `snapshot().state` after any command sequence. Tests call `expectSnapshotMatchesReplay(store)` from `store/testing.ts`.
 
 ### 4.3 server/http
-These are thin routes. Each one validates with zod, calls a command, and returns `{ok}` or a typed error. `createApp({store, ids, git, redactor, webRoot?, heartbeatMs?})` gets the command dependencies from the composition root (`main.ts`).
+These are thin routes. Each one validates with zod, calls a command, and returns `{ok}` or a typed error. `createApp({store, ids, git, redactor, sparring?, webRoot?, heartbeatMs?})` gets the command dependencies from the composition root (`main.ts`).
 
 ```
 GET  /api/state                         → {state, lastSeq}
@@ -259,6 +260,12 @@ editIssue(deps, issueId, {title?, body?, dependsOn?, rev}) → {ok; events; rev}
 //   open|failed|in_progress|in_review only (else conflict); rev ≠ current → conflict; rev+1; no cycles
 cancelIssue(deps, issueId) → {ok; events}   // via transition(); completed/cancelled → conflict; by:'owner'
 // codes: invalid → 400, not_found → 404, conflict → 409
+createSparring({store, ids, sparTurn: SparTurnRunner, onError}): Sparring;   // flow 1, any phase
+//   sendSparMessage(productId, {message}) → {ok; events; done} | 400/404/409: commits spar.message{owner}
+//   and starts sparTurn; one turn per product (in-memory), a second while running → conflict (409).
+//   isTurnRunning(productId); idle(). A throwing turn goes to onError and frees the product.
+savePrdDraft(deps, productId, {markdown}) → {ok; events}   // prd.draft_saved{baseVersion: product.prdVersion}
+// SparRequestSchema / SavePrdDraftRequestSchema in shared/dto.ts. Spar message ids: nextSparMessageId(deps).
 createProduct({store, ids, git}, {name, idea}): Promise<{ok:true; id: ProductId} | {ok:false; reason}>;
 // CreateProductRequestSchema (shared/dto.ts): trimmed name 1–80, idea 1–4000. git.initRepo(id) runs first,
 // then ONE commit: product.created with DEFAULT_PRODUCT_SETTINGS (budget null, maxParallel 3, maxAttempts 3,
@@ -278,6 +285,12 @@ SETTING_KEYS = {roleDefaults, defaultModel, priceOverrides}; readRoleDefaults/re
 runRecordedAgent<T>(ctx: {store, ids, clock, redactor, logsDir, setTimer?, afterUsage?: (e: usage.recorded) => void},
                     spec: Omit<AgentSpec<T>, 'agentId'|'clock'|'onActivity'|'onUsage'> & {productId, issueId?, attemptId?})
   : Promise<{agentId; result: AgentResult<T>}>
+sparTurn(deps: RecordedRunContext & {modelDeps, demo?, shouldStop?}, productId, ownerMessage): Promise<void>
+  // runRecordedAgent(role sparring, SparResultSchema, tools [], no sandbox, SPAR_LIMITS) with prompts/sparring.md
+  // (vars idea, transcript without the latest owner message, draft); prompt = ownerMessage. ok → ONE commit:
+  // spar.message{agent, reply} + prd.draft_saved{prdMarkdown, baseVersion: prdVersion} when present.
+  // No model / error / rate_limited / auth_required / stopped / thrown → spar.message{agent, actionable text}
+  // + inbox.created{kind:'error', link /products/:id}.
 usageCost(model, stepUsage, priceOverrides): billing/tokens/webSearches/calls/costUsd/unpriced/estCostUsd/source
 ```
 - `runRecordedAgent` commits `agent.spawned`, appends every activity line to `logs/<agentId>.ndjson` (`{ts, line}`, redacted, file 0600) and ends it with `exited <outcome>[: message]`, emits `agent.activity` through `ActivityBatcher` (≤ 1 per 250 ms of `clock` time, last 5 held lines; a timer flushes held lines when the window ends; lines still held at exit stay in the log only), commits one `usage.recorded` per step (entity id from `IdGen` kind `usage`) then calls `afterUsage`, commits `agent.state{rate_limited, until}` on a rate-limited result, and always commits `agent.exited` in `finally` (outcome = result kind, or `error` when the run throws).
