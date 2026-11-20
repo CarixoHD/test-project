@@ -7,6 +7,7 @@ import type { Event, EventOf } from '../../shared/events.ts';
 import { AttemptIdSchema, IssueIdSchema, ProductIdSchema } from '../../shared/ids.ts';
 import type { ModelRef } from '../../shared/models.ts';
 import type { StepUsage } from '../agents/index.ts';
+import { SETTING_KEYS } from '../commands/index.ts';
 import { open, schema } from '../db/index.ts';
 import { API_KEY_SECRETS, type FakeScript, type ModelDeps } from '../llm/index.ts';
 import { Redactor } from '../security/index.ts';
@@ -19,7 +20,6 @@ import {
   ActivityBatcher,
   agentLogPath,
   runRecordedAgent,
-  SETTING_KEYS,
   usageCost,
   type RecordedAgentSpec,
   type RecordedRunContext,

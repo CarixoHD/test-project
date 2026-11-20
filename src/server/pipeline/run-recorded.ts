@@ -7,7 +7,7 @@ import { runAgent, type AgentResult, type AgentSpec, type StepUsage } from '../a
 import type { Store } from '../store/index.ts';
 import type { Clock } from '../util/clock.ts';
 import { ActivityBatcher, realSetTimer, type SetTimer } from './activity-batcher.ts';
-import { readPriceOverrides } from './settings.ts';
+import { readPriceOverrides } from '../commands/index.ts';
 import { usageCost } from './usage.ts';
 
 type ExitOutcome = (typeof AGENT_EXIT_OUTCOMES)[number];
