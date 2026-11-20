@@ -28,11 +28,12 @@ export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise
   ensureDataDir(config.dataDir);
   const db = open(config.dbPath);
   const store = createStore({ db, clock: systemClock, redactor });
-  const app = createApp({ store, redactor, webRoot });
+  const ids = createIdGen(systemClock);
+  const app = createApp({ store, redactor, ids, webRoot });
   const scheduler = createScheduler({
     store,
     clock: systemClock,
-    ids: createIdGen(systemClock),
+    ids,
     runners: NO_OP_RUNNERS,
     onError: (err) => {
       console.error(redactor.redact(`scheduler run failed: ${String(err)}`));

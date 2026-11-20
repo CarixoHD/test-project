@@ -34,13 +34,21 @@ describe('findDependencyCycle', () => {
 });
 
 describe('resolveDependsOn', () => {
-  const ctx = { keys: new Map([['k', 'id-k']]), existingIds: new Set(['id-1', 'id-2']) };
+  const ctx = {
+    keys: new Map([['k', 'id-k']]),
+    existingIds: new Set(['id-1', 'id-2', 'id-x']),
+    cancelledIds: new Set(['id-x']),
+  };
 
   it.each([
     { refs: [], want: { ok: true, ids: [] } },
     { refs: ['k', 'id-2'], want: { ok: true, ids: ['id-k', 'id-2'] } },
     { refs: ['id-1', 'k', 'id-1'], want: { ok: true, ids: ['id-1', 'id-k'] } },
     { refs: ['id-1', 'nope'], want: { ok: false, reason: 'unknown dependency "nope"' } },
+    {
+      refs: ['id-1', 'id-x'],
+      want: { ok: false, reason: 'dependency "id-x" is cancelled and can never complete' },
+    },
   ])('$refs', ({ refs, want }) => {
     expect(resolveDependsOn(refs, ctx)).toEqual(want);
   });
