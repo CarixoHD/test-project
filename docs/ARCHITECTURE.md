@@ -184,14 +184,14 @@ Commit order: `build(tx)` → for each draft: zod-validate, redact every string 
 **Invariant (tested):** `events.reduce(reduce, emptyState)` equals `snapshot().state` after any command sequence. Tests call `expectSnapshotMatchesReplay(store)` from `store/testing.ts`.
 
 ### 4.3 server/http
-These are thin routes. Each one validates with zod, calls a command, and returns `{ok}` or a typed error.
+These are thin routes. Each one validates with zod, calls a command, and returns `{ok}` or a typed error. `createApp({store, ids, git, redactor, webRoot?, heartbeatMs?})` gets the command dependencies from the composition root (`main.ts`).
 
 ```
 GET  /api/state                         → {state, lastSeq}
 GET  /api/events                        SSE; id=seq; replays seq > Last-Event-ID; ':hb' every 15s
 GET  /api/agents/:id/log?follow=1       full redacted agent log (NDJSON file), SSE when follow
 GET  /api/attempts/:id/diff | /check    artifacts
-POST /api/products                      {name, idea}
+POST /api/products                      {name, idea}       → 201 {id}
 POST /api/products/:id/spar             {message}           → 202; reply arrives as event
 PUT  /api/products/:id/prd-draft        {markdown}
 POST /api/products/:id/handoff | apply-prd | pause | resume
@@ -238,6 +238,10 @@ applyPlan(deps, productId, plan: PlanResult, consumedSeq): {ok:true; events; cre
 // issue.edited, issue.cancelled{by:'orchestrator'}, issue.rewritten, question.asked{target:'orchestrator'},
 // orchestrator.cursor_advanced{cursor: consumedSeq} (refused if consumedSeq < current cursor).
 nextIssueNumber(issues); resolveDependsOn(refs, {keys, existingIds}); findDependencyCycle(graph) → [a,…,a] | null
+createProduct({store, ids, git}, {name, idea}): Promise<{ok:true; id: ProductId} | {ok:false; reason}>;
+// CreateProductRequestSchema (shared/dto.ts): trimmed name 1–80, idea 1–4000. git.initRepo(id) runs first,
+// then ONE commit: product.created with DEFAULT_PRODUCT_SETTINGS (budget null, maxParallel 3, maxAttempts 3,
+// models {}, gitRemote null); a failed initRepo throws and commits nothing.
 ```
 
 The result schemas above are defined in `src/shared/agent-results.ts`. The pipeline imports them from there and does not redefine them.
