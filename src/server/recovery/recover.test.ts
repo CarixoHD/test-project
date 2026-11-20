@@ -134,6 +134,8 @@ function stubRuntime(
     ensureImage: (p) => runtime.ensureImage(p),
     open: (sp) => runtime.open(sp),
     runOnce: (sp, argv, o) => runtime.runOnce(sp, argv, o),
+    runDetached: (sp, argv) => runtime.runDetached(sp, argv),
+    publishedPort: (name, port) => runtime.publishedPort(name, port),
     listManaged: () => runtime.listManaged(),
     remove: (name) => runtime.remove(name),
     ...overrides,

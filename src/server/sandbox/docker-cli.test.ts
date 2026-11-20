@@ -688,6 +688,66 @@ describe('runOnce', () => {
   });
 });
 
+describe('runDetached', () => {
+  const previewSpec = (over: Partial<SandboxSpec> = {}) =>
+    spec({ role: 'preview', network: 'preview', readOnly: true, publishPort: 3000, ...over });
+
+  it('runs the preview command detached, read-only, on vibecode-preview, published on 127.0.0.1 only', async () => {
+    const stub = stubDocker();
+    const c = await runtime(stub).runDetached(previewSpec(), ['npm', 'start']);
+    expect(c).toEqual({ name: 'vibecode-01RUN' });
+    const run = stub.argvs().find((a) => a[0] === 'run');
+    expect(run).toEqual([
+      'run',
+      '--detach',
+      ...buildRunArgs(previewSpec({ worktree: realWt }), HOST()),
+      'npm',
+      'start',
+    ]);
+    if (run === undefined) throw new Error('no docker run');
+    expect(run).toContain('--read-only');
+    expect(run).toContain(`type=bind,src=${realWt},dst=/workspace,readonly`);
+    expect(run.join(' ')).toContain('--network vibecode-preview');
+    const publish = run.filter((_a, i) => run[i - 1] === '--publish' || run[i - 1] === '-p');
+    expect(publish).toEqual(['127.0.0.1::3000']);
+  });
+
+  it('mounts the worktree read-only even when the spec says otherwise', async () => {
+    const stub = stubDocker();
+    await runtime(stub).runDetached(previewSpec({ readOnly: false }), ['npm', 'start']);
+    expect(stub.argvs().find((a) => a[0] === 'run')).toContain(
+      `type=bind,src=${realWt},dst=/workspace,readonly`,
+    );
+  });
+
+  it('ensures the preview network before starting the container', async () => {
+    const stub = stubDocker();
+    await runtime(stub).runDetached(previewSpec(), ['npm', 'start']);
+    expect(stub.argvs().map((a) => a.slice(0, 2))).toEqual([
+      ['network', 'inspect'],
+      ['network', 'inspect'],
+      ['run', '--detach'],
+    ]);
+  });
+
+  it('throws with docker output when the container cannot start', async () => {
+    const stub = stubDocker((argv) =>
+      argv[0] === 'run' ? { code: 125, stderr: 'port is already allocated' } : {},
+    );
+    await expect(runtime(stub).runDetached(previewSpec(), ['npm', 'start'])).rejects.toThrow(
+      /already allocated/,
+    );
+  });
+
+  it('refuses a non-preview spec (publishing is preview-only)', async () => {
+    const stub = stubDocker();
+    await expect(
+      runtime(stub).runDetached(spec({ publishPort: 3000 }), ['npm', 'start']),
+    ).rejects.toThrow(/Only preview sandboxes/);
+    expect(stub.argvs().filter((a) => a[0] === 'run')).toEqual([]);
+  });
+});
+
 describe('listManaged, remove, publishedPort', () => {
   it('lists containers by the managed label', async () => {
     const stub = stubDocker(() => ({
