@@ -13,8 +13,10 @@ import { createStore, type Store } from '../store/index.ts';
 import { expectSnapshotMatchesReplay } from '../store/testing.ts';
 import { FakeClock } from '../util/clock.ts';
 import { FakeIdGen } from '../util/id-gen.ts';
+import { ExecError, type ExecResult as UtilExecResult } from '../util/exec.ts';
 import {
   buildRunArgs,
+  DockerCliRuntime,
   FakeContainerRuntime,
   type ContainerRuntime,
   type DetachedContainer,
@@ -111,16 +113,27 @@ function createProduct(project: ProjectConfig | null = PROJECT): void {
   ]);
 }
 
-/** The fake runtime's methods, minus runDetached (a runtime that cannot run previews). */
-function withoutRunDetached(rt: FakeContainerRuntime): ContainerRuntime {
+/** A runtime delegating to the fake; tests override single methods. */
+function delegating(rt: FakeContainerRuntime): ContainerRuntime {
   return {
     available: () => rt.available(),
     ensureImage: (p) => rt.ensureImage(p),
     open: (s) => rt.open(s),
     runOnce: (s, a, o) => rt.runOnce(s, a, o),
+    runDetached: (s, a) => rt.runDetached(s, a),
+    publishedPort: (n, p) => rt.publishedPort(n, p),
     listManaged: () => rt.listManaged(),
     remove: (n) => rt.remove(n),
   };
+}
+
+/** A promise plus its resolver, for holding a start in its poll loop. */
+function gate(): { promise: Promise<void>; open: () => void } {
+  let open = () => {};
+  const promise = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { promise, open };
 }
 
 const worktrees = () => readdir(path.join(dataDir, 'worktrees'));
@@ -260,7 +273,7 @@ describe('startPreview', () => {
   it('cleans up the worktree and reports the error when the container fails to start', async () => {
     createProduct();
     const failing: ContainerRuntime = {
-      ...withoutRunDetached(runtime),
+      ...delegating(runtime),
       runDetached: () => Promise.reject(new Error('image build failed: npm ERR!')),
     };
 
@@ -272,14 +285,111 @@ describe('startPreview', () => {
     expect(eventTypes()).not.toContain('preview.started');
   });
 
-  it('reports an actionable error when the runtime cannot run previews', async () => {
+  it('builds the URL from the host port the runtime published, not the container port', async () => {
     createProduct();
+    const asked: [string, number][] = [];
+    const rt: ContainerRuntime = {
+      ...delegating(runtime),
+      publishedPort: (name, port) => {
+        asked.push([name, port]);
+        return Promise.resolve(45678);
+      },
+    };
 
-    const r = await createPreviews(deps({ runtime: withoutRunDetached(runtime) })).startPreview(P);
+    const r = await createPreviews(deps({ runtime: rt })).startPreview(P);
+
+    expect(r).toEqual({ ok: true, url: 'http://127.0.0.1:45678/' });
+    const [call] = runtime.calls.filter((c) => c.kind === 'runDetached');
+    expect(asked).toEqual([[call?.name, 3000]]);
+    expect(fetched).toEqual(['http://127.0.0.1:45678/']);
+    const started = store.eventsSince(0).find((e) => e.type === 'preview.started');
+    expect(started?.data).toMatchObject({ url: 'http://127.0.0.1:45678/' });
+  });
+
+  it('logs a redacted warning, and still cleans up, when the container cannot be removed', async () => {
+    createProduct();
+    isUp = () => false;
+    const secret = 'sk-ant-api03-' + 'x'.repeat(40);
+    const redactor = new Redactor();
+    redactor.register(secret);
+    const logged: string[] = [];
+    const rt: ContainerRuntime = {
+      ...delegating(runtime),
+      remove: () => Promise.reject(new Error(`daemon hiccup ${secret}`)),
+    };
+
+    const r = await createPreviews(
+      deps({ runtime: rt, redactor, log: (l) => logged.push(l) }),
+    ).startPreview(P);
 
     expect(r).toMatchObject({ ok: false, code: 'conflict' });
-    if (!r.ok) expect(r.reason).toMatch(/container runtime/i);
+    if (!r.ok) expect(r.reason).toMatch(/did not answer/);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatch(/Could not remove preview container vibecode-.*daemon hiccup/);
+    expect(logged[0]).not.toContain(secret);
     expect(await worktrees()).toEqual([]);
+  });
+
+  it('logs a removal failure after the container failed to start', async () => {
+    createProduct();
+    const logged: string[] = [];
+    const rt: ContainerRuntime = {
+      ...delegating(runtime),
+      runDetached: () => Promise.reject(new Error('port is already allocated')),
+      remove: () => Promise.reject(new Error('daemon hiccup')),
+    };
+
+    const r = await createPreviews(deps({ runtime: rt, log: (l) => logged.push(l) })).startPreview(
+      P,
+    );
+
+    expect(r).toMatchObject({ ok: false, code: 'conflict' });
+    if (!r.ok) expect(r.reason).toContain('port is already allocated');
+    expect(logged).toEqual([
+      expect.stringMatching(/Could not remove preview container.*daemon hiccup/),
+    ]);
+    expect(await worktrees()).toEqual([]);
+  });
+});
+
+describe('startPreview on the docker CLI runtime (stubbed docker binary)', () => {
+  it('starts the container detached and uses the host port from `docker port`', async () => {
+    createProduct();
+    const argvs: string[][] = [];
+    const exec = (cmd: string, argv: readonly string[]): Promise<UtilExecResult> => {
+      expect(cmd).toBe('docker');
+      argvs.push([...argv]);
+      const stdout = argv[0] === 'port' ? '127.0.0.1:49153\n' : '';
+      return Promise.resolve({
+        code: 0,
+        signal: null,
+        stdout,
+        stderr: '',
+        timedOut: false,
+        aborted: false,
+        truncated: false,
+      });
+    };
+    const docker = new DockerCliRuntime({
+      dataDir,
+      uid: 1000,
+      gid: 1000,
+      exec,
+      spawnStream: () => Promise.reject(new ExecError('not used', 'ENOENT')),
+    });
+
+    const r = await createPreviews(deps({ runtime: docker })).startPreview(P);
+
+    expect(r).toEqual({ ok: true, url: 'http://127.0.0.1:49153/' });
+    expect(fetched).toEqual(['http://127.0.0.1:49153/']);
+    const run = argvs.find((a) => a[0] === 'run');
+    if (run === undefined) throw new Error('no docker run');
+    expect(run.slice(0, 2)).toEqual(['run', '--detach']);
+    expect(run.slice(-2)).toEqual(['npm', 'start']);
+    const name = run[run.indexOf('--name') + 1];
+    expect(argvs).toContainEqual(['port', name, '3000/tcp']);
+    const started = store.eventsSince(0).find((e) => e.type === 'preview.started');
+    expect(started?.data).toEqual({ url: 'http://127.0.0.1:49153/', container: name });
   });
 });
 
@@ -320,5 +430,69 @@ describe('stopPreview', () => {
     expect(await runtime.listManaged()).toEqual([]);
     expect(await worktrees()).toEqual([]);
     expect(store.snapshot().state.previews).toEqual({});
+  });
+});
+
+describe('stopAll', () => {
+  it('waits for a start that is still polling and stops what it started', async () => {
+    createProduct();
+    const hold = gate();
+    const polling = gate();
+    const previews = createPreviews(
+      deps({
+        fetch: async (url) => {
+          fetched.push(url);
+          polling.open();
+          await hold.promise;
+          return { status: 200 };
+        },
+      }),
+    );
+
+    const starting = previews.startPreview(P);
+    await polling.promise;
+    const stopping = previews.stopAll();
+    hold.open();
+
+    expect((await starting).ok).toBe(true);
+    await stopping;
+    expect(await runtime.listManaged()).toEqual([]);
+    expect(await worktrees()).toEqual([]);
+    expect(eventTypes().filter((t) => t.startsWith('preview.'))).toEqual([
+      'preview.started',
+      'preview.stopped',
+    ]);
+    expect(store.snapshot().state.previews).toEqual({});
+  });
+
+  it('waits for queued starts and refuses starts requested during shutdown', async () => {
+    createProduct();
+    const previews = createPreviews(deps());
+
+    const first = previews.startPreview(P);
+    const second = previews.startPreview(P);
+    const stopping = previews.stopAll();
+    const late = previews.startPreview(P);
+
+    await Promise.all([first, second, stopping]);
+    expect(await late).toMatchObject({ ok: false, code: 'conflict' });
+    expect(await runtime.listManaged()).toEqual([]);
+    expect(await worktrees()).toEqual([]);
+    expect(store.snapshot().state.previews).toEqual({});
+    expect(runtime.detached).toHaveLength(2);
+  });
+
+  it('logs, instead of swallowing, a container that cannot be removed', async () => {
+    createProduct();
+    const logged: string[] = [];
+    const rt: ContainerRuntime = { ...delegating(runtime) };
+    const previews = createPreviews(deps({ runtime: rt, log: (l) => logged.push(l) }));
+    expect((await previews.startPreview(P)).ok).toBe(true);
+    rt.remove = () => Promise.reject(new Error('daemon hiccup'));
+
+    await previews.stopAll();
+
+    expect(logged).toEqual([expect.stringMatching(/vibecode-.*daemon hiccup/)]);
+    expect(await worktrees()).toEqual([]);
   });
 });

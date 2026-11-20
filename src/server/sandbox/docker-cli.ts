@@ -17,6 +17,7 @@ import {
 import { NETWORKS, WORKSPACE, buildRunArgs, containerName } from './run-args.ts';
 import type {
   ContainerRuntime,
+  DetachedContainer,
   EnsureImageParams,
   ExecOpts,
   ExecResult,
@@ -170,6 +171,17 @@ export class DockerCliRuntime implements ContainerRuntime {
     // Killing the CLI client does not always stop the container: remove it explicitly.
     if (r.timedOut || r.aborted) await this.remove(containerName(spec.runId));
     return r;
+  }
+
+  /** `docker run --detach` (previews): the command runs until the container is removed. */
+  async runDetached(spec: SandboxSpec, argv: readonly string[]): Promise<DetachedContainer> {
+    const args = await this.#prepare(spec);
+    const name = containerName(spec.runId);
+    await this.#manageOk(
+      ['run', '--detach', ...args, ...argv],
+      `Could not start container ${name}`,
+    );
+    return { name };
   }
 
   async listManaged(): Promise<ManagedContainer[]> {

@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DOCKER_NOT_RUNNING, DockerCliRuntime } from './docker-cli.ts';
 import { FakeContainerRuntime } from './fake.ts';
@@ -41,5 +44,33 @@ describe('selectRuntime', () => {
     await expect(runtime.available()).resolves.toBe(false);
     await expect(runtime.listManaged()).rejects.toThrow(DOCKER_NOT_RUNNING);
     await expect(runtime.remove('vibecode-run-1')).rejects.toThrow(DOCKER_NOT_RUNNING);
+  });
+
+  it('without a docker CLI, preview runs and port lookups reject with the actionable message', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'vibecode-select-runtime-'));
+    try {
+      const worktree = path.join(dataDir, 'worktrees', 'run-1');
+      await mkdir(worktree, { recursive: true });
+      const runtime = selectRuntime(
+        { fakeDocker: false, dataDir },
+        { docker: '/nonexistent/vibecode-no-docker' },
+      );
+      const preview = {
+        ...SPEC,
+        worktree,
+        role: 'preview',
+        network: 'preview',
+        readOnly: true,
+        publishPort: 3000,
+      } as const;
+      await expect(runtime.runDetached(preview, ['npm', 'start'])).rejects.toThrow(
+        DOCKER_NOT_RUNNING,
+      );
+      await expect(runtime.publishedPort('vibecode-run-1', 3000)).rejects.toThrow(
+        DOCKER_NOT_RUNNING,
+      );
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 });
