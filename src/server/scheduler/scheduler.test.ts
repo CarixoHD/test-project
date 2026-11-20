@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PlanResult } from '../../shared/agent-results.ts';
 import type { Event, EventDraft } from '../../shared/events.ts';
 import { ProductIdSchema, type IssueId, type ProductId } from '../../shared/ids.ts';
 import { applyPlan } from '../commands/index.ts';
 import { open } from '../db/index.ts';
-import { Redactor } from '../security/index.ts';
+import { Redactor, redactor as sharedRedactor } from '../security/index.ts';
 import { createStore, type Store } from '../store/index.ts';
 import { FakeClock } from '../util/clock.ts';
 import { FakeIdGen } from '../util/id-gen.ts';
@@ -693,5 +693,162 @@ describe('scheduler: tick robustness', () => {
     t.plan([create('a')]);
     expect(t.attempts()).toHaveLength(1);
     expect(t.tickErrors).toHaveLength(2);
+  });
+});
+
+describe('scheduler: tick robustness (logging and ineligible products)', () => {
+  it('logs a failed tick through the shared redactor by default', () => {
+    const secret = 'sk-test-SECRET-value-1234567890';
+    sharedRedactor.register(secret);
+    const db = open(':memory:');
+    const clock = new FakeClock();
+    const inner = createStore({ db, clock, redactor: new Redactor() });
+    createProduct(inner, P);
+    const store: Store = {
+      ...inner,
+      snapshot() {
+        throw new Error(`db fault with ${secret}`);
+      },
+    };
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    });
+    try {
+      const scheduler = createScheduler({
+        store,
+        clock,
+        runners: fakeRunners().runners,
+        timer: new FakeTimer(),
+        isBackendBlocked: () => false,
+      });
+      scheduler.start();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('scheduler tick failed');
+    expect(lines[0]).not.toContain(secret);
+  });
+
+  it('a paused product with all issues done and pending triggers never reads its backlog', () => {
+    const db = open(':memory:');
+    const clock = new FakeClock();
+    const inner = createStore({ db, clock, redactor: new Redactor() });
+    const cursors: number[] = [];
+    const store: Store = {
+      ...inner,
+      eventsSince(seq, limit) {
+        cursors.push(seq);
+        return inner.eventsSince(seq, limit);
+      },
+    };
+    const ids = new FakeIdGen();
+    createProduct(inner, P);
+    const r = applyPlan(
+      { store: inner, ids },
+      P,
+      { issueOps: [create('a')], questions: [], summary: 's' },
+      inner.snapshot().lastSeq,
+    );
+    if (!r.ok) throw new Error(r.reason);
+    const a = idOf(r.createdIds, 'a');
+    inner.commit(() => [
+      draft('issue.status_changed', P, a, {
+        from: 'open',
+        to: 'in_progress',
+        attemptCount: 0,
+        runAfter: 0,
+      }),
+      draft('issue.status_changed', P, a, {
+        from: 'in_progress',
+        to: 'in_review',
+        attemptCount: 0,
+        runAfter: 0,
+      }),
+      draft('issue.completed', P, a, {
+        attemptId: 'attempt-x',
+        mergedOrder: 1,
+        mergeSha: 'c'.repeat(40),
+      }),
+      draft('product.paused', P, null, { reason: 'owner' }),
+      draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null }),
+    ]);
+    const timer = new FakeTimer();
+    const scheduler = createScheduler({
+      store,
+      clock,
+      runners: fakeRunners().runners,
+      ids,
+      timer,
+      isBackendBlocked: () => false,
+    });
+    scheduler.start();
+    timer.fire();
+    timer.fire();
+    expect(cursors).toEqual([]);
+    expect(inner.q.product(P)?.phase).toBe('building');
+  });
+
+  it('a backed-off product with all issues done re-reads its backlog only when something changed', () => {
+    const db = open(':memory:');
+    const clock = new FakeClock();
+    const inner = createStore({ db, clock, redactor: new Redactor() });
+    const cursors: number[] = [];
+    const store: Store = {
+      ...inner,
+      eventsSince(seq, limit) {
+        cursors.push(seq);
+        return inner.eventsSince(seq, limit);
+      },
+    };
+    const ids = new FakeIdGen();
+    createProduct(inner, P);
+    const r = applyPlan(
+      { store: inner, ids },
+      P,
+      { issueOps: [create('a')], questions: [], summary: 's' },
+      inner.snapshot().lastSeq,
+    );
+    if (!r.ok) throw new Error(r.reason);
+    const a = idOf(r.createdIds, 'a');
+    inner.commit(() => [
+      draft('issue.status_changed', P, a, {
+        from: 'open',
+        to: 'in_progress',
+        attemptCount: 0,
+        runAfter: 0,
+      }),
+      draft('issue.status_changed', P, a, {
+        from: 'in_progress',
+        to: 'in_review',
+        attemptCount: 0,
+        runAfter: 0,
+      }),
+      draft('issue.completed', P, a, {
+        attemptId: 'attempt-x',
+        mergedOrder: 1,
+        mergeSha: 'c'.repeat(40),
+      }),
+      draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null }),
+    ]);
+    const timer = new FakeTimer();
+    const fake = fakeRunners();
+    const scheduler = createScheduler({
+      store,
+      clock,
+      runners: fake.runners,
+      ids,
+      timer,
+      isBackendBlocked: () => false,
+      orchestratorNotBefore: () => Number.MAX_SAFE_INTEGER,
+    });
+    scheduler.start();
+    expect(cursors).toHaveLength(1);
+    timer.fire();
+    timer.fire();
+    expect(cursors).toHaveLength(1); // nothing changed: the cached result is reused
+    expect(inner.q.product(P)?.phase).toBe('building'); // the prd.applied trigger is pending
+    expect(fake.orchestrators()).toHaveLength(0);
   });
 });

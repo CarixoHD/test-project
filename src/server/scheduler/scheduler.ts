@@ -5,6 +5,7 @@ import { isReady } from '../../shared/issues.ts';
 import type { Role } from '../../shared/models.ts';
 import type { ClientState, IssueState, ProductState } from '../../shared/state.ts';
 import { pendingTriggers } from '../../shared/triggers.ts';
+import { redactor as sharedRedactor } from '../security/index.ts';
 import type { Store } from '../store/index.ts';
 import { allIssuesDone, completeProduct } from './completion.ts';
 import { clearExpiredLimits } from './limits.ts';
@@ -58,9 +59,10 @@ export interface SchedulerDeps {
   onError?: (err: unknown, run: { runId: RunId; kind: RunKind; productId: ProductId }) => void;
   /**
    * A tick threw (e.g. a DB fault). The scheduler contains it and ticks again on the next kick or
-   * interval. Default: one `console.error` line, passed through `redactor` when given.
+   * interval. Default: one `console.error` line, passed through `redactor`.
    */
   onTickError?: (err: unknown) => void;
+  /** Redacts the default tick-error log line. Default: the server's shared redactor. */
   redactor?: { redact(text: string): string };
 }
 
@@ -132,7 +134,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     ((err: unknown) => {
       const text = err instanceof Error ? (err.stack ?? err.message) : String(err);
       const line = `scheduler tick failed (retrying on the next tick): ${text}`;
-      console.error(deps.redactor ? deps.redactor.redact(line) : line);
+      console.error((deps.redactor ?? sharedRedactor).redact(line));
     });
 
   const live = new Map<RunId, LiveRun>();
@@ -146,6 +148,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   let again = false;
   /** The store's lastSeq as read by the latest tick: events up to it were already scheduled on. */
   let seenSeq = -1;
+  /**
+   * Pending-trigger checks for products whose backlog is not loaded this tick, keyed by product:
+   * reused while neither its cursor nor the store's lastSeq moved.
+   */
+  const pendingCache = new Map<ProductId, { cursor: number; seq: number; pending: boolean }>();
 
   function productBlocked(productId: ProductId): boolean {
     const p = store.q.product(productId);
@@ -196,6 +203,15 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     return (deps.orchestratorNotBefore?.(p.id) ?? 0) <= clock.now();
   }
 
+  /** For a product outside this tick's event window: reads its backlog once per change. */
+  function hasPendingTriggers(p: ProductState, triggersFrom: (all: Event[]) => Event[]): boolean {
+    const hit = pendingCache.get(p.id);
+    if (hit?.cursor === p.orchestratorCursor && hit.seq === seenSeq) return hit.pending;
+    const pending = triggersFrom(store.eventsSince(p.orchestratorCursor)).length > 0;
+    pendingCache.set(p.id, { cursor: p.orchestratorCursor, seq: seenSeq, pending });
+    return pending;
+  }
+
   /**
    * `events`: every event after the minimum cursor of the orchestrator-eligible products, or null
    * when this product is not eligible (its own backlog is then read only when it matters).
@@ -213,9 +229,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const issues = Object.values(state.issues).filter((i) => i.productId === p.id);
     // Flow 9: nothing left to run or plan. The commit re-enters kick(), which coalesces.
     if (mine.length === 0 && allIssuesDone(issues)) {
+      // A paused product completes after it is resumed: its backlog is never read while paused.
       const pending =
-        events === null ? triggersFrom(store.eventsSince(p.orchestratorCursor)) : triggers;
-      if (pending.length === 0 && completeProduct(store, p.id)) return;
+        events === null ? !p.paused && hasPendingTriggers(p, triggersFrom) : triggers.length > 0;
+      if (!p.paused && !pending && completeProduct(store, p.id)) return;
     }
     if (p.paused || budgetExhausted(state, p)) return;
     let liveCount = mine.length;
