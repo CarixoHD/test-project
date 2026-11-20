@@ -53,4 +53,10 @@ export class FakeEventSource {
   close(): void {
     this.readyState = 2;
   }
+
+  /** A failed (re)connect; `closed` when the browser gives up, e.g. on a 401 answer. */
+  fail(closed = false): void {
+    this.readyState = closed ? 2 : 0;
+    this.onerror?.({});
+  }
 }

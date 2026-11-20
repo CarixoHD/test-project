@@ -141,7 +141,7 @@ export class FakeContainerRuntime implements ContainerRuntime {
     return this.#run(spec, argv, o);
   }
 
-  /** Runs nothing: serves PREVIEW_PAGE on an ephemeral 127.0.0.1 port, as docker would publish. */
+  /** Runs nothing: serves PREVIEW_PAGE on an ephemeral 127.0.0.1 port (see publishedPort). */
   async runDetached(spec: SandboxSpec, argv: readonly string[]): Promise<DetachedContainer> {
     await Promise.resolve();
     buildRunArgs(spec, this.#host);
@@ -166,7 +166,16 @@ export class FakeContainerRuntime implements ContainerRuntime {
       this.#open.delete(name);
       throw err;
     }
-    return { name, hostPort: (server.address() as AddressInfo).port };
+    return { name };
+  }
+
+  /** The port of the local demo page of detached container `name`, standing in for docker's. */
+  publishedPort(name: string, port: number): Promise<number> {
+    const server = this.#servers.get(name);
+    if (server === undefined || this.#open.get(name)?.publishPort !== port) {
+      return Promise.reject(new Error(`Port ${String(port)} of ${name} is not published`));
+    }
+    return Promise.resolve((server.address() as AddressInfo).port);
   }
 
   listManaged(): Promise<ManagedContainer[]> {

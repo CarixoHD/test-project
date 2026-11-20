@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventSchema, type Event } from '../../shared/events.ts';
 import { ProductIdSchema } from '../../shared/ids.ts';
 import { emptyState, reduce, type ClientState } from '../../shared/state.ts';
+import { onUnauthorized } from './api.ts';
 import { AppStoreProvider } from './AppStoreProvider.tsx';
 import { createAppStore, useApp, type AppStore } from './store.ts';
 
@@ -243,6 +244,41 @@ describe('app store', () => {
     expect(store.getSnapshot().status).toBe('reconnecting');
     expect(FakeEventSource.instances).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1000);
+    expect(FakeEventSource.instances).toHaveLength(2);
+  });
+
+  it('re-checks the session when the stream fails and stops retrying once it is gone', async () => {
+    const store = await started(createAppStore({ retryDelayMs: 1000 }));
+    latestStream().open();
+    const session = vi.fn(() =>
+      Promise.resolve(Response.json({ passwordSet: true, authenticated: false })),
+    );
+    fetchMock.mockImplementation(session);
+    const lost = vi.fn();
+    const off = onUnauthorized(lost);
+    // EventSource cannot read the 401: the browser just closes the stream.
+    latestStream().fail(true);
+    await vi.advanceTimersByTimeAsync(0);
+    off();
+
+    expect((session.mock.calls[0] as unknown[] | undefined)?.[0]).toBe('/api/session');
+    expect(lost).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(latestStream().readyState).toBe(FakeEventSource.CLOSED);
+    expect(session).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot().status).not.toBe('live');
+  });
+
+  it('keeps retrying the stream while the session is still valid', async () => {
+    await started(createAppStore({ retryDelayMs: 1000 }));
+    latestStream().open();
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(Response.json({ passwordSet: true, authenticated: true })),
+    );
+    latestStream().fail(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/session', expect.anything());
     expect(FakeEventSource.instances).toHaveLength(2);
   });
 

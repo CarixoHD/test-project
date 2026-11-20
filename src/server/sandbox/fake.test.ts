@@ -361,13 +361,23 @@ describe('FakeContainerRuntime detached preview', () => {
     });
     expect((await rt.listManaged()).map((m) => m.labels['vibecode.role'])).toEqual(['preview']);
 
-    const res = await fetch(`http://127.0.0.1:${String(c.hostPort)}/`);
+    const hostPort = await rt.publishedPort(c.name, 3000);
+    expect(hostPort).not.toBe(3000);
+    const res = await fetch(`http://127.0.0.1:${String(hostPort)}/`);
     expect(res.status).toBe(200);
     expect(await res.text()).toMatch(/preview/i);
 
     await rt.remove(c.name);
     expect(await rt.listManaged()).toEqual([]);
-    await expect(fetch(`http://127.0.0.1:${String(c.hostPort)}/`)).rejects.toThrow();
+    await expect(fetch(`http://127.0.0.1:${String(hostPort)}/`)).rejects.toThrow();
+  });
+
+  it('publishedPort rejects for a port that is not published or an unknown container', async () => {
+    const rt = new FakeContainerRuntime({ dataDir });
+    const c = await rt.runDetached(previewSpec(), ['npm', 'start']);
+    await expect(rt.publishedPort(c.name, 8080)).rejects.toThrow(/not published/);
+    await rt.remove(c.name);
+    await expect(rt.publishedPort(c.name, 3000)).rejects.toThrow(/not published/);
   });
 
   it('enforces the run-args policy for detached containers', async () => {
