@@ -8,8 +8,7 @@ import { mkdir, writeFile as fsWriteFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { Role } from '../src/shared/models.ts';
-import { buildClaudeArgv, claudeExecArgv } from '../src/server/agents/claude-code-backend.ts';
-import type { AgentLimits } from '../src/server/agents/index.ts';
+import { buildClaudeArgv, claudeExecArgv, type AgentLimits } from '../src/server/agents/index.ts';
 import {
   AGENT_HOME,
   CLAUDE_CONFIG_VOLUME,

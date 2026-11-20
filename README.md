@@ -1,5 +1,13 @@
 # Vibecode platform
 
+## Requirements
+
+Node ≥ 22.18 from an official build (nodejs.org, nvm/fnm or NodeSource; `.nvmrc` pins 22) and
+git ≥ 2.38. Vibecode runs `.ts` files through Node's built-in type stripping, which distro builds
+such as the Debian/Ubuntu apt `nodejs` package may lack. The npm scripts that run `.ts` files
+(`start`, `dev`, `set-password`, `docker:images`, `docker:prune` and `claude:record`) check Node
+first with `scripts/preflight.mjs` and print what to fix. Docker is needed for real agent runs.
+
 ## Remote access
 
 By default Vibecode listens on `127.0.0.1` only. Without a password it refuses to start on any

@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { buildClaudeArgv, claudeExecArgv } from '../src/server/agents/claude-code-backend.ts';
+import { buildClaudeArgv, claudeExecArgv } from '../src/server/agents/index.ts';
 import { AGENT_HOME, CLAUDE_CONFIG_VOLUME } from '../src/server/sandbox/index.ts';
 import { Redactor } from '../src/server/security/index.ts';
 import type { ExecResult } from '../src/server/util/exec.ts';
@@ -59,6 +61,19 @@ function setup(overrides: Partial<RecordDeps> = {}) {
 }
 
 const options = { out: '/tmp/out.ndjson', model: 'sonnet' };
+
+describe('claude:record npm script', () => {
+  it('runs the Node preflight before the .ts script', () => {
+    const pkg = z
+      .object({ scripts: z.record(z.string(), z.string()) })
+      .parse(
+        JSON.parse(readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8')),
+      );
+    expect(pkg.scripts['claude:record']).toBe(
+      'node scripts/preflight.mjs && node scripts/record-claude-stream.ts',
+    );
+  });
+});
 
 describe('parseRecordArgs', () => {
   it('recognises --help and -h', () => {
