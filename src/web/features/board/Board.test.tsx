@@ -219,11 +219,24 @@ describe('Board', () => {
     const c = card('#7 Search');
     expect(within(c).getByText('In review')).toBeInTheDocument();
     expect(c).toHaveTextContent('Priority 2');
-    expect(c).toHaveTextContent('Attempt 1 of 3');
+    expect(c).toHaveTextContent('1 of 3 failed attempts used');
     expect(screen.getByRole('link', { name: '#7 Search' })).toHaveAttribute(
       'href',
       `/products/${P}/issues/i7`,
     );
+  });
+
+  // Regression #189: attemptCount counts failed attempts, so a card must not read "Attempt 0 of 3"
+  // for an issue merged (or in progress) on its first attempt.
+  it('labels the attempt count as failed attempts used, not as an attempt number', async () => {
+    await renderBoard([
+      () => issueCreated({ n: 2, title: 'Scaffold', status: 'completed' }),
+      () => issueCreated({ n: 3, title: 'Login', status: 'in_progress' }),
+    ]);
+    for (const title of ['#2 Scaffold', '#3 Login']) {
+      expect(card(title)).toHaveTextContent('0 of 3 failed attempts used');
+      expect(card(title)).not.toHaveTextContent('Attempt 0');
+    }
   });
 
   it('shows "blocked by" only for dependencies that are not completed', async () => {
@@ -304,7 +317,7 @@ describe('Board', () => {
     expect(cardTitles('Open')).toEqual([]);
     expect(cardTitles('In progress')).toEqual(['#1 Login form']);
     expect(within(card('#1 Login form')).getByText('In progress')).toBeInTheDocument();
-    expect(card('#1 Login form')).toHaveTextContent('Attempt 1 of 3');
+    expect(card('#1 Login form')).toHaveTextContent('1 of 3 failed attempts used');
   });
 
   it('shows new issues as they are created', async () => {

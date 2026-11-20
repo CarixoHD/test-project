@@ -49,8 +49,9 @@ export function IssueCard({ issue, blockedBy, maxAttempts, usage, heldQuestion }
       </p>
       <p className="issue-card__facts">
         <span>Priority {issue.priority}</span>
+        {/* attemptCount counts failed attempts, not the current attempt number (#189). */}
         <span>
-          Attempt {issue.attemptCount} of {maxAttempts}
+          {issue.attemptCount} of {maxAttempts} failed attempts used
         </span>
         {cost !== null && <span>Cost: {cost}</span>}
       </p>
