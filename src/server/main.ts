@@ -1,4 +1,4 @@
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
 import { ensureDataDir, parseConfig, type Config } from './config.ts';
 import { open } from './db/index.ts';
@@ -6,7 +6,9 @@ import { createGit } from './git/index.ts';
 import { createApp } from './http/index.ts';
 import { inboxHook } from './notify/index.ts';
 import { createScheduler, type Runners } from './scheduler/index.ts';
-import { createAccountSettings } from './commands/index.ts';
+import { createAccountSettings, createSparring, type SparTurnRunner } from './commands/index.ts';
+import type { FakeScript } from './llm/index.ts';
+import { sparTurn } from './pipeline/index.ts';
 import { createSecrets, redactor } from './security/index.ts';
 import { createStore, type Store } from './store/index.ts';
 import { systemClock } from './util/clock.ts';
@@ -22,6 +24,13 @@ export interface Running {
   close(): Promise<void>;
 }
 
+export interface StartOptions {
+  /** Script for the `fake` model provider (integration tests; demo scripts are #31). */
+  fakeScript?: FakeScript;
+  /** Wraps each sparring turn (tests hold a turn in flight to observe shutdown). */
+  wrapSparTurn?: (run: SparTurnRunner) => SparTurnRunner;
+}
+
 /** Placeholder runners until the pipeline is wired in (demo/integration issue): they do nothing. */
 const NO_OP_RUNNERS: Runners = {
   runOrchestrator: () => Promise.resolve(),
@@ -29,7 +38,11 @@ const NO_OP_RUNNERS: Runners = {
 };
 
 /** Composition root: config → data dir → DB → store → app → serve. */
-export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise<Running> {
+export async function start(
+  config: Config,
+  webRoot = DEFAULT_WEB_ROOT,
+  options: StartOptions = {},
+): Promise<Running> {
   ensureDataDir(config.dataDir);
   const db = open(config.dbPath);
   // Registers every stored secret with the redactor before anything can log or emit.
@@ -40,7 +53,34 @@ export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise
   const git = createGit({ dataDir: config.dataDir });
   // settings.modelDeps() is what agent runs pass to the LLM registry (keys read at call time).
   const settings = createAccountSettings({ store, db, secrets });
-  const app = createApp({ store, ids, git, redactor, webRoot, settings });
+  const { fakeScript, wrapSparTurn = (run) => run } = options;
+  const modelDeps = () => ({
+    ...settings.modelDeps(),
+    ...(fakeScript === undefined ? {} : { fake: { script: fakeScript } }),
+  });
+  const sparring = createSparring({
+    store,
+    ids,
+    sparTurn: wrapSparTurn((productId, message) =>
+      sparTurn(
+        {
+          store,
+          ids,
+          clock: systemClock,
+          redactor,
+          logsDir: join(config.dataDir, 'logs'),
+          modelDeps: modelDeps(),
+          demo: config.demo,
+        },
+        productId,
+        message,
+      ),
+    ),
+    onError: (err) => {
+      console.error(redactor.redact(`sparring turn failed: ${String(err)}`));
+    },
+  });
+  const app = createApp({ store, ids, git, redactor, webRoot, settings, sparring });
   const scheduler = createScheduler({
     store,
     clock: systemClock,
@@ -67,6 +107,8 @@ export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise
     store,
     close: async () => {
       await scheduler.stop();
+      // A sparring turn commits when its agent answers: let it finish before the DB closes.
+      await sparring.idle();
       await new Promise<void>((done, fail) => {
         // SSE streams never end on their own: drop open connections so close() can finish.
         if ('closeAllConnections' in server) server.closeAllConnections();

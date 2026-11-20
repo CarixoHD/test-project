@@ -26,6 +26,8 @@ export type IdByKind = {
   question: QuestionId;
   inbox: InboxId;
   run: RunId;
+  /** spar.message entities (unbranded: the event's entityId is plain text). */
+  spar: string;
   /** usage.recorded rows (unbranded: the event's entityId is plain text). */
   usage: string;
 };
