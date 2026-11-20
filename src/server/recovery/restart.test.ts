@@ -77,6 +77,10 @@ beforeAll(async () => {
     });
     if (!added.ok) throw new Error(added.reason);
     issueId = added.issueId;
+    // The orchestrator planned this issue and consumed the hand-off (as applyPlan records it),
+    // so no orchestrator trigger is pending and each scheduler tick re-reads only newer events.
+    const consumed = store.snapshot().lastSeq;
+    store.commit(() => [draft(productId, 'orchestrator.cursor_advanced', { cursor: consumed })]);
   } finally {
     // Closing checkpoints the WAL, so the copied DB file is complete on its own.
     db.$client.close();
@@ -189,6 +193,7 @@ describe('restart recovery (integration)', () => {
       p2.store,
       (e) => e.type === 'attempt.ended' && e.data.status === 'merged',
     );
+    let orchestratorRuns = 0;
     const scheduler = createScheduler({
       store: p2.store,
       clock,
@@ -197,9 +202,12 @@ describe('restart recovery (integration)', () => {
       // The product has no per-role models, so the default check (a full snapshot per call) is
       // always false; skipping it keeps the per-event ticks cheap.
       isBackendBlocked: () => false,
-      orchestratorNotBefore: () => Number.POSITIVE_INFINITY,
       runners: {
-        runOrchestrator: () => Promise.resolve(),
+        // Nothing is pending for the orchestrator (see the template): it must not be started.
+        runOrchestrator: () => {
+          orchestratorRuns += 1;
+          return Promise.resolve();
+        },
         runAttempt: (id, run) =>
           runAttempt(
             p2.deps((role) => (role === 'reviewer' ? APPROVE : IMPLEMENT)),
@@ -211,6 +219,7 @@ describe('restart recovery (integration)', () => {
     scheduler.start();
     await completed;
     await scheduler.stop();
+    expect(orchestratorRuns).toBe(0);
 
     const issue = p2.store.q.issue(issueId);
     expect(issue).toMatchObject({ status: 'completed', attemptCount: 0 });
