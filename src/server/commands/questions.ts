@@ -8,8 +8,7 @@ import type { CommandDeps } from './apply-plan.ts';
 // question is an orchestrator trigger (shared/triggers.ts).
 
 export type AnswerQuestionResult =
-  | { ok: true; events: Event[] }
-  | { ok: false; reason: string; code: 'not_found' | 'conflict' };
+  { ok: true; events: Event[] } | { ok: false; reason: string; code: 'not_found' | 'conflict' };
 
 type Outcome = { ok: true } | { ok: false; reason: string; code: 'not_found' | 'conflict' };
 

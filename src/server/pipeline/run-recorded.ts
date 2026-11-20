@@ -48,8 +48,9 @@ export function agentLogPath(logsDir: string, agentId: AgentId): string {
 /**
  * Runs one agent with full recording (ARCHITECTURE §4.6): `agent.spawned`, a redacted log
  * file, batched `agent.activity`, one `usage.recorded` per step, `agent.state` rate_limited
- * (or waiting_owner for a result that `waitsForOwner`), and always `agent.exited`, also when the run throws. Failures inside the recording
- * callbacks (store, log file, `afterUsage`) stop the agent and are rethrown after it ends.
+ * (or waiting_owner for a result that `waitsForOwner`), and always `agent.exited`, also when
+ * the run throws. Failures inside the recording callbacks (store, log file, `afterUsage`) stop
+ * the agent and are rethrown after it ends.
  */
 export async function runRecordedAgent<T>(
   ctx: RecordedRunContext,

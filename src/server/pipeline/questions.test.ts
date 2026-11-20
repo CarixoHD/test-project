@@ -130,9 +130,9 @@ describe('implementer questions', () => {
     expect(eventsOf(h.store, 'issue.held').map((e) => [e.entityId, e.data])).toEqual([
       [id, { questionId: qid }],
     ]);
-    expect(
-      eventsOf(h.store, 'agent.state').map((e) => [e.entityId, e.data.state]),
-    ).toEqual([[implementer?.entityId, 'waiting_owner']]);
+    expect(eventsOf(h.store, 'agent.state').map((e) => [e.entityId, e.data.state])).toEqual([
+      [implementer?.entityId, 'waiting_owner'],
+    ]);
     expect(Object.values(h.store.snapshot().state.inbox).map((i) => i.kind)).toEqual(['question']);
     expect(await h.rawGit(['rev-parse', 'main'])).toBe(main);
     await h.expectNoLeftovers();
