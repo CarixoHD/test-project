@@ -165,6 +165,11 @@ const issueEvents = [
       from: IssueStatusSchema.exclude(['completed', 'cancelled']),
       by: IssueActorSchema,
       reason: z.string(),
+      /**
+       * Unfinished issues that depend on this one and so can never start (owner cancels only).
+       * Non-empty makes the event an orchestrator trigger; absent on older events.
+       */
+      stranded: z.array(IssueIdSchema).optional(),
     }),
   ),
   defineEvent(

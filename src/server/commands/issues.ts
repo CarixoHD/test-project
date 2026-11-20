@@ -184,7 +184,18 @@ export function editIssue(deps: CommandDeps, id: IssueId, input: EditIssueInput)
   });
 }
 
-/** Cancels an issue through the transition guards (completed or cancelled → conflict). */
+/** Unfinished issues of the product that depend on `id`: cancelling it strands them. */
+function strandedBy(q: Queries, productId: ProductId, id: IssueId): IssueId[] {
+  return q
+    .issuesByProduct(productId)
+    .filter((i) => i.status !== 'completed' && i.status !== 'cancelled' && i.dependsOn.includes(id))
+    .map((i) => i.id);
+}
+
+/**
+ * Cancels an issue through the transition guards (completed or cancelled → conflict). Unfinished
+ * dependents are recorded as `stranded`, which makes the event an orchestrator trigger.
+ */
 export function cancelIssue(deps: CommandDeps, id: IssueId): CancelIssueResult {
   return commitBuilt<object>(deps, (q) => {
     const issue = issueOf(q, id);
@@ -197,12 +208,18 @@ export function cancelIssue(deps: CommandDeps, id: IssueId): CancelIssueResult {
     if (from === 'completed' || from === 'cancelled') {
       throw new Error(`transition allowed cancelling a ${from} issue`);
     }
+    const stranded = strandedBy(q, issue.productId, id);
     const draft: EventDraft = {
       type: 'issue.cancelled',
       productId: issue.productId,
       entityId: id,
       v: 1,
-      data: { from, by: 'owner', reason: 'cancelled by the owner' },
+      data: {
+        from,
+        by: 'owner',
+        reason: 'cancelled by the owner',
+        ...(stranded.length === 0 ? {} : { stranded }),
+      },
     };
     return { ok: true, drafts: [draft, ...withdrawIssueQuestions(q, id)] };
   });

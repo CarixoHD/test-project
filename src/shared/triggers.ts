@@ -6,12 +6,16 @@ import type { ProductId, QuestionId } from './ids.ts';
 // product has trigger events newer than its `orchestratorCursor`; a successful run commits
 // `orchestrator.cursor_advanced` to the highest seq it consumed, so each trigger fires once.
 
-/** Event types that wake the orchestrator (`question.answered` only for orchestrator questions). */
+/**
+ * Event types that wake the orchestrator (`question.answered` only for orchestrator questions,
+ * `issue.cancelled` only when it stranded dependents).
+ */
 export const TRIGGER_TYPES = [
   'product.handed_off',
   'prd.applied',
   'issue.failed',
   'question.answered',
+  'issue.cancelled',
 ] as const satisfies readonly EventType[];
 
 type QuestionTarget = (typeof QUESTION_TARGETS)[number];
@@ -43,7 +47,8 @@ function lookupTarget(
 }
 
 /**
- * Trigger events with `seq > cursor`, in seq order. An answered question counts only when its
+ * Trigger events with `seq > cursor`, in seq order. A cancellation counts only when it stranded
+ * unfinished dependents (`data.stranded`, set by owner cancels). An answered question counts only when its
  * target is the orchestrator; the target comes from a `question.asked` in `events` (any seq)
  * or else from `opts.questions`. Answers to questions of unknown target are skipped.
  */
@@ -60,6 +65,7 @@ export function pendingTriggers(
   }
   const isTrigger = (e: Event): boolean => {
     if (e.seq <= cursor || !TRIGGERS.has(e.type)) return false;
+    if (e.type === 'issue.cancelled') return (e.data.stranded?.length ?? 0) > 0;
     if (e.type !== 'question.answered') return true;
     const target = askedTargets.get(e.entityId) ?? lookupTarget(opts.questions, e.entityId);
     return target === 'orchestrator';

@@ -54,6 +54,18 @@ const answered = (seq: number, id: QuestionId) =>
     entityId: id,
     data: { answer: 'because' },
   });
+const cancelled = (seq: number, stranded?: string[]) =>
+  at(seq, {
+    type: 'issue.cancelled',
+    productId: P,
+    entityId: I1,
+    data: {
+      from: 'open',
+      by: 'owner',
+      reason: 'cancelled by the owner',
+      ...(stranded === undefined ? {} : { stranded }),
+    },
+  });
 const created = (seq: number) =>
   at(seq, {
     type: 'issue.created',
@@ -72,9 +84,15 @@ const cursorAdvanced = (seq: number) =>
 const seqs = (events: Event[]) => events.map((e) => e.seq);
 
 describe('pendingTriggers', () => {
-  it('lists exactly the four trigger types', () => {
+  it('lists exactly the five trigger types', () => {
     expect([...TRIGGER_TYPES].sort()).toEqual(
-      ['issue.failed', 'prd.applied', 'product.handed_off', 'question.answered'].sort(),
+      [
+        'issue.cancelled',
+        'issue.failed',
+        'prd.applied',
+        'product.handed_off',
+        'question.answered',
+      ].sort(),
     );
   });
 
@@ -89,6 +107,18 @@ describe('pendingTriggers', () => {
     { name: 'handed_off after the cursor', events: [handedOff(1)], cursor: 0, want: [1] },
     { name: 'prd.applied after the cursor', events: [prdApplied(4)], cursor: 3, want: [4] },
     { name: 'issue.failed after the cursor', events: [failed(9)], cursor: 2, want: [9] },
+    {
+      name: 'issue.cancelled that stranded dependents is a trigger',
+      events: [cancelled(3, ['issue-2'])],
+      cursor: 0,
+      want: [3],
+    },
+    {
+      name: 'issue.cancelled without stranded dependents is not a trigger',
+      events: [cancelled(3), cancelled(4, [])],
+      cursor: 0,
+      want: [],
+    },
     {
       name: 'events at or before the cursor are consumed',
       events: [handedOff(1), prdApplied(2), failed(3), failed(4)],
