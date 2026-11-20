@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { PriceOverridesSchema } from './budget.ts';
+import { GitRemoteSchema } from './domain.ts';
 import { ProductIdSchema } from './ids.ts';
 import { IssueIdSchema } from './ids.ts';
 import {
@@ -8,6 +9,7 @@ import {
   ProviderConfigSchema,
   ProviderIdSchema,
   RoleModelsSchema,
+  RoleSchema,
 } from './models.ts';
 import { ClientStateSchema } from './state-schema.ts';
 
@@ -71,6 +73,38 @@ export type EditIssueResponse = z.infer<typeof EditIssueResponseSchema>;
 /** `POST /api/issues/:id/cancel` (and other plain command acknowledgements). */
 export const OkResponseSchema = z.object({ ok: z.literal(true) });
 export type OkResponse = z.infer<typeof OkResponseSchema>;
+
+// ---- product settings (PATCH /api/products/:id/settings) ---------------------------------
+
+export const MAX_PARALLEL_LIMIT = 10;
+export const MAX_ATTEMPTS_LIMIT = 10;
+
+/**
+ * `PATCH /api/products/:id/settings`: every field optional, at least one. `budgetUsd: null`
+ * removes the budget; `models` overrides roles one by one (null = back to the global default).
+ */
+export const ProductSettingsUpdateRequestSchema = z
+  .strictObject({
+    budgetUsd: z
+      .number({ error: 'Budget must be a number' })
+      .positive('Budget must be more than 0')
+      .nullable()
+      .optional(),
+    maxParallel: z
+      .int({ error: 'Parallel agents must be a whole number' })
+      .min(1, `Parallel agents must be between 1 and ${MAX_PARALLEL_LIMIT}`)
+      .max(MAX_PARALLEL_LIMIT, `Parallel agents must be between 1 and ${MAX_PARALLEL_LIMIT}`)
+      .optional(),
+    maxAttempts: z
+      .int({ error: 'Attempts must be a whole number' })
+      .min(1, `Attempts must be between 1 and ${MAX_ATTEMPTS_LIMIT}`)
+      .max(MAX_ATTEMPTS_LIMIT, `Attempts must be between 1 and ${MAX_ATTEMPTS_LIMIT}`)
+      .optional(),
+    models: z.partialRecord(RoleSchema, ModelRefSchema.nullable()).optional(),
+    gitRemote: GitRemoteSchema.nullable().optional(),
+  })
+  .refine((u) => Object.keys(u).length > 0, 'Nothing to update');
+export type ProductSettingsUpdateRequest = z.infer<typeof ProductSettingsUpdateRequestSchema>;
 
 // ---- account settings (GET|PUT /api/settings) ---------------------------------------------
 

@@ -12,6 +12,7 @@ import {
   type EditIssueRequest,
   type EditIssueResponse,
   type OkResponse,
+  type ProductSettingsUpdateRequest,
   type StateResponse,
 } from '../../shared/dto.ts';
 
@@ -145,6 +146,20 @@ export function savePrdDraft(
   return request(`/api/products/${encodeURIComponent(productId)}/prd-draft`, {
     method: 'PUT',
     body: { markdown },
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Changes a product's settings; the new values arrive as a `product.settings_changed` event. */
+export function updateProductSettings(
+  productId: string,
+  body: ProductSettingsUpdateRequest,
+  signal?: AbortSignal,
+): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/settings`, {
+    method: 'PATCH',
+    body,
     schema: OkResponseSchema,
     ...(signal ? { signal } : {}),
   });
