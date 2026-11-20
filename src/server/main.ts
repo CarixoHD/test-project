@@ -11,6 +11,7 @@ import {
   budgetAfterUsage,
   createAccess,
   createAccountSettings,
+  createGitTokens,
   createSparring,
   type SparTurnRunner,
 } from './commands/index.ts';
@@ -170,6 +171,7 @@ export async function start(
     webRoot,
     access,
     settings,
+    gitTokens: createGitTokens({ store, secrets }),
     sparring,
     previews,
     claudeLogin: runtime,
