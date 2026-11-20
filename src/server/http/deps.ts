@@ -28,6 +28,8 @@ export interface AppDeps {
   previews?: Previews | undefined;
   /** `data/logs` (agent logs, GET /api/agents/:id/log); that route exists only when given. */
   logsDir?: string | undefined;
+  /** `data/artifacts` (GET /api/attempts/:id/diff | /check); those routes exist only when given. */
+  artifactsDir?: string | undefined;
   /** How often a followed agent log is re-read; defaults to LOG_POLL_MS. Tests shorten it. */
   logPollMs?: number | undefined;
   /** Directory with the built SPA. Served only when it exists. */
