@@ -2,7 +2,7 @@
 // Every invocation goes through util/exec with GIT_SAFETY_FLAGS first, a timeout, and an
 // environment that ignores the host's global/system git config and any inherited GIT_* repo vars.
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { exec as defaultExec, type ExecResult } from '../util/exec.ts';
@@ -60,6 +60,16 @@ export interface Git {
   cleanWorktree(dir: string): Promise<void>;
   removeWorktree(dir: string): Promise<void>;
   pruneWorktrees(productId: string): Promise<void>;
+  /**
+   * Recovery: removes every directory under data/worktrees (registered worktrees through
+   * `worktree remove`, anything else from disk), prunes stale admin entries in every repo and
+   * deletes leftover vibecode/* branches. main and other branches are never touched.
+   */
+  clearWorktrees(): Promise<void>;
+  /** Ids of the bare repos in data/repos (`<id>.git` directories with a safe id), sorted. */
+  listRepos(): Promise<string[]>;
+  /** Deletes data/repos/<productId>.git; no-op if it is gone. */
+  removeRepo(productId: string): Promise<void>;
   commitFilesOnMain(productId: string, files: Record<string, string>, msg: string): Promise<string>;
   /**
    * Prepares ONE squash commit (parent: current main) for `branch`. Never moves main; the caller
@@ -322,6 +332,43 @@ export function createGit(o: GitOptions): Git {
 
     async pruneWorktrees(productId) {
       await git.run(inRepo(productId, ['worktree', 'prune']));
+    },
+
+    async clearWorktrees() {
+      const entries = existsSync(worktreesDir) ? await readdir(worktreesDir) : [];
+      for (const name of entries) {
+        const dir = join(worktreesDir, name);
+        try {
+          await api.removeWorktree(dir);
+        } catch {
+          // Not a working git worktree (half-created, or its repo is gone): delete it from disk;
+          // `worktree prune` below drops any admin entry it left in the repo.
+        }
+        await rm(dir, { recursive: true, force: true });
+      }
+      for (const productId of await api.listRepos()) {
+        await api.pruneWorktrees(productId);
+        const refs = await git.run(
+          inRepo(productId, ['for-each-ref', '--format=%(refname:short)', `refs/heads/${BRANCH_PREFIX}`]),
+        );
+        for (const branch of refs.split('\n').filter((b) => b.startsWith(BRANCH_PREFIX))) {
+          await git.run(inRepo(productId, ['branch', '--quiet', '-D', branch]));
+        }
+      }
+    },
+
+    async listRepos() {
+      if (!existsSync(reposDir)) return [];
+      const entries = await readdir(reposDir, { withFileTypes: true });
+      return entries
+        .filter((e) => e.isDirectory() && e.name.endsWith('.git'))
+        .map((e) => e.name.slice(0, -'.git'.length))
+        .filter((id) => SAFE_ID.test(id))
+        .sort();
+    },
+
+    async removeRepo(productId) {
+      await rm(repoDir(productId), { recursive: true, force: true });
     },
 
     async commitFilesOnMain(productId, files, msg) {
