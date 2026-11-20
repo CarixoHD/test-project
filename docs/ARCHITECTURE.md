@@ -128,7 +128,8 @@ function slotsFree(running:number, maxParallel:number): number;    // max(0, max
 // triggers.ts
 function pendingTriggers(events: Event[], cursor: number,
   opts?: {productId?: ProductId; questions?: Map|Record<QuestionId, {target}>}): Event[];
-//   seq > cursor, seq order; TRIGGER_TYPES = product.handed_off, prd.applied, issue.failed, question.answered.
+//   seq > cursor, seq order; TRIGGER_TYPES = product.handed_off, prd.applied, issue.failed, question.answered, issue.cancelled.
+//   issue.cancelled counts only with a non-empty data.stranded (owner cancel of an issue unfinished issues depend on).
 //   An answer counts only for an orchestrator question; the target comes from a question.asked in
 //   `events`, else from `opts.questions` (e.g. ClientState.questions); unknown target → not a trigger.
 // budget.ts
@@ -233,7 +234,7 @@ POST /api/login {password} · POST /api/logout · GET /api/session
 - No password (or no `access` wired): a `Host` header that is not loopback → 403 `forbidden` (DNS rebinding).
 - Every POST/PUT/PATCH/DELETE: a Content-Type other than `application/json` → 415 `unsupported_media_type`; an `Origin` (when present) whose host is not the request `Host` → 403 `forbidden`. The web client sends `Content-Type: application/json` on every mutation, bodyless ones included.
 - Password set: every `/api` path except `/api/login` and `/api/session` (SSE included) needs a valid `vibecode_session` cookie → else 401 `unauthorized`.
-- Routes (mounted when `access` is given; DTOs `LoginRequestSchema`, `PasswordChangeRequestSchema`, `SessionResponseSchema` in `shared/dto.ts`): `POST /api/login` sets the cookie (401 wrong password, 409 no password set, 429 `rate_limited` after 5 attempts per minute per `clientKey`, by default the socket's remote address). `POST /api/logout` clears it. `GET /api/session` → `{passwordSet, authenticated}` (authenticated is always true without a password). `POST /api/settings/password` `{current?, next}`: `next` 12–1024 chars, and `current` is required and checked (rate-limited) once a password is set (400 when missing or wrong). It answers with a fresh session cookie, because the change ends every other session.
+- Routes (mounted when `access` is given; DTOs `LoginRequestSchema`, `PasswordChangeRequestSchema`, `SessionResponseSchema` in `shared/dto.ts`): `POST /api/login` sets the cookie (401 wrong password, 409 no password set, 429 `rate_limited` after 5 attempts per minute per `clientKey`, by default the socket's remote address). `POST /api/logout` revokes the session on the server (`sessions.revoke`, survives restarts) and clears the cookie. `GET /api/session` → `{passwordSet, authenticated}` (authenticated is always true without a password). `POST /api/settings/password` `{current?, next}`: `next` 12–1024 chars, and `current` is required and checked (rate-limited) once a password is set (400 when missing or wrong). It answers with a fresh session cookie, because the change ends every other session.
 - `commands/access.ts`: `createAccess({store, secrets, clock})` → `{hasPassword(), checkPassword(pw), login(pw, client), changePassword(input, client), resetPassword(next), sessions}`. The scrypt hash is the `passwordHash` row of `settings`, read on every call, so a password set by `npm run set-password` (`scripts/set-password.ts`, which uses `resetPassword` and needs no current password) applies to a running server. Setting it rotates the session key and commits `settings.changed{sections:['password'], keys:[]}`.
 - Boot (`main.ts`): `assertBindAllowed(config.host, access.hasPassword())` runs before recovery and listen.
 
@@ -307,7 +308,7 @@ addIssue(deps, productId, {title, body, dependsOn, priority?}) → {ok; events; 
 //   origin owner, next number, prdVersion; a complete product → product.phase_changed{building} in the same commit
 editIssue(deps, issueId, {title?, body?, dependsOn?, rev}) → {ok; events; rev}
 //   open|failed|in_progress|in_review only (else conflict); rev ≠ current → conflict; rev+1; no cycles
-cancelIssue(deps, issueId) → {ok; events}   // via transition(); completed/cancelled → conflict; by:'owner'; + question.withdrawn per open question of the issue (withdrawIssueQuestions)
+cancelIssue(deps, issueId) → {ok; events}   // via transition(); completed/cancelled → conflict; by:'owner'; + question.withdrawn per open question of the issue (withdrawIssueQuestions); data.stranded = unfinished dependents (omitted when none), which makes it an orchestrator trigger
 // codes: invalid → 400, not_found → 404, conflict → 409
 createSparring({store, ids, sparTurn: SparTurnRunner, onError}): Sparring;   // flow 1, any phase
 //   sendSparMessage(productId, {message}) → {ok; events; done} | 400/404/409: commits spar.message{owner}
@@ -508,9 +509,11 @@ redactor.register(value); redactor.redact(text)            // all secret values 
 redactor.safeBoundary(text)                                // where continued/cut text may be split without splitting a secret
 hashPassword(pw) / verifyPassword(pw, hash): Promise       // node:crypto scrypt N=2^15 r=8 p=1, 16-byte salt, timingSafeEqual;
                                                            // stored `scrypt$N$r$p$salt$hash` (base64url)
-createSessions({key: () => string, clock}) → {issue(), verify(token)}
+createSessions({key: () => string, clock, revoked?}) → {issue(), verify(token), revoke(token)}
                                                            // `<expMs>.<nonce>.<HMAC-SHA256>`, 30-day expiry; key in secrets
-                                                           // `sessionKey` (SESSION_KEY_SECRET), rotated on password change
+                                                           // `sessionKey` (SESSION_KEY_SECRET), rotated on password change;
+                                                           // revoke (logout) adds the nonce to a JSON `{nonce: expMs}` list in
+                                                           // `revoked` {get, set} (access: secrets `sessionRevoked`), pruned at expiry
 sessionCookieOptions(secure)                               // HttpOnly, SameSite=Strict, Path=/, Max-Age 30 d, Secure over HTTPS
 assertBindAllowed(host, hasPassword)                       // throws (actionable message) unless loopback or password set
 isLoopbackHost(host) / isLoopbackHostHeader(header)        // localhost, 127.0.0.0/8, ::1

@@ -7,6 +7,7 @@ import {
   newSessionKey,
   productionPasswordHasher,
   SESSION_KEY_SECRET,
+  SESSION_REVOKED_SECRET,
   type PasswordHasher,
   type Secrets,
   type Sessions,
@@ -15,7 +16,8 @@ import { writeSetting, type Store } from '../store/index.ts';
 
 // Owner access (ADR 9, ARCHITECTURE §4.10): the scrypt password hash in `settings`
 // (PASSWORD_HASH_SETTING) and the session HMAC key in `secrets` (SESSION_KEY_SECRET).
-// Setting or changing the password rotates the key, which ends every existing session.
+// Setting or changing the password rotates the key, which ends every existing session;
+// logging out revokes one session (SESSION_REVOKED_SECRET).
 
 export const PASSWORD_HASH_SETTING = 'passwordHash';
 /** Password guesses (login, current password on change) allowed per client per window. */
@@ -103,7 +105,15 @@ export function createAccess({
     return { ok: true };
   };
 
-  const sessions = createSessions({ key: sessionKey, clock });
+  const sessions = createSessions({
+    key: sessionKey,
+    clock,
+    // Logged-out tokens stay revoked across restarts.
+    revoked: {
+      get: () => secrets.get(SESSION_REVOKED_SECRET),
+      set: (value) => secrets.set(SESSION_REVOKED_SECRET, value),
+    },
+  });
 
   return {
     hasPassword: () => storedHash() !== undefined,
