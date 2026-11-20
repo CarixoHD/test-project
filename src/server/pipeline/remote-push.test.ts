@@ -21,13 +21,15 @@ let dataDir: string;
 let h: Harness;
 let pusher: RemotePusher | undefined;
 let pushes: { productId: string; remote: PushRemote; mainSha: string }[];
-let pushImpl: (remote: PushRemote) => Promise<void>;
+let pushImpl: (remote: PushRemote, signal?: AbortSignal) => Promise<void>;
+let signals: (AbortSignal | undefined)[];
 const secrets = new Map<string, string>();
 
 beforeEach(async () => {
   dataDir = await realpath(await mkdtemp(path.join(tmpdir(), 'vibecode-remote-push-')));
   h = await setupAttempt(dataDir);
   pushes = [];
+  signals = [];
   pushImpl = () => Promise.resolve();
   secrets.clear();
 });
@@ -39,9 +41,10 @@ afterEach(async () => {
 
 function start(redactor = new Redactor()): RemotePusher {
   const git: Pick<Git, 'push'> = {
-    push: async (productId, remote) => {
+    push: async (productId, remote, o) => {
       pushes.push({ productId, remote, mainSha: await h.git.mainSha(P) });
-      await pushImpl(remote);
+      signals.push(o?.signal);
+      await pushImpl(remote, o?.signal);
     },
   };
   pusher = startRemotePusher({
@@ -220,5 +223,26 @@ describe('remote push after merges', () => {
     await h.run(h.addIssue('Scaffold'));
     await p.idle();
     expect(pushes).toEqual([]);
+  });
+
+  it('stop() aborts a running push without reporting it', async () => {
+    setRemote(URL);
+    // Like git.push: rejects with a GitError when its signal fires.
+    pushImpl = (_remote, signal) =>
+      new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new GitError('aborted')));
+      });
+    const p = start();
+    p.request(P);
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+
+    p.stop();
+    await p.idle();
+
+    expect(signals[0]?.aborted).toBe(true);
+    expect(inboxErrors()).toEqual([]);
+    p.request(P);
+    await p.idle();
+    expect(pushes).toHaveLength(1);
   });
 });

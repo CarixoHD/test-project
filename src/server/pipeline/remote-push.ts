@@ -24,7 +24,7 @@ export interface RemotePusher {
   request(productId: ProductId): void;
   /** Resolves when no push is running or queued (tests, shutdown). */
   idle(): Promise<void>;
-  /** Unsubscribes from the store; running pushes finish. */
+  /** Unsubscribes from the store and aborts running pushes (shutdown); nothing is reported. */
   stop(): void;
 }
 
@@ -50,6 +50,8 @@ export function startRemotePusher(deps: RemotePusherDeps): RemotePusher {
   const again = new Set<ProductId>();
   /** The last reported failure per product: an identical one is not reported again. */
   const lastError = new Map<ProductId, string>();
+  const stopping = new AbortController();
+  const { signal } = stopping;
 
   const report = (productId: ProductId, title: string, body: string): void => {
     if (lastError.get(productId) === body) return;
@@ -68,7 +70,7 @@ export function startRemotePusher(deps: RemotePusherDeps): RemotePusher {
   const pushOnce = async (productId: ProductId): Promise<void> => {
     const product = store.q.product(productId);
     const remote = product?.settings.gitRemote ?? null;
-    if (product === null || remote === null) return;
+    if (product === null || remote === null || signal.aborted) return;
     const name = product.name;
     // Stored URLs may predate the URL rule (#97): check again, and never hand a bad one to git.
     // The URL itself is left out of the message (it may carry credentials).
@@ -83,9 +85,11 @@ export function startRemotePusher(deps: RemotePusherDeps): RemotePusher {
       return;
     }
     try {
-      await git.push(productId, { url: remote.url, token: secrets.get(gitTokenSecret(productId)) ?? null });
+      const token = secrets.get(gitTokenSecret(productId)) ?? null;
+      await git.push(productId, { url: remote.url, token }, { signal });
       lastError.delete(productId);
     } catch (err) {
+      if (signal.aborted) return;
       const reason = redactor.redact(err instanceof Error ? err.message : String(err));
       report(
         productId,
@@ -109,7 +113,7 @@ export function startRemotePusher(deps: RemotePusherDeps): RemotePusher {
           // Only a store failure lands here; nothing to report it through but the log.
           console.error(redactor.redact(`git push of ${productId} failed: ${String(err)}`));
         }
-        if (!again.has(productId)) break;
+        if (!again.has(productId) || signal.aborted) break;
       }
     } finally {
       // Same microtask as the last `again` check: no request can slip in between.
@@ -118,6 +122,7 @@ export function startRemotePusher(deps: RemotePusherDeps): RemotePusher {
   };
 
   const request = (productId: ProductId): void => {
+    if (signal.aborted) return;
     if (running.has(productId)) {
       again.add(productId);
       return;
@@ -134,6 +139,9 @@ export function startRemotePusher(deps: RemotePusherDeps): RemotePusher {
     async idle() {
       while (running.size > 0) await Promise.all(running.values());
     },
-    stop: unsubscribe,
+    stop() {
+      unsubscribe();
+      stopping.abort();
+    },
   };
 }
