@@ -40,6 +40,7 @@ import {
   type Failed,
 } from './attempt-outcome.ts';
 import { implementerPrompt, reviewerPrompt, tailLines } from './attempt-prompt.ts';
+import { parseProjectConfig, PROJECT_FILE, projectConfigChanged } from './project-config.ts';
 import { resolveModel } from './resolve-model.ts';
 import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
 
@@ -77,6 +78,8 @@ export interface AttemptDeps extends RecordedRunContext {
   demo?: boolean;
   limits?: Partial<typeof DEFAULT_ATTEMPT_LIMITS>;
   checkTimeoutMs?: number;
+  /** Warnings that do not fail the attempt (an invalid merged project.json); default console.warn. */
+  log?: (line: string) => void;
 }
 
 type Ctx = AttemptRef & {
@@ -426,7 +429,45 @@ async function merge(
   }
   await git.advanceMain(ctx.productId, r.commitSha, main);
   completeAttempt(ctx, r.commitSha, done);
+  await syncProjectConfig(ctx);
   return { kind: 'merged', ...done };
+}
+
+/**
+ * After main advanced: product.project follows main's `.vibecode/project.json`, so a config an
+ * implementer merged (e.g. `preview`) applies at once. A missing or invalid file keeps the
+ * current config with a warning; the attempt is already merged and never fails here.
+ */
+async function syncProjectConfig(ctx: Ctx): Promise<void> {
+  const { git, store, redactor } = ctx.deps;
+  const warn = (what: string) => {
+    const log = ctx.deps.log ?? ((line: string) => console.warn(line));
+    log(redactor.redact(`attempt ${ctx.attemptId}: kept the project config: ${what}`));
+  };
+  let text: string | null;
+  try {
+    text = await git.readFileAtMain(ctx.productId, PROJECT_FILE);
+  } catch (err) {
+    warn(`could not read ${PROJECT_FILE} at main: ${errorText(err)}`);
+    return;
+  }
+  if (text === null) return warn(`${PROJECT_FILE} is missing on main`);
+  const parsed = parseProjectConfig(text);
+  if (!parsed.ok) return warn(parsed.reason);
+  const project = parsed.value;
+  store.commit((tx) => {
+    const product = tx.q.product(ctx.productId);
+    if (product === null || !projectConfigChanged(product.project, project)) return [];
+    return [
+      {
+        type: 'product.settings_changed',
+        productId: ctx.productId,
+        entityId: null,
+        v: 1,
+        data: { project },
+      },
+    ];
+  });
 }
 
 /** What the agents worked on differs: an edit of title, body or dependencies (not priority). */
