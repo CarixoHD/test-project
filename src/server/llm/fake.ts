@@ -1,6 +1,7 @@
 import { APICallError } from 'ai';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import { z } from 'zod';
+import { WEB_SEARCH_TOOL_NAME } from './capabilities.ts';
 
 /*
  * Scripted fake provider (ADR 3). Built on `MockLanguageModelV4` from `ai/test` (ai 7.0.x,
@@ -24,7 +25,10 @@ export const FakeToolCallSchema = z.strictObject({
   input: z.unknown().default({}),
 });
 
-/** Injected provider failure: 429 is retryable (optionally with retry-after), 401 is not. */
+/**
+ * Injected provider failure: 429 (optionally with retry-after) and 503 are retryable; 401 and
+ * 403 are not.
+ */
 export const FakeErrorSchema = z.discriminatedUnion('status', [
   z.strictObject({
     status: z.literal(429),
@@ -32,7 +36,12 @@ export const FakeErrorSchema = z.discriminatedUnion('status', [
     message: z.string().optional(),
   }),
   z.strictObject({ status: z.literal(401), message: z.string().optional() }),
+  z.strictObject({ status: z.literal(403), message: z.string().optional() }),
+  z.strictObject({ status: z.literal(503), message: z.string().optional() }),
 ]);
+
+/** A provider-executed web search (call + result), streamed under the `web_search` tool name. */
+export const FakeWebSearchSchema = z.strictObject({ query: z.string() });
 
 /** One model call. `text` and string values inside tool `input` support `{{path.to.var}}`. */
 export const FakeTurnSchema = z.strictObject({
@@ -40,6 +49,9 @@ export const FakeTurnSchema = z.strictObject({
   toolCalls: z.array(FakeToolCallSchema).optional(),
   usage: FakeUsageSchema.optional(),
   error: FakeErrorSchema.optional(),
+  webSearches: z.array(FakeWebSearchSchema).optional(),
+  /** Never answers: the call only ends (with an abort error) when its abortSignal fires. */
+  hang: z.literal(true).optional(),
 });
 export const FakeScriptSchema = z.array(FakeTurnSchema);
 
@@ -90,15 +102,22 @@ function fill(value: unknown, vars: Record<string, unknown>): unknown {
   return value;
 }
 
+const DEFAULT_ERROR_MESSAGES = {
+  429: 'Rate limit exceeded',
+  401: 'Invalid API key',
+  403: 'Permission denied',
+  503: 'Service unavailable',
+} as const;
+
 function injectedError(error: NonNullable<ParsedTurn['error']>): APICallError {
   const retryAfter = error.status === 429 ? error.retryAfterSeconds : undefined;
   return new APICallError({
-    message: error.message ?? (error.status === 429 ? 'Rate limit exceeded' : 'Invalid API key'),
+    message: error.message ?? DEFAULT_ERROR_MESSAGES[error.status],
     url: 'fake://model',
     requestBodyValues: {},
     statusCode: error.status,
     responseHeaders: retryAfter === undefined ? {} : { 'retry-after': String(retryAfter) },
-    isRetryable: error.status === 429,
+    isRetryable: error.status === 429 || error.status === 503,
   });
 }
 
@@ -125,11 +144,44 @@ function render(turn: ParsedTurn, index: number, vars: Record<string, unknown>) 
     toolName: call.name,
     input: JSON.stringify(fill(call.input, vars)),
   }));
+  const searches = (turn.webSearches ?? []).flatMap((search, i) => {
+    const toolCallId = `fake-search-${index}-${i}`;
+    const query = fillString(search.query, vars);
+    return [
+      {
+        type: 'tool-call' as const,
+        toolCallId,
+        toolName: WEB_SEARCH_TOOL_NAME,
+        input: JSON.stringify({ query }),
+        providerExecuted: true,
+        dynamic: true,
+      },
+      {
+        type: 'tool-result' as const,
+        toolCallId,
+        toolName: WEB_SEARCH_TOOL_NAME,
+        result: [{ url: `https://example.com/search?q=${encodeURIComponent(query)}` }],
+        dynamic: true,
+      },
+    ];
+  });
   const finishReason: GenerateResult['finishReason'] =
     toolCalls.length > 0
       ? { unified: 'tool-calls', raw: 'tool_calls' }
       : { unified: 'stop', raw: 'stop' };
-  return { text, toolCalls, finishReason, usage: toUsage(turn.usage) };
+  return { text, toolCalls, searches, finishReason, usage: toUsage(turn.usage) };
+}
+
+/** Never resolves; rejects with the abort reason once `signal` fires. */
+function hangUntilAborted(signal: AbortSignal | undefined): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    if (signal === undefined) return;
+    const abort = () => {
+      reject(signal.reason instanceof Error ? signal.reason : new Error('The call was aborted'));
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+  });
 }
 
 /**
@@ -147,22 +199,26 @@ export function fakeModel(script: FakeScript, options: FakeModelOptions = {}): M
       throw new Error(`Fake script exhausted: all ${turns.length} turns were used`);
     }
     cursor += 1;
-    return render(turn, index, vars);
+    return { turn, rendered: () => render(turn, index, vars) };
   };
 
   return new MockLanguageModelV4({
     provider: 'fake',
     modelId: 'fake',
-    doGenerate: async () => {
-      const { text, toolCalls, finishReason, usage } = next();
-      const content: Content[] = [];
+    doGenerate: async ({ abortSignal }) => {
+      const { turn, rendered } = next();
+      if (turn.hang === true) return hangUntilAborted(abortSignal);
+      const { text, toolCalls, searches, finishReason, usage } = rendered();
+      const content: Content[] = [...searches];
       if (text !== undefined) content.push({ type: 'text', text });
       content.push(...toolCalls);
       return { content, finishReason, usage, warnings: [] };
     },
-    doStream: async () => {
-      const { text, toolCalls, finishReason, usage } = next();
-      const parts: StreamPart[] = [{ type: 'stream-start', warnings: [] }];
+    doStream: async ({ abortSignal }) => {
+      const { turn, rendered } = next();
+      if (turn.hang === true) return hangUntilAborted(abortSignal);
+      const { text, toolCalls, searches, finishReason, usage } = rendered();
+      const parts: StreamPart[] = [{ type: 'stream-start', warnings: [] }, ...searches];
       if (text !== undefined) {
         parts.push(
           { type: 'text-start', id: 'text-0' },

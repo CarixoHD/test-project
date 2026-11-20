@@ -180,6 +180,58 @@ describe('fakeModel', () => {
     expect(apiError.message).toBe('invalid x-api-key');
   });
 
+  it('injects 403 (not retryable) and 503 (retryable) errors', async () => {
+    const model = fakeModel([{ error: { status: 403 } }, { error: { status: 503 } }]);
+
+    const forbidden = (await callError(
+      generateText({ model, prompt: 'a', maxRetries: 0 }),
+    )) as APICallError;
+    const unavailable = (await callError(
+      generateText({ model, prompt: 'b', maxRetries: 0 }),
+    )) as APICallError;
+
+    expect([forbidden.statusCode, forbidden.isRetryable]).toEqual([403, false]);
+    expect([unavailable.statusCode, unavailable.isRetryable]).toEqual([503, true]);
+  });
+
+  it('streams provider-executed web search calls and results named web_search', async () => {
+    const model = fakeModel(
+      [{ text: 'Searched.', webSearches: [{ query: 'vite {{v}}' }, { query: 'hono' }] }],
+      { vars: { v: 8 } },
+    );
+
+    const result = streamText({ model, prompt: 'go', maxRetries: 0 });
+    const parts: {
+      type: string;
+      toolName?: string;
+      providerExecuted?: boolean;
+      input?: unknown;
+    }[] = [];
+    for await (const part of result.fullStream) parts.push(part as (typeof parts)[number]);
+
+    const calls = parts.filter((p) => p.type === 'tool-call');
+    const results = parts.filter((p) => p.type === 'tool-result');
+    expect(calls.map((c) => c.input)).toEqual([{ query: 'vite 8' }, { query: 'hono' }]);
+    expect(results).toHaveLength(2);
+    for (const r of results) {
+      expect(r).toMatchObject({ toolName: 'web_search', providerExecuted: true });
+    }
+    expect(await result.text).toBe('Searched.');
+  });
+
+  it('hangs on a hang turn until the call is aborted', async () => {
+    const model = fakeModel([{ hang: true }, { text: 'next' }]);
+    const controller = new AbortController();
+
+    const pending = callError(
+      generateText({ model, prompt: 'go', maxRetries: 0, abortSignal: controller.signal }),
+    );
+    controller.abort(new Error('stop now'));
+
+    expect(String(await pending)).toMatch(/stop now|abort/i);
+    expect((await generateText({ model, prompt: 'again' })).text).toBe('next');
+  });
+
   it('fails clearly when the script is exhausted', async () => {
     const model = fakeModel([{ text: 'only' }]);
     await generateText({ model, prompt: 'go' });
