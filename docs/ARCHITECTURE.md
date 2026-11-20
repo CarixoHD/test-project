@@ -473,11 +473,13 @@ integrate(productId, branch, baseSha, message): Promise<
   | {kind:'merged'; commitSha; dir}                        // merge-tree clean; dir = integration worktree to re-check
   | {kind:'conflict'; paths:string[]}>
 advanceMain(productId, commitSha, expectedOld): Promise<void>     // update-ref with old-value guard; throws MainMovedError if main != expectedOld
-commitFilesOnMain(productId, files: Record<string,string>, msg): Promise<string>  // PRD.md on handoff/apply; plumbing with a temp index, one commit, update-ref with old-value guard
+commitFilesOnMain(productId, files: Record<string,string>, msg): Promise<string>  // PRD.md on handoff/apply; plumbing with a temp index (GIT_INDEX_FILE in an os.tmpdir() `vibecode-index-*` folder; fine on a noexec /tmp because nothing is executed from it), one commit, update-ref with old-value guard
 push(productId, {url, token|null}, {signal?}): Promise<void>
   // `git -c protocol.ext.allow=never -c protocol.file.allow=never -c credential.helper= push --porcelain -- <url> refs/heads/main:refs/heads/main`
   // (no force). URL re-checked with validateGitRemoteUrl first (GitError, git never runs). Token only via a temp
   // GIT_ASKPASS script that echoes env VIBECODE_GIT_TOKEN (never argv, URL or repo config); errors redacted.
+  // The helper is written to a per-push 0700 folder `<dataDir>/tmp/askpass-*` (not os.tmpdir(), which hosts may mount
+  // noexec) and that folder is removed after the push, also on failure.
   // GitOptions.allowFileRemotes (tests only) skips the URL check and re-allows protocol.file.
 removeWorktree(dir): Promise<void>                        // only under data/worktrees; also deletes its vibecode/* branch; no-op if dir is gone
 pruneWorktrees(productId): Promise<void>
@@ -622,6 +624,7 @@ On-disk layout under `VIBECODE_DATA_DIR`:
 - `logs/<agentId>.ndjson` holds redacted agent logs.
 - `artifacts/<attemptId>/{diff.patch,check.log}` holds attempt artifacts.
 - `empty` is the `.git` mask file.
+- `tmp/` (0700) holds short-lived per-push folders `tmp/askpass-*/` (0700) with the GIT_ASKPASS helper; each is removed after its push.
 
 Event types (each has a zod schema in `shared/events.ts`, with `v:1`):
 - `product.created|settings_changed|handed_off|paused|resumed|phase_changed`

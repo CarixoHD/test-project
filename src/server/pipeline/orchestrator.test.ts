@@ -23,6 +23,7 @@ import {
   type Orchestrator,
   type OrchestratorDeps,
 } from './index.ts';
+import { LIMIT_DEDUPE_TOLERANCE_MS } from './attempt-events.ts';
 
 const P = ProductIdSchema.parse('product-1');
 const START = 1_700_000_000_000;
@@ -472,6 +473,22 @@ describe('runOrchestrator: rate limits and logins (backend.limited)', () => {
     await h.run(setupScript());
     expect(h.store.q.issuesByProduct(P)).toHaveLength(3);
     expect(h.orchestrator.orchestratorNotBefore(P)).toBe(0);
+  });
+
+  it('shares the attempt dedupe: a 429 ms later or with an earlier until adds no event', async () => {
+    const h = await setup();
+    await h.run([{ error: { status: 429, retryAfterSeconds: 120 } }]);
+    h.clock.advance(9);
+    await h.run([{ error: { status: 429, retryAfterSeconds: 120 } }]);
+    await h.run([{ error: { status: 429, retryAfterSeconds: 10 } }]);
+
+    expect(limitedEvents(h.store).map((l) => l.until)).toEqual([START + 120_000]);
+    expect(h.store.q.backendLimit('fake')).toMatchObject({ until: START + 120_000 });
+
+    h.clock.advance(LIMIT_DEDUPE_TOLERANCE_MS);
+    await h.run([{ error: { status: 429, retryAfterSeconds: 120 } }]);
+    const extended = START + 9 + LIMIT_DEDUPE_TOLERANCE_MS + 120_000;
+    expect(limitedEvents(h.store).map((l) => l.until)).toEqual([START + 120_000, extended]);
   });
 
   it('a rate limit does not shorten an earlier failure backoff', async () => {

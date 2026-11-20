@@ -97,11 +97,12 @@ afterEach(() => {
   // Unmount first: React may still owe the store's mount effect (which opens the EventSource),
   // and it must run while the fakes are still installed.
   cleanup();
-  // Unmounting stopped the store, so no stream outlives the test.
-  expect(FakeEventSource.instances.every((es) => es.readyState === FakeEventSource.CLOSED)).toBe(
-    true,
-  );
+  // Capture the streams, then restore the real globals before asserting, so a failed
+  // assertion cannot leave the fake EventSource/fetch installed for later tests.
+  const streams = [...FakeEventSource.instances];
   vi.unstubAllGlobals();
+  // Unmounting stopped the store, so no stream outlives the test.
+  expect(streams.every((es) => es.readyState === FakeEventSource.CLOSED)).toBe(true);
 });
 
 function renderApp() {
