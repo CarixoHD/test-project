@@ -1,25 +1,18 @@
 /// <reference types="node" />
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import {
-  Box3,
-  Matrix4,
-  Mesh,
-  MeshStandardMaterial,
-  Quaternion,
-  Vector3,
-  type Object3D,
-} from 'three';
+import { Box3, Matrix4, Mesh, MeshStandardMaterial, Vector3, type Object3D } from 'three';
 import type { GLTF, GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { layoutPiece, type Figure } from '../../shared/scene.ts';
+import { layoutPiece, type Figure, type PieceLayout } from '../../shared/scene.ts';
 import {
   BUILDING_LOADER,
   CHARACTER_LOADER,
   CHARACTER_URLS,
   figureFromGltf,
   PIECE_URLS,
+  pieceMatrix,
   piecePartsFromGltf,
   primitiveFigure,
   primitivePieceParts,
@@ -134,7 +127,7 @@ describe('building GLBs (Kenney City Kit Industrial)', () => {
   });
 
   it.each(['wall', 'window'] as const)(
-    '%s fills a storey-high facade cell with its outer face on the slot line',
+    '%s fills a storey-high, full-slot facade cell with its outer face on the slot line',
     async (type) => {
       const parts = piecePartsFromGltf(type, await load(BUILDING_LOADER, PIECE_URLS[type]));
       expect(parts.length).toBeGreaterThan(0);
@@ -143,7 +136,7 @@ describe('building GLBs (Kenney City Kit Industrial)', () => {
       const box = bounds(parts);
       expect(box.min.y).toBeCloseTo(-0.4, 3);
       expect(box.max.y).toBeCloseTo(0.5, 3);
-      expect(box.min.x).toBeCloseTo(-0.5 + WALL_THICKNESS, 3);
+      expect(box.min.x).toBeCloseTo(-0.5, 3);
       expect(box.max.x).toBeCloseTo(0.5, 3);
       expect(box.min.z).toBeCloseTo(-WALL_THICKNESS, 3);
       expect(box.max.z).toBeCloseTo(0, 3);
@@ -158,27 +151,32 @@ describe('building GLBs (Kenney City Kit Industrial)', () => {
   });
 });
 
-/** Pieces in one building of `width`: floor slab and perimeter of the ground storey. */
-function storey(width: number) {
+/** Walls and windows of storey `level` in a building of `width` storeys of footprint `width`. */
+function storey(width: number, level = 0): PieceLayout[] {
   const perStorey = 1 + 4 * width;
   // A building of `width` storeys of `width`, plus the roof, has footprint `width`.
   const total = width * perStorey + 1;
-  const pieces = Array.from({ length: perStorey }, (_, i) => layoutPiece(i, total));
+  const pieces = Array.from({ length: perStorey }, (_, i) =>
+    layoutPiece(level * perStorey + i, total),
+  );
   expect(pieces.filter((p) => p.type === 'floor')).toHaveLength(1);
   return pieces.filter((p) => p.type === 'wall' || p.type === 'window');
 }
 
-const UP = new Vector3(0, 1, 0);
+/** World box of `parts` placed at a layout slot, with the matrix the 3D view uses (settled). */
+function placed(parts: PiecePart[], p: PieceLayout, width: number): Box3 {
+  return bounds(parts).applyMatrix4(pieceMatrix(p, width / 2, 1, new Matrix4()));
+}
 
-/** World box of `parts` placed at a layout slot (as the 3D view does, settled). */
-function placed(parts: PiecePart[], pos: readonly number[], rotY: number): Box3 {
-  const [x = 0, y = 0, z = 0] = pos;
-  const m = new Matrix4().compose(
-    new Vector3(x, y, z),
-    new Quaternion().setFromAxisAngle(UP, rotY),
-    new Vector3(1, 1, 1),
-  );
-  return bounds(parts).applyMatrix4(m);
+/** Largest gap in the union of `intervals` over [from, to] (0 when fully covered). */
+function largestGap(intervals: [number, number][], from: number, to: number): number {
+  let reached = from;
+  let gap = 0;
+  for (const [a, b] of [...intervals].sort((x, y) => x[0] - y[0])) {
+    gap = Math.max(gap, a - reached);
+    reached = Math.max(reached, b);
+  }
+  return Math.max(gap, to - reached);
 }
 
 function overlap(a: Box3, b: Box3): number {
@@ -206,7 +204,7 @@ describe('perimeter shell (walls and windows of one storey)', () => {
       const parts = await partsBy(source);
       const half = width / 2;
       for (const p of storey(width)) {
-        const box = placed(parts[p.type as 'wall' | 'window'], p.pos, p.rotY);
+        const box = placed(parts[p.type as 'wall' | 'window'], p, width);
         const where = `${p.type} at ${p.pos.join(',')}`;
         expect(box.min.x, where).toBeGreaterThanOrEqual(-half - 1e-3);
         expect(box.max.x, where).toBeLessThanOrEqual(half + 1e-3);
@@ -221,7 +219,7 @@ describe('perimeter shell (walls and windows of one storey)', () => {
     it.each([1, 2, 3])('do not intersect each other at width %i', async (width) => {
       const parts = await partsBy(source);
       const pieces = storey(width);
-      const boxes = pieces.map((p) => placed(parts[p.type as 'wall' | 'window'], p.pos, p.rotY));
+      const boxes = pieces.map((p) => placed(parts[p.type as 'wall' | 'window'], p, width));
       for (let i = 0; i < boxes.length; i++) {
         for (let j = i + 1; j < boxes.length; j++) {
           const a = boxes[i] as Box3;
@@ -233,9 +231,7 @@ describe('perimeter shell (walls and windows of one storey)', () => {
 
     it.each([1, 2, 3])('close every corner of width %i', async (width) => {
       const parts = await partsBy(source);
-      const boxes = storey(width).map((p) =>
-        placed(parts[p.type as 'wall' | 'window'], p.pos, p.rotY),
-      );
+      const boxes = storey(width).map((p) => placed(parts[p.type as 'wall' | 'window'], p, width));
       const half = width / 2;
       for (const [cx, cz] of [
         [-half, -half],
@@ -248,6 +244,44 @@ describe('perimeter shell (walls and windows of one storey)', () => {
           boxes.some((b) => b.distanceToPoint(corner) < 1e-3),
           `corner ${cx},${cz}`,
         ).toBe(true);
+      }
+    });
+
+    it.each([1, 2, 3])('cover every side of width %i without gaps', async (width) => {
+      const parts = await partsBy(source);
+      const half = width / 2;
+      for (let level = 0; level < width; level++) {
+        const boxes = storey(width, level).map((p) =>
+          placed(parts[p.type as 'wall' | 'window'], p, width),
+        );
+        // Each side line: the axis it runs along, and where pieces on it reach the perimeter.
+        const sides = [
+          { name: 'north', along: 'x', onLine: (b: Box3) => b.min.z <= -half + 1e-3 },
+          { name: 'east', along: 'z', onLine: (b: Box3) => b.max.x >= half - 1e-3 },
+          { name: 'south', along: 'x', onLine: (b: Box3) => b.max.z >= half - 1e-3 },
+          { name: 'west', along: 'z', onLine: (b: Box3) => b.min.x <= -half + 1e-3 },
+        ] as const;
+        for (const side of sides) {
+          const spans = boxes
+            .filter(side.onLine)
+            .map((b): [number, number] => [b.min[side.along], b.max[side.along]]);
+          expect(
+            largestGap(spans, -half, half),
+            `${side.name} side, level ${level}`,
+          ).toBeLessThanOrEqual(1e-3);
+        }
+      }
+    });
+
+    it.each([2, 3])('shorten only the corner piece of each side at width %i', async (width) => {
+      const parts = await partsBy(source);
+      for (const p of storey(width)) {
+        const size = placed(parts[p.type as 'wall' | 'window'], p, width).getSize(new Vector3());
+        const length = Math.max(size.x, size.z);
+        expect(length, `${p.type} at ${p.pos.join(',')}`).toBeCloseTo(
+          p.corner ? 1 - WALL_THICKNESS : 1,
+          3,
+        );
       }
     });
   });

@@ -28,7 +28,6 @@ import {
   BENCH_POS,
   DESK_POS,
   debrisPlacements,
-  pieceFacing,
   PIECE_TYPES,
   piecesByType,
   SITE_GATE,
@@ -44,6 +43,7 @@ import {
   CHARACTER_URLS,
   figureFromGltf,
   PIECE_URLS,
+  pieceMatrix,
   piecePartsFromGltf,
   primitiveFigure,
   primitivePieceParts,
@@ -282,21 +282,6 @@ function Building({
 
 const tmp = new Object3D();
 const UP = new Vector3(0, 1, 0);
-
-/** Writes one piece's matrix; `t` in [0,1] is the placement animation (1 = settled). */
-function pieceMatrix(p: ScenePiece, half: number, t: number, out: Matrix4): Matrix4 {
-  const ease = 1 - (1 - t) ** 3;
-  const drop = (1 - ease) * 1.5;
-  tmp.position.set(p.pos[0], p.pos[1] + drop, p.pos[2]);
-  tmp.quaternion.setFromAxisAngle(UP, pieceFacing(p));
-  const span = 2 * half;
-  const s = 0.4 + 0.6 * ease;
-  if (p.type === 'floor') tmp.scale.set(span * s, 1, span * s);
-  else if (p.type === 'roof') tmp.scale.set((span + 0.4) * s, s, (span + 0.4) * s);
-  else tmp.scale.set(s, s, s);
-  tmp.updateMatrix();
-  return out.copy(tmp.matrix);
-}
 
 function markMatricesChanged(meshes: readonly (InstancedMesh | null)[]): void {
   for (const m of meshes) if (m !== null) m.instanceMatrix.needsUpdate = true;

@@ -13,6 +13,12 @@ export interface PieceLayout {
    * away from the footprint centre, so their outer face can lie on the perimeter line.
    */
   rotY: number;
+  /**
+   * The one wall or window per side whose local -x end meets the next side at a corner (the
+   * last slot of the side, clockwise). The view shortens only this piece at that end, so the
+   * sides meet like a pinwheel; every other piece spans its full slot. False for floors and roofs.
+   */
+  corner: boolean;
 }
 
 /** Footprint side lengths are whole units; each storey holds a floor plus 4·W perimeter pieces. */
@@ -42,11 +48,11 @@ export function layoutPiece(index: number, totalIssues: number): PieceLayout {
   const perStorey = storeySize(width);
   if (index === total - 1) {
     const storeys = Math.ceil(body / perStorey);
-    return { type: 'roof', pos: [0, storeys, 0], rotY: 0 };
+    return { type: 'roof', pos: [0, storeys, 0], rotY: 0, corner: false };
   }
   const level = Math.floor(index / perStorey);
   const slot = index % perStorey;
-  if (slot === 0) return { type: 'floor', pos: [0, level, 0], rotY: 0 };
+  if (slot === 0) return { type: 'floor', pos: [0, level, 0], rotY: 0, corner: false };
 
   const k = slot - 1;
   const side = Math.floor(k / width); // 0 north, 1 east, 2 south, 3 west
@@ -62,5 +68,11 @@ export function layoutPiece(index: number, totalIssues: number): PieceLayout {
   const [x, z] = sides[side] ?? [0, 0];
   const type: PieceType = (offset + level) % 2 === 1 ? 'window' : 'wall';
   // Local +z rotated by rotY points along (sin, cos): north π, east π/2, south 0, west -π/2.
-  return { type, pos: [n0(x), level + 0.5, n0(z)], rotY: Math.PI - (side * Math.PI) / 2 };
+  // Local +x then points against the clockwise run, so the last slot's -x end is the corner.
+  return {
+    type,
+    pos: [n0(x), level + 0.5, n0(z)],
+    rotY: Math.PI - (side * Math.PI) / 2,
+    corner: offset === width - 1,
+  };
 }
