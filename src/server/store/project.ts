@@ -1,6 +1,6 @@
 import type { Event } from '../../shared/events.ts';
 import type { Db } from '../db/index.ts';
-import { projectAccountEvent } from './project-account.ts';
+import { projectAccountEvent, projectSettingsChanged } from './project-account.ts';
 import { projectProductEvent } from './project-product.ts';
 import { projectAgentEvent, projectAttemptEvent, projectIssueEvent } from './project-work.ts';
 
@@ -52,6 +52,8 @@ export function projectEvent(db: Db, e: Event): void {
     case 'backend.limited':
     case 'backend.cleared':
       return projectAccountEvent(db, e);
+    case 'settings.changed':
+      return projectSettingsChanged(db, e.ts);
     default: {
       // A new event type without a projection fails typecheck here.
       const unhandled: never = e;

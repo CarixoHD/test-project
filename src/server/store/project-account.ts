@@ -115,3 +115,23 @@ export function projectAccountEvent(db: Db, e: AccountEvent): void {
       return;
   }
 }
+
+/** `settings` row holding ClientState.settingsChangedAt (written only by this projection). */
+export const SETTINGS_CHANGED_AT_KEY = 'settingsChangedAt';
+
+/** `settings.changed`: the settings rows themselves are written by the command; this keeps the marker. */
+export function projectSettingsChanged(db: Db, ts: number): void {
+  db.insert(schema.settings)
+    .values({ key: SETTINGS_CHANGED_AT_KEY, value: ts })
+    .onConflictDoUpdate({ target: schema.settings.key, set: { value: ts } })
+    .run();
+}
+
+export function readSettingsChangedAt(db: Db): number | null {
+  const row = db
+    .select()
+    .from(schema.settings)
+    .where(eq(schema.settings.key, SETTINGS_CHANGED_AT_KEY))
+    .get();
+  return typeof row?.value === 'number' ? row.value : null;
+}

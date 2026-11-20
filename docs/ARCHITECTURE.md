@@ -105,7 +105,7 @@ const emptyState: ClientState;
 // ClientState: id-keyed records {products, prdDrafts, prdVersions (metadata only), sparMessages,
 //   issues, attempts, agents (lastActivity = last line only), questions, inbox (read flag),
 //   usage {byProduct, byIssue}: {apiUsd, apiUnpriced, subscriptionTokens, subscriptionCalls},
-//   backendLimits (by backend), previews}, lastSeq. prd.applied also rebases the draft.
+//   backendLimits (by backend), previews, settingsChangedAt (ts of the last settings.changed)}, lastSeq. prd.applied also rebases the draft.
 // dto.ts
 const StateResponseSchema;                                 // GET /api/state → {state: ClientState, lastSeq}
 // issues.ts
@@ -480,6 +480,7 @@ Event types (each has a zod schema in `shared/events.ts`, with `v:1`):
 - `question.asked|answered`
 - `inbox.created|read`
 - `backend.limited|cleared`
+- `settings.changed` (global; `{sections, keys: [{provider, set}]}`, never values; reduced to `ClientState.settingsChangedAt`)
 - `preview.started|stopped`
 
 `agent.activity` is batched and not reduced into the snapshot, apart from the last line. Events older than 7 days are pruned.

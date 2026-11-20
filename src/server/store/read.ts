@@ -15,7 +15,7 @@ import {
 } from '../../shared/state.ts';
 import type { AttemptId, InboxId, IssueId, ProductId } from '../../shared/ids.ts';
 import { type Db, schema } from '../db/index.ts';
-import { totalsFromRow } from './project-account.ts';
+import { readSettingsChangedAt, totalsFromRow } from './project-account.ts';
 
 // Reads projection tables back into the shared ClientState shapes. Rows are validated with
 // the shared zod schemas, which also gives them their branded id types.
@@ -142,6 +142,7 @@ export function readSnapshot(db: Db): { state: ClientState; lastSeq: number } {
         .all()
         .map(({ productId, ...preview }) => [productId, preview]),
     ),
+    settingsChangedAt: readSettingsChangedAt(db),
     lastSeq: seq,
   };
   return { state: ClientStateSchema.parse(raw), lastSeq: seq };
