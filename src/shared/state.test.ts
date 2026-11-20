@@ -899,6 +899,8 @@ const ACCOUNT_CASES: Case[] = [
         answer: null,
         createdAt: T0 + 30,
         answeredAt: null,
+        withdrawnAt: null,
+        withdrawnReason: null,
       }),
   },
   {
@@ -910,6 +912,28 @@ const ACCOUNT_CASES: Case[] = [
         T0 + 300,
       ),
     then: (s) => expect(question(s)).toMatchObject({ answer: 'GitHub', answeredAt: T0 + 300 }),
+  },
+  {
+    name: 'question.withdrawn marks the question withdrawn with time and reason',
+    given: () => apply(withIssue(), questionAsked()),
+    when: () =>
+      ev(
+        {
+          type: 'question.withdrawn',
+          productId: P,
+          entityId: Q,
+          v: 1,
+          data: { reason: 'the issue was cancelled' },
+        },
+        T0 + 400,
+      ),
+    then: (s) =>
+      expect(question(s)).toMatchObject({
+        answer: null,
+        answeredAt: null,
+        withdrawnAt: T0 + 400,
+        withdrawnReason: 'the issue was cancelled',
+      }),
   },
   {
     name: 'inbox.created adds an unread item',

@@ -70,6 +70,7 @@ type AccountEvent = EventOf<
   | 'usage.recorded'
   | 'question.asked'
   | 'question.answered'
+  | 'question.withdrawn'
   | 'inbox.created'
   | 'inbox.read'
   | 'backend.limited'
@@ -88,6 +89,8 @@ export function reduceAccountEvent(s: ClientState, e: AccountEvent): ClientState
         answer: null,
         createdAt: e.ts,
         answeredAt: null,
+        withdrawnAt: null,
+        withdrawnReason: null,
       };
       return { ...s, questions: { ...s.questions, [e.entityId]: asked } };
     }
@@ -98,6 +101,15 @@ export function reduceAccountEvent(s: ClientState, e: AccountEvent): ClientState
           ...q,
           answer: e.data.answer,
           answeredAt: e.ts,
+        })),
+      };
+    case 'question.withdrawn':
+      return {
+        ...s,
+        questions: patch(s.questions, e.entityId, (q) => ({
+          ...q,
+          withdrawnAt: e.ts,
+          withdrawnReason: e.data.reason,
         })),
       };
     case 'inbox.created': {

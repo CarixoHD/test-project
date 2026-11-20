@@ -8,6 +8,13 @@
       "when": 1795132691464,
       "tag": "0000_ancient_power_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1795157226866,
+      "tag": "0001_steady_plazm",
+      "breakpoints": true
     }
   ]
 }

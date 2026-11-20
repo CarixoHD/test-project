@@ -181,6 +181,15 @@ const asked = (n: number | null, q = Q) =>
 const answered = (q = Q) =>
   ev({ type: 'question.answered', productId: P, entityId: q, v: 1, data: { answer: 'SQLite' } });
 
+const withdrawn = (q = Q) =>
+  ev({
+    type: 'question.withdrawn',
+    productId: P,
+    entityId: q,
+    v: 1,
+    data: { reason: 'the issue was cancelled' },
+  });
+
 const worker = (s: SceneState, n: number) => s.workers.find((w) => w.agentId === agentId(n));
 
 // ---- catalogue coverage -----------------------------------------------------------------
@@ -392,6 +401,16 @@ describe('sceneReduce: agents → workers', () => {
         bubble: true,
       },
       {
+        name: 'asked → withdrawn',
+        events: () => [spawned(1, 'orchestrator'), asked(1), withdrawn()],
+        bubble: false,
+      },
+      {
+        name: 'two asked, one withdrawn',
+        events: () => [spawned(1, 'orchestrator'), asked(1), asked(1, Q2), withdrawn()],
+        bubble: true,
+      },
+      {
         name: 'asked by someone else',
         events: () => [spawned(1, 'orchestrator'), asked(2)],
         bubble: false,
@@ -500,6 +519,15 @@ describe('sceneFromState', () => {
     expect(replayed.workers).toHaveLength(4);
     expect(replayed.totalIssues).toBe(5);
     expect(worker(replayed, 3)?.bubble).toBe(true);
+  });
+
+  it('drops withdrawn questions like answered ones', () => {
+    seq = 1;
+    const events: Event[] = [productCreated(), spawned(3, 'orchestrator'), asked(3), withdrawn()];
+    const state = events.reduce(reduce, emptyState);
+    const replayed = replay(events);
+    expect(sceneFromState(state, P)).toEqual(replayed);
+    expect(worker(replayed, 3)?.bubble).toBe(false);
   });
 
   it('of an empty state is the empty scene', () => {

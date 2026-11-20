@@ -250,6 +250,8 @@ export const questions = sqliteTable('questions', {
   answer: text('answer'),
   createdAt: integer('created_at').notNull(),
   answeredAt: integer('answered_at'),
+  withdrawnAt: integer('withdrawn_at'),
+  withdrawnReason: text('withdrawn_reason'),
 });
 
 export const inbox = sqliteTable('inbox', {

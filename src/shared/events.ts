@@ -294,6 +294,8 @@ const accountingEvents = [
       ),
   ),
   defineEvent('question.answered', QUESTION, z.object({ answer: Text })),
+  /** An unanswered question that no longer needs an answer (e.g. its issue was cancelled). */
+  defineEvent('question.withdrawn', QUESTION, z.object({ reason: Text })),
   defineEvent(
     'inbox.created',
     { productId: ProductIdSchema.nullable(), entityId: InboxIdSchema },

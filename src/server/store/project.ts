@@ -48,6 +48,7 @@ export function projectEvent(db: Db, e: Event): void {
     case 'usage.recorded':
     case 'question.asked':
     case 'question.answered':
+    case 'question.withdrawn':
     case 'inbox.created':
     case 'inbox.read':
     case 'backend.limited':
