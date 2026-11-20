@@ -49,7 +49,9 @@ describe('backendNotices', () => {
   it('points to Settings when a login is needed', () => {
     const [n] = backendNotices(limitsOf(limited('claude-code', null, true)), NOW, FMT);
     expect(n).toMatchObject({ kind: 'needs_login', label: 'Claude Code' });
-    expect(n && noticeText(n)).toBe('Claude Code needs login — see Settings. Pasting a new token in Settings fixes it.');
+    expect(n && noticeText(n)).toBe(
+      'Claude Code needs login — see Settings. Pasting a new token in Settings fixes it.',
+    );
   });
 
   it('hides a rate limit whose time has passed, and a cleared one', () => {
