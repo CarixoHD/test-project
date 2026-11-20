@@ -42,6 +42,9 @@ beforeEach(() => {
   vi.stubGlobal(
     'fetch',
     vi.fn((url: string, init?: RequestInit) => {
+      // The push-access section loads its token status; answer it so it is not in a failed state.
+      if ((init?.method ?? 'GET') === 'GET' && url.endsWith('/git-token'))
+        return Promise.resolve(Response.json({ set: false, last4: null }));
       sent.push({ url, method: init?.method, body: JSON.parse(String(init?.body)) });
       return Promise.resolve(response());
     }),
