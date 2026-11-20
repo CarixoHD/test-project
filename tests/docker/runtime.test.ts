@@ -8,17 +8,21 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   DOCKER_NOT_RUNNING,
   DockerCliRuntime,
+  IccUnsupportedError,
   fileOpArgv,
   type SandboxNetwork,
   type SandboxSpec,
 } from '../../src/server/sandbox/index.ts';
 import { exec } from '../../src/server/util/exec.ts';
+import { expectFailsClosed, probeIccOff } from './icc-probe.ts';
 import { EGRESS_PROBE, openInterfaces } from './net-probes.ts';
 
 const uid = process.getuid?.() ?? 1000;
 const gid = process.getgid?.() ?? 1000;
 const T = { timeoutMs: 60_000 };
 const GIT_POINTER = 'gitdir: /host/repos/p.git/worktrees/x\n';
+/** Whether this daemon can create the ICC-off egress network (needs br_netfilter); see icc-probe. */
+const ICC_OFF = await probeIccOff();
 
 let base: string;
 let dataDir: string;
@@ -118,24 +122,38 @@ describe('DockerCliRuntime against a real Docker daemon', () => {
     await ctx.annotate('bridge control connected to 1.1.1.1:53; network none blocked it');
   });
 
-  it('writes files into the worktree owned by the host uid', async () => {
-    const s = await spec('egress');
-    const sb = await rt.open(s);
-    try {
-      const op = fileOpArgv({ op: 'write', path: 'src/hello.txt' });
-      if (!op.ok) throw new Error(op.reason);
-      const r = await sb.exec(op.argv, { stdin: 'hi from the container\n', ...T });
-      expect(r.code).toBe(0);
-      const host = path.join(s.worktree, 'src', 'hello.txt');
-      expect(await readFile(host, 'utf8')).toBe('hi from the container\n');
-      const st = await stat(host);
-      expect([st.uid, st.gid]).toEqual([uid, gid]);
-      const listed = await rt.listManaged();
-      expect(listed.map((c) => c.name)).toContain(sb.name);
-    } finally {
-      await sb.close();
-    }
-  });
+  // Needs the ICC-off egress network: on a host whose daemon cannot create one (no
+  // br_netfilter), the same slot proves the runtime fails closed instead (icc-probe.ts).
+  if (ICC_OFF.ok) {
+    it('writes files into the worktree owned by the host uid', async () => {
+      const s = await spec('egress');
+      const sb = await rt.open(s);
+      try {
+        const op = fileOpArgv({ op: 'write', path: 'src/hello.txt' });
+        if (!op.ok) throw new Error(op.reason);
+        const r = await sb.exec(op.argv, { stdin: 'hi from the container\n', ...T });
+        expect(r.code).toBe(0);
+        const host = path.join(s.worktree, 'src', 'hello.txt');
+        expect(await readFile(host, 'utf8')).toBe('hi from the container\n');
+        const st = await stat(host);
+        expect([st.uid, st.gid]).toEqual([uid, gid]);
+        const listed = await rt.listManaged();
+        expect(listed.map((c) => c.name)).toContain(sb.name);
+      } finally {
+        await sb.close();
+      }
+    });
+  } else {
+    it('fails closed with the actionable br_netfilter error (host cannot turn ICC off)', async (ctx) => {
+      await expectFailsClosed(rt);
+      // open() on egress goes through ensureNetworks too: no container starts.
+      await expect(rt.open(await spec('egress'))).rejects.toBeInstanceOf(IccUnsupportedError);
+      await ctx.annotate(
+        'host cannot create an ICC-off bridge: "writes files into the worktree owned by the ' +
+          'host uid" (egress network) is replaced by this fail-closed assertion',
+      );
+    });
+  }
 
   it('delivers killSignal SIGINT to the process inside the container on abort', async () => {
     const sb = await rt.open(await spec());

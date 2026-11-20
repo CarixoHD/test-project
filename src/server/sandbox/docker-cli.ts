@@ -38,6 +38,38 @@ import type {
 
 export const DOCKER_NOT_RUNNING =
   'Docker is not running: start Docker Desktop or the docker service';
+/** Stable code of IccUnsupportedError. */
+export const ICC_UNSUPPORTED = 'DOCKER_ICC_UNSUPPORTED';
+/**
+ * The daemon's refusal to create a bridge with `enable_icc=false` because the kernel lacks
+ * br_netfilter (`/proc/sys/net/bridge` missing). Docker 29.10: "cannot restrict inter-container
+ * communication ...: stat /proc/sys/net/bridge/bridge-nf-call-iptables: no such file or directory".
+ */
+const ICC_UNSUPPORTED_RE =
+  /cannot restrict inter-container communication|bridge-nf-call-ip6?tables|br_netfilter/i;
+
+/**
+ * Thrown by ensureNetworks when Docker can't create the ICC-off `vibecode-egress` network on this
+ * host. Like DOCKER_NOT_RUNNING it is an infrastructure error whose message reaches the owner
+ * (attempt.ended{error}, orchestrator inbox error). There is deliberately no ICC-on fallback.
+ */
+export class IccUnsupportedError extends Error {
+  readonly code = ICC_UNSUPPORTED;
+
+  /** `daemonDetail`: the daemon's stderr, already redacted. */
+  constructor(daemonDetail: string) {
+    super(
+      `Docker can't turn off inter-container traffic on this host, so Vibecode will not create ` +
+        `the ${NETWORKS.egress} network and runs no networked containers. The kernel module ` +
+        'br_netfilter is not loaded. Fix: run `sudo modprobe br_netfilter`, persist it with ' +
+        '`echo br_netfilter | sudo tee /etc/modules-load.d/br_netfilter.conf`, then restart ' +
+        'Vibecode. Do not set DOCKER_IGNORE_BR_NETFILTER_ERROR: containers could then reach each ' +
+        `other. Docker said: ${daemonDetail}`,
+    );
+    this.name = 'IccUnsupportedError';
+  }
+}
+
 /** Repository of the fallback image, tagged `:<content hash>` (see baseImageTag). */
 export const BASE_IMAGE = 'vibecode/base';
 /**
@@ -269,10 +301,13 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
     for (const n of nets) {
       const found = await this.#manage(['network', 'inspect', n.name]);
       if (found.code === 0) continue;
-      await this.#manageOk(
-        ['network', 'create', '--driver', 'bridge', ...n.opts, n.name],
-        `Could not create the Docker network ${n.name}`,
-      );
+      const r = await this.#manage(['network', 'create', '--driver', 'bridge', ...n.opts, n.name]);
+      if (r.code === 0) continue;
+      // Fail closed (ADR 6): never retry egress with ICC on, and stop before the next network.
+      if (n.name === NETWORKS.egress && ICC_UNSUPPORTED_RE.test(r.stderr)) {
+        throw new IccUnsupportedError(detail(r));
+      }
+      throw new Error(`Could not create the Docker network ${n.name}: ${detail(r)}`);
     }
   }
 

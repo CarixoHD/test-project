@@ -48,6 +48,8 @@ export {
   CLAUDE_IMAGE,
   DOCKER_NOT_RUNNING,
   DEFAULT_BASE_IMAGE_DIR,
+  ICC_UNSUPPORTED,
+  IccUnsupportedError,
   baseImageTag,
   claudeImageTag,
   claudeLoginCommands,
