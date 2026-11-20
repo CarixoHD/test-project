@@ -1,7 +1,11 @@
 import type { ProductId } from '../../shared/ids.ts';
-import type { ModelRef, Role } from '../../shared/models.ts';
+import {
+  resolveModel as resolveConfiguredModel,
+  type ModelRef,
+  type Role,
+} from '../../shared/models.ts';
+import { readModelDefaults } from '../commands/index.ts';
 import type { Store } from '../store/index.ts';
-import { readDefaultModel, readRoleDefaults } from './settings.ts';
 
 export type ResolveModelResult = { ok: true; model: ModelRef } | { ok: false; reason: string };
 
@@ -9,8 +13,9 @@ export type ResolveModelResult = { ok: true; model: ModelRef } | { ok: false; re
 export const DEMO_MODEL: ModelRef = { provider: 'fake', model: 'fake' };
 
 /**
- * The model for `role` in `productId`: the product's own choice, then the role default from
- * settings, then the global default model, then the fake model in demo mode.
+ * The model for `role` in `productId`: the shared precedence (product model, then the role
+ * default from settings, then the global default model), then the fake model in demo mode.
+ * Throws, naming the key, when a model setting is malformed.
  */
 export function resolveModel(
   store: Store,
@@ -18,12 +23,11 @@ export function resolveModel(
   role: Role,
   opts: { demo?: boolean } = {},
 ): ResolveModelResult {
+  const productModels = store.q.product(productId)?.settings.models ?? {};
   const model =
-    store.q.product(productId)?.settings.models[role] ??
-    readRoleDefaults(store)[role] ??
-    readDefaultModel(store) ??
-    (opts.demo === true ? DEMO_MODEL : undefined);
+    resolveConfiguredModel(role, productModels, readModelDefaults(store)) ??
+    (opts.demo === true ? { ...DEMO_MODEL } : undefined);
   return model === undefined
     ? { ok: false, reason: 'Choose a model in Settings' }
-    : { ok: true, model: { ...model } };
+    : { ok: true, model };
 }
