@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PrdDraft, SparMessage } from '../../../shared/state.ts';
-import { describeAuthor, draftAuthor } from './draft-author.ts';
+import { describeAuthor, draftAuthor, hasUnappliedChanges } from './draft-author.ts';
 
 const T = 1_700_000_000_000;
 const draft = (updatedAt: number, baseVersion = 0): PrdDraft => ({
@@ -37,5 +37,24 @@ describe('draftAuthor', () => {
     expect(describeAuthor({ kind: 'agent' })).toBe('by the sparring agent');
     expect(describeAuthor({ kind: 'owner' })).toBe('by you');
     expect(describeAuthor({ kind: 'applied', version: 3 })).toBe('when PRD v3 was applied');
+  });
+});
+
+describe('hasUnappliedChanges', () => {
+  const versions = [
+    { version: 1, summary: null, createdAt: T },
+    { version: 2, summary: null, createdAt: T + 10 },
+  ];
+
+  it('is false before handoff and while the draft is the latest applied version', () => {
+    expect(hasUnappliedChanges(draft(T), [])).toBe(false);
+    expect(hasUnappliedChanges(null, versions)).toBe(false);
+    expect(hasUnappliedChanges(draft(T + 10, 2), versions)).toBe(false);
+  });
+
+  it('is true once the draft was saved after the latest version was applied', () => {
+    expect(hasUnappliedChanges(draft(T + 20, 2), versions)).toBe(true);
+    // Still based on v1 while v2 was applied by someone else: also unapplied.
+    expect(hasUnappliedChanges(draft(T, 1), versions)).toBe(true);
   });
 });
