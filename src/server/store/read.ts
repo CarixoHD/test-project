@@ -262,11 +262,7 @@ export function createQueries(db: Db): Queries {
       return db.select().from(s.settings).where(eq(s.settings.key, key)).get()?.value;
     },
     backendLimit(backend) {
-      const r = db
-        .select()
-        .from(s.backendLimits)
-        .where(eq(s.backendLimits.backend, backend))
-        .get();
+      const r = db.select().from(s.backendLimits).where(eq(s.backendLimits.backend, backend)).get();
       return r === undefined ? null : BackendLimitSchema.parse(r);
     },
   };
