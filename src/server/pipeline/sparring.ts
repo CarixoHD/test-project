@@ -3,6 +3,7 @@ import type { EventDraft } from '../../shared/events.ts';
 import type { ProductId } from '../../shared/ids.ts';
 import type { SparMessage } from '../../shared/state.ts';
 import type { AgentResult } from '../agents/index.ts';
+import { nextSparMessageId } from '../commands/index.ts';
 import type { ModelDeps } from '../llm/index.ts';
 import { renderPrompt } from './prompts.ts';
 import { resolveModel } from './resolve-model.ts';
@@ -122,14 +123,11 @@ function failureText(
   }
 }
 
-/** Sparring message ids. IdGen has no dedicated kind yet; any kind yields a fresh ULID. */
-const sparMessageId = (deps: SparringDeps): string => deps.ids.next('usage');
-
 function agentMessage(deps: SparringDeps, productId: ProductId, text: string): EventDraft {
   return {
     type: 'spar.message',
     productId,
-    entityId: sparMessageId(deps),
+    entityId: nextSparMessageId(deps),
     v: 1,
     data: { role: 'agent', text },
   };

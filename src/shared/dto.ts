@@ -63,3 +63,24 @@ export type EditIssueResponse = z.infer<typeof EditIssueResponseSchema>;
 /** `POST /api/issues/:id/cancel` (and other plain command acknowledgements). */
 export const OkResponseSchema = z.object({ ok: z.literal(true) });
 export type OkResponse = z.infer<typeof OkResponseSchema>;
+
+export const SPAR_MESSAGE_MAX = 8000;
+export const PRD_MARKDOWN_MAX = 200_000;
+
+/** `POST /api/products/:id/spar` (→ 202; the agent's reply arrives as a `spar.message` event). */
+export const SparRequestSchema = z.object({
+  message: z
+    .string({ error: 'Message is required' })
+    .trim()
+    .min(1, 'Message is required')
+    .max(SPAR_MESSAGE_MAX, `Message must be at most ${SPAR_MESSAGE_MAX} characters`),
+});
+export type SparRequest = z.input<typeof SparRequestSchema>;
+
+/** `PUT /api/products/:id/prd-draft`: the owner's edited draft (stored verbatim). */
+export const SavePrdDraftRequestSchema = z.object({
+  markdown: z
+    .string({ error: 'Markdown is required' })
+    .max(PRD_MARKDOWN_MAX, `The draft must be at most ${PRD_MARKDOWN_MAX} characters`),
+});
+export type SavePrdDraftRequest = z.input<typeof SavePrdDraftRequestSchema>;
