@@ -34,7 +34,7 @@ async function setup(opts: { git?: (git: Git) => Git; draft?: string | null } = 
     clock: new FakeClock(1_700_000_000_000),
     redactor,
   });
-  const deps: HandoffDeps = { store, ids: new FakeIdGen(), git };
+  const deps = { store, ids: new FakeIdGen(), git } satisfies HandoffDeps;
   const created = await createProduct(deps, { name: 'Todo', idea: 'Track todos' });
   if (!created.ok) throw new Error(created.reason);
   const productId: ProductId = created.id;
