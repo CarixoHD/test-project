@@ -194,6 +194,8 @@ Hooks run inside the transaction after the builder's drafts are appended and pro
 
 **notify/** (`inboxHook`, `inboxFor`, `markInboxRead`, `inboxRoutes`): `inboxFor(event, lookup, {timeZone?}) → InboxDraft|null` is pure. Rules: `question.asked` → question (issue link, or product link for orchestrator questions); `issue.failed` → failed; `budget.warned` → budget_warn; `product.paused{budget}` → budget_paused; `backend.limited` → rate_limited ("Claude Code rate limited until 14:05") or auth_required when `needsLogin` (global, link null); `product.phase_changed{complete}` → complete. Links are `/products/:id` or `/products/:id/issues/:issueId`. `inboxHook({ids})` is the store hook that turns them into `inbox.created`. `markInboxRead(store, id)` emits `inbox.read` once (idempotent) or returns `{ok:false, code:'not_found'}`; `inboxRoutes({store})` serves `POST /api/inbox/:id/read` for the HTTP app to mount.
 
+`pruneActivity(db, before): number` (store/prune.ts) deletes `agent.activity` events with `ts < before` except each agent's newest one (the only line projections keep), so pruning never breaks the invariant below. Recovery calls it at boot with a 7-day cutoff (ADR 5); it appends no event.
+
 **Invariant (tested):** `events.reduce(reduce, emptyState)` equals `snapshot().state` after any command sequence. Tests call `expectSnapshotMatchesReplay(store)` from `store/testing.ts`.
 
 ### 4.3 server/http
@@ -430,6 +432,10 @@ commitFilesOnMain(productId, files: Record<string,string>, msg): Promise<string>
 push(productId, remote): Promise<void>                    // token via GIT_ASKPASS env; redacted
 removeWorktree(dir): Promise<void>                        // only under data/worktrees; also deletes its vibecode/* branch; no-op if dir is gone
 pruneWorktrees(productId): Promise<void>
+clearWorktrees(): Promise<void>                           // recovery: every data/worktrees/* (worktree remove, else rm), then prune
+                                                           // + delete leftover vibecode/* branches in every repo; main/other branches kept
+listRepos(): Promise<string[]>                            // ids of `<id>.git` dirs in data/repos with a safe id, sorted
+removeRepo(productId): Promise<void>                      // rm -rf data/repos/<id>.git (recovery: orphan repos); no-op if gone
 ```
 Main history has **one commit per merged issue**: `commit-tree <merged tree> -p main -m "#<n> <title>"`. `integrate` never moves main; the caller advances it under the merge lock. The `merged` integration worktree is detached at `data/worktrees/integrate-<commitSha>`; the caller removes it with `removeWorktree`. Conflict paths are sorted and de-duplicated (`merge-tree -z --name-only`).
 
@@ -458,11 +464,13 @@ spawnStream(cmd, argv, o: ExecOptions & {onLine(line, stream)}): Promise<{code; 
 Never a shell. The child runs in its own process group, and timeout or abort signals the whole group. Because of that, signals sent to the server (Ctrl-C, SIGHUP, a crash) do not reach running children, which can outlive the server as orphans. Captured output, streamed lines and `ExecError` messages (start failures) pass through `redactor`. When output is cut (at `maxBuffer`, or into pieces of an over-long streamed line), the cut uses `redactor.safeBoundary`, so no part of a secret leaks.
 
 ### 4.11 server/recovery
-`recover()` runs once at boot, before the scheduler starts:
-- It removes every container labelled `vibecode.managed=1`.
-- It deletes `data/worktrees/*` and runs `git worktree prune` for every repo.
-- For each `running` attempt it records `attempt.ended{status:'interrupted', interruptReason:'restart'}`, which is not counted. It resets `in_progress` and `in_review` issues to `open`. For every agent that was still live it records `agent.exited{outcome:'restart'}`.
-- It stops stale previews.
+`recover({store, db, git, runtime, clock, log?}): Promise<RecoveryReport>` runs once at boot in `main.ts`, before the scheduler starts:
+- It removes every container labelled `vibecode.managed=1`. When `runtime.listManaged()` rejects with `DOCKER_UNAVAILABLE_REASON` it logs a warning, skips this step and carries on; any other rejection fails boot.
+- It deletes `data/worktrees/*` (including detached `integrate-<sha>` worktrees), runs `git worktree prune` for every repo and deletes leftover `vibecode/*` branches (`git.clearWorktrees()`).
+- It deletes orphan repos: `data/repos/<ULID>.git` with no product of that id (a crash between repo creation and `product.created`). Nothing else under `data/repos` is touched.
+- In ONE commit:
+  for each `running` attempt it records `attempt.ended{status:'interrupted', interruptReason:'restart', counted:false}`; it resets `in_progress` and `in_review` issues to `open` (the shared `interrupted` transition, attemptCount unchanged); for every agent that was still live it records `agent.exited{outcome:'restart'}`; and it records `preview.stopped` for every stale preview.
+- It prunes `agent.activity` events older than 7 days (`pruneActivity`, keeps each agent's newest).
 
 ### 4.12 web
 - `state/`: the browser's live copy of `ClientState`. It applies events with the shared `reduce`, so the server and the UI read an event the same way.

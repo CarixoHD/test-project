@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CreateProductResponseSchema, StateResponseSchema } from '../shared/dto.ts';
 import { parseEvent, type Event } from '../shared/events.ts';
-import { InboxIdSchema, ProductIdSchema } from '../shared/ids.ts';
+import { AgentIdSchema, InboxIdSchema, ProductIdSchema } from '../shared/ids.ts';
 import { parseConfig } from './config.ts';
 import { EventEmitter } from 'node:events';
 import { closeOnSignals, start, type Running } from './main.ts';
@@ -206,6 +206,39 @@ describe('start (composition root)', () => {
     expect(streamed.some((e) => e.type === 'issue.created')).toBe(false);
     const state = await fetch(`${base}/api/state`);
     expect(state.status).toBe(200);
+  });
+
+  it('recovers at boot: an agent live in the previous process is exited with outcome restart', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const config = { ...parseConfig({ VIBECODE_DATA_DIR: join(root, 'data') }), port: 0 };
+    running = await start(config, join(root, 'no-web'));
+    const agentId = AgentIdSchema.parse('agent-left-running');
+    const productId = ProductIdSchema.parse(
+      await createProduct(`http://127.0.0.1:${String(running.address.port)}`),
+    );
+    running.store.commit(() => [
+      {
+        type: 'agent.spawned',
+        productId,
+        entityId: agentId,
+        v: 1,
+        data: {
+          role: 'orchestrator',
+          model: { provider: 'anthropic', model: 'claude-sonnet-4-5' },
+          issueId: null,
+          attemptId: null,
+        },
+      },
+    ]);
+    await running.close();
+
+    // No fake Docker: container cleanup is skipped with a warning, the rest still runs.
+    running = await start(config, join(root, 'no-web'));
+    const exited = running.store
+      .eventsSince(0)
+      .filter((e) => e.type === 'agent.exited' && e.entityId === agentId);
+    expect(exited.map((e) => e.data)).toEqual([{ outcome: 'restart' }]);
+    expect(running.store.snapshot().state.agents[agentId]?.state).toBe('exited');
   });
 
   it.each([

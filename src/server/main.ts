@@ -21,6 +21,7 @@ import {
   sparTurn,
   type OrchestratorDeps,
 } from './pipeline/index.ts';
+import { recover } from './recovery/index.ts';
 import { selectRuntime } from './sandbox/index.ts';
 import { createSecrets, redactor } from './security/index.ts';
 import { createStore, type Store } from './store/index.ts';
@@ -114,6 +115,18 @@ export async function start(
   });
   const app = createApp({ store, ids, git, redactor, webRoot, settings, sparring });
   const runtime = selectRuntime(config, config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {});
+  // Restart recovery (§4.11): nothing of the previous process is live; reconcile it before the
+  // scheduler can start new runs.
+  await recover({
+    store,
+    db,
+    git,
+    runtime,
+    clock,
+    log: (line) => {
+      console.warn(redactor.redact(line));
+    },
+  });
   // The orchestrator merges under the scheduler's lock and the scheduler runs the orchestrator:
   // the lock closure reads `scheduler` only during a run, after it has been created below.
   const orchestrator = createOrchestrator({

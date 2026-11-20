@@ -2,7 +2,7 @@
 // nothing from the previous process is live any more, so every container, worktree, running
 // attempt, live agent and preview it left behind is reconciled here.
 import type { EventDraft } from '../../shared/events.ts';
-import type { Clock } from '../../shared/ids.ts';
+import { ProductIdSchema, type Clock } from '../../shared/ids.ts';
 import { transition } from '../../shared/issues.ts';
 import type { ClientState } from '../../shared/state.ts';
 import type { Db } from '../db/index.ts';
@@ -75,7 +75,7 @@ async function removeContainers(
  */
 async function removeOrphanRepos({ git, store }: RecoverDeps): Promise<string[]> {
   const orphans = (await git.listRepos()).filter(
-    (id) => PRODUCT_ID_SHAPE.test(id) && store.snapshot().state.products[id] === undefined,
+    (id) => PRODUCT_ID_SHAPE.test(id) && store.q.product(ProductIdSchema.parse(id)) === null,
   );
   for (const id of orphans) await git.removeRepo(id);
   return orphans;
@@ -130,7 +130,7 @@ function reconcileDrafts(state: ClientState): EventDraft[] {
       data: { outcome: 'restart' },
     });
   }
-  for (const productId of Object.keys(state.previews)) {
+  for (const productId of Object.keys(state.previews).map((id) => ProductIdSchema.parse(id))) {
     drafts.push({ type: 'preview.stopped', productId, entityId: null, v: 1, data: {} });
   }
   return drafts;

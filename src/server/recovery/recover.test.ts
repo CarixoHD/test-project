@@ -99,7 +99,12 @@ function crashState(s: Setup): void {
   s.store.commit(() => [
     moved(one, 'open', 'in_progress'),
     on('attempt.started', AT, { issueId: one, n: 1, issueRev: 1, baseSha: SHA, branch: 'b' }),
-    on('agent.spawned', AG_DONE, { role: 'implementer', model: MODEL, issueId: one, attemptId: AT }),
+    on('agent.spawned', AG_DONE, {
+      role: 'implementer',
+      model: MODEL,
+      issueId: one,
+      attemptId: AT,
+    }),
     on('agent.exited', AG_DONE, { outcome: 'ok' }),
     on('agent.spawned', AG_LIVE, { role: 'reviewer', model: MODEL, issueId: one, attemptId: AT }),
     on('agent.state', AG_LIVE, { state: 'rate_limited', until: START + 1000 }),
@@ -118,6 +123,22 @@ const spec = (runId: string, productId: string = P): SandboxSpec => ({
   readOnly: false,
   network: 'egress',
 });
+
+/** `runtime` with some methods replaced (a stand-in for a broken or missing Docker). */
+function stubRuntime(
+  runtime: ContainerRuntime,
+  overrides: Partial<ContainerRuntime>,
+): ContainerRuntime {
+  return {
+    available: () => runtime.available(),
+    ensureImage: (p) => runtime.ensureImage(p),
+    open: (sp) => runtime.open(sp),
+    runOnce: (sp, argv, o) => runtime.runOnce(sp, argv, o),
+    listManaged: () => runtime.listManaged(),
+    remove: (name) => runtime.remove(name),
+    ...overrides,
+  };
+}
 
 async function rawGit(productId: string, args: string[]): Promise<string> {
   const repo = path.join(dataDir, 'repos', `${productId}.git`);
@@ -157,9 +178,7 @@ describe('recover: store reconciliation', () => {
     });
     const exited = events.filter((e) => e.type === 'agent.exited');
     expect(exited.map((e) => [e.entityId, e.data])).toEqual([[AG_LIVE, { outcome: 'restart' }]]);
-    expect(events.filter((e) => e.type === 'preview.stopped').map((e) => e.productId)).toEqual([
-      P,
-    ]);
+    expect(events.filter((e) => e.type === 'preview.stopped').map((e) => e.productId)).toEqual([P]);
     expect(s.store.q.attempt(AT)).toMatchObject({ status: 'interrupted', counted: false });
   });
 
@@ -192,7 +211,7 @@ describe('recover: containers', () => {
     await recover(s.deps);
 
     expect(await s.runtime.listManaged()).toEqual([]);
-    const removed = s.runtime.calls.filter((c) => c.kind === 'remove').map((c) => c.name);
+    const removed = s.runtime.calls.flatMap((c) => (c.kind === 'remove' ? [c.name] : []));
     expect(removed.sort()).toEqual(['vibecode-run-a', 'vibecode-run-b']);
   });
 
@@ -200,11 +219,10 @@ describe('recover: containers', () => {
     const s = await setup();
     crashState(s);
     await s.git.addWorktree(P, 'run-x');
-    const unavailable: ContainerRuntime = {
-      ...s.runtime,
+    const unavailable = stubRuntime(s.runtime, {
       listManaged: () => Promise.reject(new Error(DOCKER_UNAVAILABLE_REASON)),
       remove: () => Promise.reject(new Error('remove must not be called')),
-    };
+    });
 
     await recover({ ...s.deps, runtime: unavailable });
 
@@ -217,10 +235,9 @@ describe('recover: containers', () => {
 
   it('surfaces any other listManaged() failure', async () => {
     const s = await setup();
-    const broken: ContainerRuntime = {
-      ...s.runtime,
+    const broken = stubRuntime(s.runtime, {
       listManaged: () => Promise.reject(new Error('docker: permission denied')),
-    };
+    });
     await expect(recover({ ...s.deps, runtime: broken })).rejects.toThrow('permission denied');
   });
 });
@@ -309,8 +326,18 @@ describe('recover: activity pruning', () => {
   it('prunes agent.activity older than 7 days but keeps each agent’s latest, so snapshot ≡ replay', async () => {
     const s = await setup();
     s.store.commit(() => [
-      on('agent.spawned', AG_DONE, { role: 'implementer', model: MODEL, issueId: null, attemptId: null }),
-      on('agent.spawned', AG_LIVE, { role: 'reviewer', model: MODEL, issueId: null, attemptId: null }),
+      on('agent.spawned', AG_DONE, {
+        role: 'implementer',
+        model: MODEL,
+        issueId: null,
+        attemptId: null,
+      }),
+      on('agent.spawned', AG_LIVE, {
+        role: 'reviewer',
+        model: MODEL,
+        issueId: null,
+        attemptId: null,
+      }),
     ]);
     s.store.commit(() => [activity(AG_DONE, 'old 1'), activity(AG_LIVE, 'old only')]);
     s.store.commit(() => [activity(AG_DONE, 'old 2')]);

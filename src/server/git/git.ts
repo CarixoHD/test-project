@@ -349,7 +349,11 @@ export function createGit(o: GitOptions): Git {
       for (const productId of await api.listRepos()) {
         await api.pruneWorktrees(productId);
         const refs = await git.run(
-          inRepo(productId, ['for-each-ref', '--format=%(refname:short)', `refs/heads/${BRANCH_PREFIX}`]),
+          inRepo(productId, [
+            'for-each-ref',
+            '--format=%(refname:short)',
+            `refs/heads/${BRANCH_PREFIX}`,
+          ]),
         );
         for (const branch of refs.split('\n').filter((b) => b.startsWith(BRANCH_PREFIX))) {
           await git.run(inRepo(productId, ['branch', '--quiet', '-D', branch]));
