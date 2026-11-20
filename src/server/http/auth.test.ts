@@ -302,7 +302,7 @@ describe('POST /api/settings/password', () => {
 });
 
 describe('SSE streams behind the session check', () => {
-  const AGENT = 'agent-1';
+  const AGENT = AgentIdSchema.parse('agent-1');
   let logsDir: string | undefined;
 
   afterEach(() => {
@@ -331,10 +331,7 @@ describe('SSE streams behind the session check', () => {
         },
       },
     ]);
-    appendFileSync(
-      agentLogPath(logsDir, AgentIdSchema.parse(AGENT)),
-      `${JSON.stringify({ ts: 1, line: 'hello' })}\n`,
-    );
+    appendFileSync(agentLogPath(logsDir, AGENT), `${JSON.stringify({ ts: 1, line: 'hello' })}\n`);
     const app = createApp({
       store: base.store,
       ids: base.ids,

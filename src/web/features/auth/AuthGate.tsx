@@ -12,6 +12,21 @@ type Phase =
 
 const SESSION_ENDED = 'Your session has ended. Log in again.';
 
+/** What GET /api/session means for the gate; null when the check was aborted. */
+async function sessionPhase(signal?: AbortSignal): Promise<Phase | null> {
+  try {
+    const session = await getSession(signal);
+    return session.passwordSet && !session.authenticated
+      ? { kind: 'login', notice: null }
+      : { kind: 'in', passwordSet: session.passwordSet };
+  } catch (err) {
+    if (signal?.aborted === true) return null;
+    const message =
+      err instanceof ApiError ? err.message : 'Cannot reach the Vibecode server; is it running?';
+    return { kind: 'failed', message };
+  }
+}
+
 /**
  * Checks GET /api/session on load and renders `children` (the app) only for an authenticated
  * browser; otherwise only the Login page. Any 401 from the API, including one detected for an
@@ -20,26 +35,15 @@ const SESSION_ENDED = 'Your session has ended. Log in again.';
 export function AuthGate({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'checking' });
 
-  const check = useCallback(async (signal?: AbortSignal) => {
-    setPhase({ kind: 'checking' });
-    try {
-      const session = await getSession(signal);
-      setPhase(
-        session.passwordSet && !session.authenticated
-          ? { kind: 'login', notice: null }
-          : { kind: 'in', passwordSet: session.passwordSet },
-      );
-    } catch (err) {
-      if (signal?.aborted === true) return;
-      const message =
-        err instanceof ApiError ? err.message : 'Cannot reach the Vibecode server; is it running?';
-      setPhase({ kind: 'failed', message });
-    }
+  const check = useCallback((signal?: AbortSignal) => {
+    void sessionPhase(signal).then((next) => {
+      if (next !== null) setPhase(next);
+    });
   }, []);
 
   useEffect(() => {
     const abort = new AbortController();
-    void check(abort.signal);
+    check(abort.signal);
     return () => abort.abort();
   }, [check]);
 
@@ -82,7 +86,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
             <p role="alert" className="ui-field__error">
               {phase.message}
             </p>
-            <Button variant="primary" onClick={() => void check()}>
+            <Button
+              variant="primary"
+              onClick={() => {
+                setPhase({ kind: 'checking' });
+                check();
+              }}
+            >
               Try again
             </Button>
           </div>
