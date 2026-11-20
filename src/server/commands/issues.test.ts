@@ -251,6 +251,43 @@ describe('PATCH /api/issues/:id', () => {
     expectSnapshotMatchesReplay(ctx.store);
   });
 
+  it('edits only the priority and bumps rev', async () => {
+    const ctx = setup();
+    const a = await add(ctx, { title: 'A', body: 'keep', priority: 0 });
+
+    const res = await ctx.app.request(`/api/issues/${a}`, json('PATCH', { priority: 2, rev: 1 }));
+    expect(res.status).toBe(200);
+    expect(EditIssueResponseSchema.parse(await res.json())).toEqual({ ok: true, rev: 2 });
+    expect(lastEvent(ctx)).toMatchObject({ type: 'issue.edited', entityId: a });
+    expect(lastEvent(ctx)?.data).toEqual({ rev: 2, priority: 2 });
+    expect(issueOf(ctx, a)).toMatchObject({ title: 'A', body: 'keep', priority: 2, rev: 2 });
+    expect(ctx.store.q.issue(a)?.priority).toBe(2);
+    expectSnapshotMatchesReplay(ctx.store);
+  });
+
+  it('rejects a fractional priority with 400', async () => {
+    const ctx = setup();
+    const a = await add(ctx, { title: 'A', body: '' });
+    const res = await ctx.app.request(`/api/issues/${a}`, json('PATCH', { priority: 1.5, rev: 1 }));
+    expect(res.status).toBe(400);
+    expect(issueOf(ctx, a)).toMatchObject({ priority: 0, rev: 1 });
+  });
+
+  it('returns 409 on a stale rev for a priority edit and writes no event', async () => {
+    const ctx = setup();
+    const a = await add(ctx, { title: 'A', body: '' });
+    expect(
+      (await ctx.app.request(`/api/issues/${a}`, json('PATCH', { priority: 1, rev: 1 }))).status,
+    ).toBe(200);
+    const before = ctx.store.snapshot();
+    const eventCount = ctx.store.eventsSince(0).length;
+    const res = await ctx.app.request(`/api/issues/${a}`, json('PATCH', { priority: -1, rev: 1 }));
+    await expectError(res, 409, /stale rev 1.*current rev is 2/);
+    expect(ctx.store.eventsSince(0)).toHaveLength(eventCount);
+    expect(ctx.store.snapshot()).toStrictEqual(before);
+    expect(issueOf(ctx, a)?.priority).toBe(1);
+  });
+
   it('edits an in-progress issue (its attempt will discard itself at merge time)', async () => {
     const ctx = setup();
     const a = await add(ctx, { title: 'A', body: '' });

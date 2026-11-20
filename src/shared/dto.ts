@@ -64,6 +64,7 @@ export const EditIssueRequestSchema = z.object({
   title: z.string().trim().min(1).optional(),
   body: z.string().optional(),
   dependsOn: z.array(IssueIdSchema).optional(),
+  priority: z.int().optional(),
   rev: z.int().min(1),
 });
 export type EditIssueRequest = z.infer<typeof EditIssueRequestSchema>;

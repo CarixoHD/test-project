@@ -31,6 +31,7 @@ export type EditIssueInput = {
   title?: string | undefined;
   body?: string | undefined;
   dependsOn?: readonly string[] | undefined;
+  priority?: number | undefined;
   /** The revision the owner's edit is based on; a different current rev is a conflict. */
   rev: number;
 };
@@ -175,6 +176,7 @@ export function editIssue(deps: CommandDeps, id: IssueId, input: EditIssueInput)
         ...(input.title === undefined ? {} : { title: input.title }),
         ...(input.body === undefined ? {} : { body: input.body }),
         ...(dependsOn === undefined ? {} : { dependsOn }),
+        ...(input.priority === undefined ? {} : { priority: input.priority }),
       },
     };
     return { ok: true, drafts: [draft], rev };
