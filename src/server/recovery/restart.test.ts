@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { cp, mkdtemp, readdir, realpath, rm } from 'node:fs/promises';
+import { cpSync, existsSync, rmSync } from 'node:fs';
+import { mkdtemp, readdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -43,7 +43,7 @@ const dbs: Db[] = [];
 
 // The "given" of every test: a migrated DB with a product in building (one open issue) and its
 // initialised repo. Built once and copied per test, so no test pays for the migrations, the
-// first-use warm-up of the store, or the git spawns of initRepo (measured: ~0.5 s of a ~1.2 s run).
+// first-use warm-up of the store, or the git spawns of initRepo.
 let templateDir: string;
 let productId: ProductId;
 let issueId: IssueId;
@@ -87,11 +87,13 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   dataDir = await realpath(await mkdtemp(path.join(tmpdir(), 'vibecode-restart-')));
-  await cp(templateDir, dataDir, { recursive: true });
+  // Synchronous on purpose (here and in afterEach): ~25 small files, and the async variants queue
+  // every stat/copy/unlink on the libuv pool, which took 70-190 ms per hook under full-suite load.
+  cpSync(templateDir, dataDir, { recursive: true });
 });
-afterEach(async () => {
+afterEach(() => {
   for (const db of dbs.splice(0)) db.$client.close();
-  await rm(dataDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true });
 });
 
 /** One server process: its own DB connection, store, ids and git on the shared data dir. */
