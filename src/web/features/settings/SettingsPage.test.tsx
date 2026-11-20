@@ -163,3 +163,105 @@ describe('Settings: provider keys', () => {
     expect(pageContains('SECRETSECRET')).toBe(false);
   });
 });
+
+describe('Settings: stored keys', () => {
+  it('shows a stored key masked and replaces it without echoing either key', async () => {
+    server.keys.set('openai', 'sk-proj-OLDOLDOLDOLDOLD-ab12');
+    const { user } = await renderSettings();
+    const openai = providerGroup('OpenAI');
+    expect(within(openai).getByText('Key ending in ab12')).toBeVisible();
+    expect(within(openai).queryByLabelText('OpenAI API key')).toBeNull();
+
+    await user.click(within(openai).getByRole('button', { name: 'Replace OpenAI key' }));
+    const input = within(openai).getByLabelText('OpenAI API key');
+    expect(input).toHaveValue('');
+    expect(input).toHaveFocus();
+    await user.keyboard('sk-proj-NEWNEWNEWNEWNEW-cd34{Enter}');
+
+    expect(await within(providerGroup('OpenAI')).findByText('Key ending in cd34')).toBeVisible();
+    expect(server.keys.get('openai')).toBe('sk-proj-NEWNEWNEWNEWNEW-cd34');
+    expect(pageContains('OLDOLDOLD')).toBe(false);
+    expect(pageContains('NEWNEWNEW')).toBe(false);
+  });
+
+  it('removes a key after confirmation and offers key entry again', async () => {
+    server.keys.set('google', 'AIzaSyGOOGLEGOOGLEGOOGLE-9876');
+    const { user } = await renderSettings();
+    await user.click(within(providerGroup('Google')).getByRole('button', { name: 'Remove Google key' }));
+    const dialog = screen.getByRole('dialog', { name: 'Remove the Google key?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Remove key' }));
+
+    expect(await within(providerGroup('Google')).findByLabelText('Google API key')).toBeVisible();
+    expect(server.puts).toContainEqual({ keys: { google: null } });
+    expect(within(providerGroup('Google')).queryByText(/Key ending in/)).toBeNull();
+  });
+
+  it('says "Key saved" for keys too short to show an ending', async () => {
+    server.keys.set('openrouter', 'shortkey12');
+    await renderSettings();
+    expect(within(providerGroup('OpenRouter')).getByText('Key saved')).toBeVisible();
+    expect(pageContains('shortkey12')).toBe(false);
+  });
+
+  it('rejects a key that is too short or has spaces without sending it', async () => {
+    const { user } = await renderSettings();
+    const input = within(providerGroup('Anthropic')).getByLabelText('Anthropic API key');
+    await user.type(input, 'abc def{Enter}');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveFocus();
+    expect(server.puts).toEqual([]);
+  });
+});
+
+describe('Settings: OpenAI-compatible base URL', () => {
+  it('saves a base URL for a local endpoint such as Ollama', async () => {
+    const { user } = await renderSettings();
+    const group = providerGroup('OpenAI-compatible');
+    await user.type(within(group).getByLabelText('OpenAI-compatible base URL'), 'http://localhost:11434/v1');
+    await user.click(within(group).getByRole('button', { name: 'Save OpenAI-compatible base URL' }));
+
+    expect(await within(group).findByText('OpenAI-compatible base URL saved.')).toBeVisible();
+    expect(server.puts).toContainEqual({
+      providerConfig: { openaiCompatible: { baseURL: 'http://localhost:11434/v1' } },
+    });
+  });
+
+  it('rejects something that is not a URL', async () => {
+    const { user } = await renderSettings();
+    const input = within(providerGroup('OpenAI-compatible')).getByLabelText('OpenAI-compatible base URL');
+    await user.type(input, 'localhost{Enter}');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(server.puts).toEqual([]);
+  });
+});
+
+let seq = 0;
+const settingsChanged = (): Event => {
+  seq += 1;
+  return EventSchema.parse({
+    seq,
+    ts: 1_700_000_000_000 + seq,
+    type: 'settings.changed',
+    productId: null,
+    entityId: null,
+    v: 1,
+    data: { sections: ['keys'], keys: [{ provider: 'anthropic', set: true }] },
+  });
+};
+
+describe('Settings: live updates', () => {
+  it('refetches when another tab or the server changes the settings', async () => {
+    await renderSettings();
+    expect(within(providerGroup('Anthropic')).getByLabelText('Anthropic API key')).toBeVisible();
+    const getsBefore = server.gets;
+
+    server.keys.set('anthropic', KEY);
+    const stream = FakeEventSource.latest;
+    if (stream === null) throw new Error('no stream');
+    act(() => stream.onmessage?.({ data: JSON.stringify(settingsChanged()) }));
+
+    expect(await within(providerGroup('Anthropic')).findByText('Key ending in wxyz')).toBeVisible();
+    expect(server.gets).toBe(getsBefore + 1);
+    expect(pageContains(KEY)).toBe(false);
+  });
+});

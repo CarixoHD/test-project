@@ -55,12 +55,7 @@ export function ProvidersSection({ settings, onSaved }: SettingsSectionProps) {
               onSaved={onSaved}
             />
             {p.id === 'openai-compatible' ? (
-              <BaseUrl
-                key={p.baseURL ?? ''}
-                name={p.name}
-                settings={settings}
-                onSaved={onSaved}
-              />
+              <BaseUrl name={p.name} settings={settings} onSaved={onSaved} />
             ) : null}
           </fieldset>
         ) : null,
@@ -217,6 +212,12 @@ interface BaseUrlProps extends SettingsSectionProps {
 function BaseUrl({ name, settings, onSaved }: BaseUrlProps) {
   const current = settings.providerConfig.openaiCompatible?.baseURL ?? '';
   const [draft, setDraft] = useState(current);
+  // A change from elsewhere (another tab, a save) replaces the draft.
+  const [shown, setShown] = useState(current);
+  if (shown !== current) {
+    setShown(current);
+    setDraft(current);
+  }
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
