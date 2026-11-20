@@ -181,4 +181,41 @@ describe('DockerCliRuntime against a real Docker daemon', () => {
       await sb.close();
     }
   }, 60_000);
+
+  it('leaves no vibecode-exec pid or cancel file in /tmp after execs end, time out or abort', async () => {
+    const sb = await rt.open(await spec());
+    try {
+      expect(await sb.exec(sh('echo hi'), T)).toMatchObject({ code: 0, stdout: 'hi\n' });
+      expect(await sb.exec(sh('exit 3'), T)).toMatchObject({ code: 3 });
+      const op = fileOpArgv({ op: 'write', path: 'a.txt' });
+      if (!op.ok) throw new Error(op.reason);
+      expect(await sb.exec(op.argv, { stdin: 'x', ...T })).toMatchObject({ code: 0 });
+      expect(await sb.exec(sh('sleep 300'), { timeoutMs: 500 })).toMatchObject({ timedOut: true });
+      const ac = new AbortController();
+      const aborted = sb.exec(sh('echo ready; sleep 300'), {
+        ...T,
+        signal: ac.signal,
+        onLine: (l) => {
+          if (l === 'ready') ac.abort();
+        },
+      });
+      expect(await aborted).toMatchObject({ aborted: true });
+      // Listed with a plain `docker exec`: a Sandbox.exec would see its own pid file.
+      const ls = await exec('docker', ['exec', sb.name, 'ls', '-a', '/tmp'], T);
+      expect(ls.code).toBe(0);
+      expect(ls.stdout.split('\n').filter((f) => f.startsWith('vibecode-exec-'))).toEqual([]);
+    } finally {
+      await sb.close();
+    }
+  }, 60_000);
+
+  it('returns a command that exits 1 printing the daemon message as a result while Docker runs', async () => {
+    const sb = await rt.open(await spec());
+    try {
+      const r = await sb.exec(sh('echo "Is the docker daemon running?" >&2; exit 1'), T);
+      expect(r).toMatchObject({ code: 1, stderr: 'Is the docker daemon running?\n' });
+    } finally {
+      await sb.close();
+    }
+  });
 });

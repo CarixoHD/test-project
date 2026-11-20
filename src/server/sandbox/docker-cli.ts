@@ -51,6 +51,7 @@ export const DEFAULT_BASE_IMAGE_DIR = path.resolve(import.meta.dirname, '../../.
 
 const MANAGE_TIMEOUT_MS = 60_000;
 const SIGNAL_TIMEOUT_MS = 10_000;
+const CLEANUP_TIMEOUT_MS = 10_000;
 const DEFAULT_KILL_GRACE_MS = 5_000;
 /**
  * In-container wrapper around every Sandbox.exec. It records the shell's pid in the file `$1`,
@@ -58,20 +59,34 @@ const DEFAULT_KILL_GRACE_MS = 5_000;
  * same stdio, same exit code. A `docker exec` process leads its own process group (runc calls
  * setsid), so KILL_SCRIPT can signal the command's whole tree. A signal to the host `docker exec`
  * client is not forwarded into the container (non-TTY), hence this mechanism.
+ * A wrapper that finds the marker removes both files itself: it is the last reader of the
+ * marker, which matters when it starts after the host gave up on it (see REAP_SCRIPT).
  */
-const EXEC_WRAPPER = 'echo $$ > "$1"; if [ -e "$1.cancel" ]; then exit 143; fi; shift; exec "$@"';
+const EXEC_WRAPPER =
+  'echo $$ > "$1"; if [ -e "$1.cancel" ]; then rm -f "$1" "$1.cancel"; exit 143; fi; ' +
+  'shift; exec "$@"';
 /**
  * Run in the container by a separate `docker exec` with `<SIG> <pidFile>`. It writes the cancel
  * marker BEFORE reading the pid file, while the wrapper writes the pid file before checking the
  * marker: so either the wrapper sees the marker and never starts the command, or this sees the
  * pid. It signals the process group, falls back to the pid alone, and succeeds when the process
- * is already gone. After SIGKILL it removes the pid file (the marker stays for a late wrapper).
+ * is already gone. It removes no file: the cleanup after the exec settles does (#removeExecFiles).
  */
 const KILL_SCRIPT =
   ': > "$2.cancel" || exit 1; pid=$(cat "$2" 2>/dev/null) || exit 0; [ -n "$pid" ] || exit 0; ' +
   'case $pid in *[!0-9]*) echo "bad pid file" >&2; exit 1;; esac; ' +
-  'kill -s "$1" -- "-$pid" 2>/dev/null || kill -s "$1" "$pid" 2>/dev/null || ! kill -0 "$pid" 2>/dev/null || exit 1; ' +
-  'if [ "$1" = KILL ]; then rm -f "$2"; fi';
+  'kill -s "$1" -- "-$pid" 2>/dev/null || kill -s "$1" "$pid" 2>/dev/null || ! kill -0 "$pid" 2>/dev/null || exit 1';
+/**
+ * Cleanup with `<pidFile>` after a stopped exec whose host client we killed: the wrapper may not
+ * have started yet and could still start later. No pid file, or one still being written: the
+ * wrapper has not checked the marker yet, so the marker stays (that wrapper exits 143 and removes
+ * both files itself). A complete pid: the wrapper is past writing it, so SIGKILL it (it was
+ * stopped anyway, and the kill scripts already ran) before removing the marker, so it can never
+ * get past the check and run the command.
+ */
+const REAP_SCRIPT =
+  'pid=$(cat "$1" 2>/dev/null) || exit 0; case $pid in ""|*[!0-9]*) exit 0;; esac; ' +
+  'kill -s KILL -- "-$pid" 2>/dev/null || kill -s KILL "$pid" 2>/dev/null; rm -f "$1" "$1.cancel"';
 const SIGNAL_NAMES = { SIGINT: 'INT', SIGTERM: 'TERM' } as const;
 /** The util/exec timeout of the client is a backstop behind our own deadline + grace period. */
 const CLIENT_BACKSTOP_MS = 10_000;
@@ -420,8 +435,10 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
     const onAbort = (): void => stop('abort');
     const deadline = setTimeout(() => stop('timeout'), Math.min(o.timeoutMs, MAX_TIMER_MS));
     o.signal?.addEventListener('abort', onAbort, { once: true });
+    let r: ExecResult;
     try {
-      const r = await this.#run(
+      // If util/exec throws, the docker client never ran, so no file was created to clean up.
+      r = await this.#runRaw(
         ['exec', '-i', '-w', WORKSPACE, name, 'sh', '-c', EXEC_WRAPPER, 'sh', pidFile, ...argv],
         {
           ...o,
@@ -430,17 +447,49 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
         },
         'SIGKILL',
       );
-      return {
-        ...r,
-        timedOut: stoppedBy === 'timeout' || (stoppedBy === undefined && r.timedOut),
-        aborted: stoppedBy === 'abort' || (stoppedBy === undefined && r.aborted),
-      };
     } finally {
       clearTimeout(deadline);
       clearTimeout(grace);
       o.signal?.removeEventListener('abort', onAbort);
       await Promise.all(kills);
     }
+    // A user command's own exit 1 may print the daemon message too: only a failing probe of the
+    // daemon makes it DOCKER_NOT_RUNNING. With the daemon down, there is no container to clean.
+    if (daemonDown(r) && !(await this.available())) throw new Error(DOCKER_NOT_RUNNING);
+    // All kill scripts have finished, so none writes the marker any more. The client killed by
+    // us (or by util/exec's backstop) is the only case where the wrapper may still start.
+    await this.#removeExecFiles(name, pidFile, r.timedOut || r.aborted);
+    return {
+      ...r,
+      timedOut: stoppedBy === 'timeout' || (stoppedBy === undefined && r.timedOut),
+      aborted: stoppedBy === 'abort' || (stoppedBy === undefined && r.aborted),
+    };
+  }
+
+  /**
+   * Removes the exec's pid file and cancel marker from the container's /tmp (a 1g tmpfs that
+   * would otherwise collect one file per exec). When the client returned on its own, the wrapper
+   * has run and ended, so a plain `rm -f` is safe. When the client was killed, REAP_SCRIPT keeps
+   * the marker for a wrapper that has not started yet. Never throws; failures are logged.
+   */
+  async #removeExecFiles(name: string, pidFile: string, clientKilled: boolean): Promise<void> {
+    const argv = clientKilled
+      ? ['exec', name, 'sh', '-c', REAP_SCRIPT, 'sh', pidFile]
+      : ['exec', name, 'rm', '-f', pidFile, `${pidFile}.cancel`];
+    let failure: string;
+    try {
+      const r = await this.#exec(this.#docker, argv, { timeoutMs: CLEANUP_TIMEOUT_MS });
+      if (r.code === 0) return;
+      failure = r.timedOut ? 'timed out' : detail(r);
+    } catch (err) {
+      failure = err instanceof Error ? err.message : String(err);
+    }
+    this.#log(
+      redactor.redact(
+        `Could not clean up inside container ${name}: removing ${pidFile} and its .cancel ` +
+          `marker failed: ${failure}`,
+      ),
+    );
   }
 
   /**
@@ -469,15 +518,12 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
   }
 
   /**
-   * A command whose output belongs to the caller (exec / runOnce). A stopped daemon becomes
+   * A `docker run` whose output belongs to the caller (runOnce). A stopped daemon becomes
    * DOCKER_NOT_RUNNING (an infra error), never a command result such as a failed check.
+   * Sandbox.exec does the same in #execInContainer, after confirming with a daemon probe.
    */
-  async #run(
-    argv: string[],
-    o: ExecOpts,
-    clientKillSignal: NodeJS.Signals = 'SIGINT',
-  ): Promise<ExecResult> {
-    const r = await this.#runRaw(argv, o, clientKillSignal);
+  async #run(argv: string[], o: ExecOpts): Promise<ExecResult> {
+    const r = await this.#runRaw(argv, o, 'SIGINT');
     if (daemonDown(r)) throw new Error(DOCKER_NOT_RUNNING);
     return r;
   }
@@ -616,7 +662,10 @@ function unavailable(err: unknown): unknown {
   return err instanceof ExecError && err.code === 'ENOENT' ? new Error(DOCKER_NOT_RUNNING) : err;
 }
 
-/** The docker CLI exits 125 (run) or 1 (exec) with a connection error when the daemon is down. */
+/**
+ * The docker CLI exits 125 (run) or 1 (exec) with a connection error when the daemon is down.
+ * For an exec, exit 1 is also the user command's own: callers there confirm with a probe.
+ */
 function daemonDown(r: { code: number | null; stderr: string }): boolean {
   return (r.code === 125 || r.code === 1) && DAEMON_DOWN.test(r.stderr);
 }
