@@ -21,3 +21,4 @@ export {
   type SetTimer,
 } from './activity-batcher.ts';
 export { usageCost, type UsageCost } from './usage.ts';
+export { SPAR_LIMITS, sparTurn, type SparringDeps } from './sparring.ts';
