@@ -12,8 +12,14 @@ const dockerSelected = argv.some(
     arg.replaceAll('\\', '/').includes('tests/docker'),
 );
 
+// Safety net for every project: globals/env stubbed with vi.stubGlobal / vi.stubEnv are restored
+// after each test, so a test that fails before its own cleanup cannot leak stubs into later tests.
+// Inline projects do not inherit root test options, so each project spreads this in.
+const restoreStubs = { unstubGlobals: true, unstubEnvs: true } as const;
+
 const dockerProject: TestProjectInlineConfiguration = {
   test: {
+    ...restoreStubs,
     name: 'docker',
     environment: 'node',
     include: ['tests/docker/**/*.test.ts'],
@@ -26,6 +32,7 @@ export default defineConfig({
     projects: [
       {
         test: {
+          ...restoreStubs,
           name: 'unit',
           environment: 'node',
           include: ['src/shared/**/*.test.ts', 'src/server/**/*.test.ts', 'scripts/**/*.test.ts'],
@@ -34,6 +41,7 @@ export default defineConfig({
       {
         plugins: [react()],
         test: {
+          ...restoreStubs,
           name: 'web',
           environment: 'jsdom',
           include: ['src/web/**/*.test.{ts,tsx}'],

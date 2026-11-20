@@ -114,4 +114,21 @@ describe('BackendStatus', () => {
     push(ev('backend.cleared', { backend: 'claude-code' }));
     expect(banner()).toBeNull();
   });
+
+  it('ignores a limit that has already expired when it arrives after time has passed', async () => {
+    await renderBanner(fixture());
+    await act(() => vi.advanceTimersByTimeAsync(AT_1405 - NOW + 60_000));
+    push(limited(AT_1405));
+    expect(banner()).toBeNull();
+  });
+
+  it('shows a later future limit and hides it once it expires, without a clear event', async () => {
+    const AT_1500 = new Date(2026, 10, 20, 15, 0).getTime();
+    await renderBanner(fixture());
+    await act(() => vi.advanceTimersByTimeAsync(AT_1405 - NOW));
+    push(limited(AT_1500));
+    expect(banner()).toHaveTextContent(`rate limited until ${localTime(AT_1500)}`);
+    await act(() => vi.advanceTimersByTimeAsync(AT_1500 - AT_1405));
+    expect(banner()).toBeNull();
+  });
 });
