@@ -44,8 +44,8 @@ const failure = (code: IssueCommandFailure['code'], reason: string): IssueComman
 const zodReason = (issues: readonly { message: string }[]) =>
   issues.map((i) => i.message).join('; ');
 
-/** Spar message ids. IdGen has no dedicated kind yet; every kind yields a fresh ULID. */
-export const nextSparMessageId = (deps: CommandDeps): string => deps.ids.next('usage');
+/** Spar message ids (owner and agent messages alike). */
+export const nextSparMessageId = (deps: CommandDeps): string => deps.ids.next('spar');
 
 export function createSparring(deps: SparringCommandDeps): Sparring {
   const running = new Map<ProductId, Promise<void>>();
