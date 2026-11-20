@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emptyState } from '../../shared/state.ts';
-import { ApiError, getState, request } from './api.ts';
+import { ApiError, getState, request, savePrdDraft, sendSparMessage } from './api.ts';
 import { z } from 'zod';
 
 type FetchArgs = [input: string, init: RequestInit];
@@ -71,5 +71,23 @@ describe('api', () => {
   it('rejects a response that does not match the DTO with bad_response', async () => {
     stubFetch(json({ state: 'nope', lastSeq: -1 }));
     await expect(getState()).rejects.toMatchObject({ code: 'bad_response', status: 200 });
+  });
+
+  it('sendSparMessage POSTs the message to the product spar endpoint', async () => {
+    const fetchFn = stubFetch(json({ ok: true }, 202));
+    await expect(sendSparMessage('p1', 'Who uses it?')).resolves.toEqual({ ok: true });
+    const [url, init] = fetchFn.mock.calls[0] as FetchArgs;
+    expect(url).toBe('/api/products/p1/spar');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ message: 'Who uses it?' });
+  });
+
+  it('savePrdDraft PUTs the markdown to the product prd-draft endpoint', async () => {
+    const fetchFn = stubFetch(json({ ok: true }));
+    await expect(savePrdDraft('p 1', '# PRD')).resolves.toEqual({ ok: true });
+    const [url, init] = fetchFn.mock.calls[0] as FetchArgs;
+    expect(url).toBe('/api/products/p%201/prd-draft');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ markdown: '# PRD' });
   });
 });
