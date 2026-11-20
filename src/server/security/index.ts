@@ -1,7 +1,7 @@
 import { Redactor } from './redact.ts';
 
 export { Redactor, LAST4_MIN_LENGTH, MIN_SECRET_LENGTH, REDACTED } from './redact.ts';
-export { createSecrets, type SecretInfo, type Secrets, type SecretsDeps } from './secrets.ts';
+export { createSecrets, gitTokenSecret, type SecretInfo, type Secrets, type SecretsDeps } from './secrets.ts';
 export {
   createPasswordHasher,
   hashPassword,
