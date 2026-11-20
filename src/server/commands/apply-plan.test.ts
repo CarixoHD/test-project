@@ -339,6 +339,30 @@ describe('applyPlan: invalid plans commit nothing', () => {
       ],
     },
     {
+      name: 'create depending on a cancelled issue',
+      reason: /create "x": dependency ".*" is cancelled/,
+      ops: ({ a }, deps) => {
+        expect(applyPlan(deps, P, plan([{ op: 'cancel', id: a, reason: 'gone' }]), 1).ok).toBe(
+          true,
+        );
+        return [create('x', [a])];
+      },
+    },
+    {
+      name: 'edit to depend on a cancelled issue',
+      reason: /edit #2: dependency ".*" is cancelled/,
+      ops: ({ a, b }) => [
+        create('x'),
+        { op: 'cancel', id: a, reason: 'gone' },
+        { op: 'edit', id: b, dependsOn: [a] },
+      ],
+    },
+    {
+      name: 'cancel then create depending on it in the same plan',
+      reason: /create "x": dependency ".*" is cancelled/,
+      ops: ({ a }) => [{ op: 'cancel', id: a, reason: 'gone' }, create('x', [a])],
+    },
+    {
       name: 'a valid op followed by an invalid one',
       reason: /unknown dependency/,
       ops: () => [create('fine'), create('bad', ['missing'])],

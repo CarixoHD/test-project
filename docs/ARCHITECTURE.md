@@ -242,7 +242,15 @@ applyPlan(deps, productId, plan: PlanResult, consumedSeq): {ok:true; events; cre
 // Valid → ONE commit: issue.created (next per-product numbers, origin orchestrator, product prdVersion, priority ?? 0),
 // issue.edited, issue.cancelled{by:'orchestrator'}, issue.rewritten, question.asked{target:'orchestrator'},
 // orchestrator.cursor_advanced{cursor: consumedSeq} (refused if consumedSeq < current cursor).
-nextIssueNumber(issues); resolveDependsOn(refs, {keys, existingIds}); findDependencyCycle(graph) → [a,…,a] | null
+nextIssueNumber(issues); resolveDependsOn(refs, {keys, existingIds, cancelledIds}); findDependencyCycle(graph) → [a,…,a] | null
+// resolveDependsOn refuses unknown refs and refs to cancelled issues (applyPlan passes its working copy,
+// so cancel X then create Y ← X in one plan fails). Owner commands (flow 7), {ok:false; reason; code} on failure:
+addIssue(deps, productId, {title, body, dependsOn, priority?}) → {ok; events; issueId; number}
+//   origin owner, next number, prdVersion; a complete product → product.phase_changed{building} in the same commit
+editIssue(deps, issueId, {title?, body?, dependsOn?, rev}) → {ok; events; rev}
+//   open|failed|in_progress|in_review only (else conflict); rev ≠ current → conflict; rev+1; no cycles
+cancelIssue(deps, issueId) → {ok; events}   // via transition(); completed/cancelled → conflict; by:'owner'
+// codes: invalid → 400, not_found → 404, conflict → 409
 ```
 
 The result schemas above are defined in `src/shared/agent-results.ts`. The pipeline imports them from there and does not redefine them.

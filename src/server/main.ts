@@ -6,6 +6,7 @@ import { createApp } from './http/index.ts';
 import { redactor } from './security/index.ts';
 import { createStore } from './store/index.ts';
 import { systemClock } from './util/clock.ts';
+import { createIdGen } from './util/id-gen.ts';
 
 const DEFAULT_WEB_ROOT = resolve(import.meta.dirname, '../../dist/web');
 
@@ -20,7 +21,7 @@ export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise
   ensureDataDir(config.dataDir);
   const db = open(config.dbPath);
   const store = createStore({ db, clock: systemClock, redactor });
-  const app = createApp({ store, redactor, webRoot });
+  const app = createApp({ store, redactor, ids: createIdGen(systemClock), webRoot });
 
   const { server, address } = await new Promise<{
     server: ServerType;
