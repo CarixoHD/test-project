@@ -54,7 +54,7 @@ afterEach(() => {
 });
 
 describe('BuildTab', () => {
-  it('lays out the board next to the controls, costs, agents, 3D view and backend status', async () => {
+  it('lays out the board next to the controls, costs, agents and 3D view', async () => {
     render(
       <MemoryRouter>
         <AppStoreProvider store={createAppStore()}>
@@ -63,15 +63,10 @@ describe('BuildTab', () => {
       </MemoryRouter>,
     );
     await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
-    for (const name of [
-      'Build controls',
-      'Costs',
-      'Issues',
-      'Agents',
-      '3D view',
-      'Backend status',
-    ]) {
+    for (const name of ['Build controls', 'Costs', 'Issues', 'Agents', '3D view']) {
       expect(screen.getByRole('region', { name })).toBeInTheDocument();
     }
+    // The backend banner only appears while a backend is limited (BackendStatus.test.tsx).
+    expect(screen.queryByRole('region', { name: 'Backend status' })).toBeNull();
   });
 });

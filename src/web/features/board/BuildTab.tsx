@@ -18,7 +18,7 @@ export function BuildTab({ product }: { product: ProductState }) {
       <div className="build-tab__toolbar">
         <BuildControls product={product} preview={preview} />
         <CostBar product={product} />
-        <BackendStatus product={product} />
+        <BackendStatus />
       </div>
       <div className="build-tab__main">
         <Board product={product} />

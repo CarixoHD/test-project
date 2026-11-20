@@ -1,10 +1,13 @@
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   FakeContainerRuntime,
   fileOpArgv,
+  type ExecOpts,
+  type ExecResult,
+  type FakeRunRule,
   type FileOp,
   type Sandbox,
   type SandboxSpec,
@@ -26,6 +29,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await rm(base, { recursive: true, force: true });
 });
 
@@ -343,6 +347,87 @@ describe('FakeContainerRuntime scripted run', () => {
     ac.abort();
     const r = await sb.exec(['npm', 'test'], { ...T, signal: ac.signal });
     expect(r).toMatchObject({ aborted: true, code: null });
+  });
+});
+
+describe('FakeContainerRuntime long-running scripted run', () => {
+  const slow: FakeRunRule = {
+    match: ['npm', 'test'],
+    result: { code: 0, stdout: 'done\n' },
+    durationMs: 60_000,
+    partial: { stdout: 'partial\n', stderr: 'warn\n' },
+  };
+
+  /** Starts an exec and tracks whether it has settled, without awaiting it. */
+  function start(
+    sb: Sandbox,
+    o: ExecOpts,
+  ): { result: Promise<ExecResult>; settled: () => boolean } {
+    let done = false;
+    const result = sb.exec(['npm', 'test'], o);
+    void result.then(() => {
+      done = true;
+    });
+    return { result, settled: () => done };
+  }
+
+  it('answers after durationMs when the run finishes before its timeout', async () => {
+    vi.useFakeTimers();
+    const sb = await openAgent(new FakeContainerRuntime({ dataDir, script: [slow] }));
+    const run = start(sb, { timeoutMs: 120_000 });
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(run.settled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await run.result).toEqual({
+      code: 0,
+      stdout: 'done\n',
+      stderr: '',
+      timedOut: false,
+      aborted: false,
+      truncated: false,
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('times out at timeoutMs with the partial output and no exit code', async () => {
+    vi.useFakeTimers();
+    const sb = await openAgent(new FakeContainerRuntime({ dataDir, script: [slow] }));
+    const lines: string[] = [];
+    const run = start(sb, { timeoutMs: 1000, onLine: (l, s) => lines.push(`${s}:${l}`) });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(run.settled()).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await run.result).toEqual({
+      code: null,
+      stdout: 'partial\n',
+      stderr: 'warn\n',
+      timedOut: true,
+      aborted: false,
+      truncated: false,
+    });
+    expect(lines).toEqual(['stdout:partial', 'stderr:warn']);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('settles promptly with the aborted result when the signal aborts mid-run', async () => {
+    vi.useFakeTimers();
+    const sb = await openAgent(new FakeContainerRuntime({ dataDir, script: [slow] }));
+    const ac = new AbortController();
+    const run = start(sb, { timeoutMs: 600_000, signal: ac.signal });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(run.settled()).toBe(false);
+    ac.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run.settled()).toBe(true);
+    expect(await run.result).toEqual({
+      code: null,
+      stdout: 'partial\n',
+      stderr: 'warn\n',
+      timedOut: false,
+      aborted: true,
+      truncated: false,
+    });
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

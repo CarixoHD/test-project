@@ -465,6 +465,36 @@ describe('Settings: Claude Code', () => {
     expect(await within(region()).findByText('OK')).toBeVisible();
   });
 
+  it('reflects live backend.limited events (until, then needsLogin) like the Build tab', async () => {
+    await renderSettings();
+    const stream = FakeEventSource.latest;
+    if (stream === null) throw new Error('no stream');
+    const push = (data: object) => {
+      seq += 1;
+      const event = EventSchema.parse({
+        seq,
+        ts: NOW,
+        type: 'backend.limited',
+        productId: null,
+        entityId: null,
+        v: 1,
+        data: { backend: 'claude-code', reason: 'test', ...data },
+      });
+      act(() => stream.onmessage?.({ data: JSON.stringify(event) }));
+    };
+    const until = NOW + 2 * 60 * 60_000;
+    push({ until, needsLogin: false });
+    const time = new Date(until).toLocaleString(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
+    expect(await within(region()).findByText(`Rate limited until ${time}`)).toBeVisible();
+
+    push({ until: null, needsLogin: true });
+    expect(await within(region()).findByText('Needs login')).toBeVisible();
+    expect(within(region()).getByRole('button', { name: "I've logged in" })).toBeVisible();
+  });
+
   it("needs login: 'I've logged in' clears it, and the status goes back to OK live", async () => {
     initialState = withLimit(limit({ needsLogin: true }));
     const { user } = await renderSettings();

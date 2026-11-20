@@ -8,7 +8,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { redactor } from '../security/index.ts';
-import { applyFileOp, type FsResult } from './fake-fs.ts';
+import { applyFileOp } from './fake-fs.ts';
 import { parseFileOp } from './file-ops.ts';
 import { buildRunArgs, containerName, managedLabels } from './run-args.ts';
 import type {
@@ -29,6 +29,14 @@ export type FakeRunRule = {
   /** An argv prefix, or a predicate. The first matching rule answers; rules are reusable. */
   match: readonly string[] | ((argv: readonly string[]) => boolean);
   result: FakeRunResult | ((argv: readonly string[], o: { stdin?: string }) => FakeRunResult);
+  /**
+   * Simulated run time in ms, on the global timers (so `vi.useFakeTimers()` drives it). The
+   * result answers after it; a run still going at its `timeoutMs` is killed then (`timedOut`),
+   * and an abort of its signal mid-run settles at once (`aborted`). Default: answers at once.
+   */
+  durationMs?: number;
+  /** Output printed before a kill by timeout or abort (default none); the code is then null. */
+  partial?: { stdout?: string; stderr?: string };
 };
 
 export type FakeCall =
@@ -199,46 +207,89 @@ export class FakeContainerRuntime implements ContainerRuntime {
   }
 
   async #run(spec: SandboxSpec, argv: readonly string[], o: ExecOpts): Promise<ExecResult> {
-    if (o.signal?.aborted === true) {
-      return {
-        code: null,
-        stdout: '',
-        stderr: '',
-        timedOut: false,
-        aborted: true,
-        truncated: false,
-      };
-    }
-    const r = await this.#answer(spec, argv, o);
-    const stdout = redactor.redact(r.stdout);
-    const stderr = redactor.redact(r.stderr);
-    if (o.onLine !== undefined) {
-      for (const line of lines(stdout)) o.onLine(line, 'stdout');
-      for (const line of lines(stderr)) o.onLine(line, 'stderr');
-    }
-    return { code: r.code, stdout, stderr, timedOut: false, aborted: false, truncated: false };
-  }
-
-  #answer(spec: SandboxSpec, argv: readonly string[], o: ExecOpts): Promise<FsResult> {
+    if (o.signal?.aborted === true) return { ...ABORTED };
     const fileOp = parseFileOp(argv);
     if (fileOp.ok) {
       const readOnly = spec.readOnly || spec.role === 'preview';
-      return applyFileOp(spec.worktree, fileOp.op, { stdin: o.stdin, readOnly });
+      return finish(await applyFileOp(spec.worktree, fileOp.op, { stdin: o.stdin, readOnly }), o);
     }
     if (fileOp.isFileOp) {
-      return Promise.resolve({ code: 2, stdout: '', stderr: `vibecode: ${fileOp.reason}\n` });
+      return finish({ code: 2, stdout: '', stderr: `vibecode: ${fileOp.reason}\n` }, o);
     }
     const rule = this.#script.find((r) => matches(r.match, argv));
     if (rule === undefined) {
       const stderr = `fake: no script entry for ${JSON.stringify(argv)}\n`;
-      return Promise.resolve({ code: NOT_FOUND, stdout: '', stderr });
+      return finish({ code: NOT_FOUND, stdout: '', stderr }, o);
+    }
+    const stop = rule.durationMs === undefined ? 'done' : await runFor(rule.durationMs, o);
+    if (stop !== 'done') {
+      const out = {
+        code: null,
+        stdout: rule.partial?.stdout ?? '',
+        stderr: rule.partial?.stderr ?? '',
+      };
+      return finish(out, o, stop);
     }
     const res =
       typeof rule.result === 'function'
         ? rule.result(argv, o.stdin === undefined ? {} : { stdin: o.stdin })
         : rule.result;
-    return Promise.resolve({ code: res.code, stdout: res.stdout ?? '', stderr: res.stderr ?? '' });
+    return finish({ code: res.code, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }, o);
   }
+}
+
+const ABORTED: ExecResult = {
+  code: null,
+  stdout: '',
+  stderr: '',
+  timedOut: false,
+  aborted: true,
+  truncated: false,
+};
+
+/** Waits out a simulated run: 'done' after `durationMs`, unless the deadline or an abort comes first. */
+function runFor(durationMs: number, o: ExecOpts): Promise<'done' | 'timeout' | 'abort'> {
+  return new Promise((resolve) => {
+    const settle = (how: 'done' | 'timeout' | 'abort'): void => {
+      clearTimeout(timer);
+      o.signal?.removeEventListener('abort', onAbort);
+      resolve(how);
+    };
+    const onAbort = (): void => {
+      settle('abort');
+    };
+    const timer =
+      durationMs < o.timeoutMs
+        ? setTimeout(() => {
+            settle('done');
+          }, durationMs)
+        : setTimeout(() => {
+            settle('timeout');
+          }, o.timeoutMs);
+    o.signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** Redacts the output, streams it to `onLine` and shapes the result like the real runtime's. */
+function finish(
+  r: { code: number | null; stdout: string; stderr: string },
+  o: ExecOpts,
+  stoppedBy?: 'timeout' | 'abort',
+): ExecResult {
+  const stdout = redactor.redact(r.stdout);
+  const stderr = redactor.redact(r.stderr);
+  if (o.onLine !== undefined) {
+    for (const line of lines(stdout)) o.onLine(line, 'stdout');
+    for (const line of lines(stderr)) o.onLine(line, 'stderr');
+  }
+  return {
+    code: r.code,
+    stdout,
+    stderr,
+    timedOut: stoppedBy === 'timeout',
+    aborted: stoppedBy === 'abort',
+    truncated: false,
+  };
 }
 
 function matches(m: FakeRunRule['match'], argv: readonly string[]): boolean {
