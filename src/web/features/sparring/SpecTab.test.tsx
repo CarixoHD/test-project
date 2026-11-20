@@ -222,3 +222,116 @@ describe('SpecTab chat', () => {
     expect(screen.queryByText('Agent is thinking…')).toBeNull();
   });
 });
+
+const prdPanel = () => screen.getByRole('region', { name: 'PRD draft' });
+
+describe('SpecTab PRD draft', () => {
+  it('shows the draft rendered, with when and by whom it was last updated', async () => {
+    const ts = T0 + 60_000;
+    await renderSpec([
+      () => sparMessage('agent', 'Here is a first draft.', ts),
+      () => draftSaved('# Todo app\n\n## Problem\n\nTeams lose **todos**.', ts),
+    ]);
+    const panel = prdPanel();
+    expect(within(panel).getByRole('heading', { name: 'Todo app' })).toBeInTheDocument();
+    expect(within(panel).getByText('todos').tagName).toBe('STRONG');
+    expect(panel).toHaveTextContent(/Last updated .* by the sparring agent/);
+    expect(
+      within(panel)
+        .getByText(/Last updated/)
+        .querySelector('time'),
+    ).toHaveAttribute('datetime', new Date(ts).toISOString());
+  });
+
+  it('attributes a draft saved on its own to the owner', async () => {
+    await renderSpec([() => draftSaved('# Mine')]);
+    expect(prdPanel()).toHaveTextContent(/Last updated .* by you/);
+  });
+
+  it('says when there is no draft yet', async () => {
+    await renderSpec();
+    expect(prdPanel()).toHaveTextContent('No PRD draft yet');
+  });
+
+  it('edits the draft and saves it with PUT prd-draft', async () => {
+    const { user } = await renderSpec([() => draftSaved('# Draft')]);
+    await user.click(within(prdPanel()).getByRole('button', { name: 'Edit' }));
+    const editor = within(prdPanel()).getByLabelText('PRD markdown');
+    expect(editor).toHaveValue('# Draft');
+    expect(editor).toHaveFocus();
+
+    await user.type(editor, '\n\nMore');
+    await user.click(within(prdPanel()).getByRole('button', { name: 'Save' }));
+
+    expect(sent).toEqual([
+      { method: 'PUT', url: `/api/products/${P}/prd-draft`, body: { markdown: '# Draft\n\nMore' } },
+    ]);
+    // Back to the preview, which shows the saved text until the event confirms it.
+    expect(await within(prdPanel()).findByRole('button', { name: 'Edit' })).toHaveFocus();
+    expect(within(prdPanel()).queryByLabelText('PRD markdown')).toBeNull();
+    expect(prdPanel()).toHaveTextContent('More');
+  });
+
+  it('keeps the editor and the text when saving fails', async () => {
+    respond = () =>
+      Response.json({ error: { code: 'invalid', message: 'Draft too long' } }, { status: 400 });
+    const { user } = await renderSpec([() => draftSaved('# Draft')]);
+    await user.click(within(prdPanel()).getByRole('button', { name: 'Edit' }));
+    await user.type(within(prdPanel()).getByLabelText('PRD markdown'), ' x');
+    await user.click(within(prdPanel()).getByRole('button', { name: 'Save' }));
+    expect(await within(prdPanel()).findByRole('alert')).toHaveTextContent('Draft too long');
+    expect(within(prdPanel()).getByLabelText('PRD markdown')).toHaveValue('# Draft x');
+  });
+
+  it('cancelling the edit returns to the preview without saving', async () => {
+    const { user } = await renderSpec([() => draftSaved('# Draft')]);
+    await user.click(within(prdPanel()).getByRole('button', { name: 'Edit' }));
+    await user.type(within(prdPanel()).getByLabelText('PRD markdown'), ' changed');
+    await user.click(within(prdPanel()).getByRole('button', { name: 'Cancel' }));
+    expect(sent).toEqual([]);
+    expect(within(prdPanel()).getByRole('heading', { name: 'Draft' })).toBeInTheDocument();
+  });
+
+  it('updates the preview live when the agent saves a new draft', async () => {
+    await renderSpec([() => draftSaved('# Old')]);
+    push(sparMessage('agent', 'Updated', T0 + 90_000), draftSaved('# New', T0 + 90_000));
+    expect(within(prdPanel()).getByRole('heading', { name: 'New' })).toBeInTheDocument();
+  });
+
+  it('does not overwrite unsaved edits when a newer agent draft arrives, and says so', async () => {
+    const { user } = await renderSpec([() => draftSaved('# Old')]);
+    await user.click(within(prdPanel()).getByRole('button', { name: 'Edit' }));
+    const editor = within(prdPanel()).getByLabelText('PRD markdown');
+    await user.type(editor, ' with my edits');
+
+    push(sparMessage('agent', 'Revised', T0 + 90_000), draftSaved('# Agent v2', T0 + 90_000));
+
+    expect(editor).toHaveValue('# Old with my edits');
+    const notice = within(prdPanel()).getByRole('status');
+    expect(notice).toHaveTextContent(/sparring agent saved a newer draft/i);
+
+    // Saving keeps the owner's text.
+    await user.click(within(prdPanel()).getByRole('button', { name: 'Save' }));
+    expect(sent.map((s) => s.body)).toEqual([{ markdown: '# Old with my edits' }]);
+  });
+
+  it('can load the newer draft instead, discarding the unsaved edits', async () => {
+    const { user } = await renderSpec([() => draftSaved('# Old')]);
+    await user.click(within(prdPanel()).getByRole('button', { name: 'Edit' }));
+    const editor = within(prdPanel()).getByLabelText('PRD markdown');
+    await user.type(editor, ' mine');
+    push(sparMessage('agent', 'Revised', T0 + 90_000), draftSaved('# Agent v2', T0 + 90_000));
+
+    await user.click(within(prdPanel()).getByRole('button', { name: /Load the newer draft/ }));
+    expect(editor).toHaveValue('# Agent v2');
+    expect(within(prdPanel()).getByRole('status')).toBeEmptyDOMElement();
+  });
+
+  it('follows a newer draft silently while editing without changes', async () => {
+    const { user } = await renderSpec([() => draftSaved('# Old')]);
+    await user.click(within(prdPanel()).getByRole('button', { name: 'Edit' }));
+    push(sparMessage('agent', 'Revised', T0 + 90_000), draftSaved('# Agent v2', T0 + 90_000));
+    expect(within(prdPanel()).getByLabelText('PRD markdown')).toHaveValue('# Agent v2');
+    expect(within(prdPanel()).getByRole('status')).toBeEmptyDOMElement();
+  });
+});

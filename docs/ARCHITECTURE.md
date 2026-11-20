@@ -82,7 +82,7 @@ src/
     state/           store.ts (snapshot + EventSource + reduce), api.ts (typed fetch)
     features/        board/, issue/, sparring/, inbox/, agents/, settings/, products/
     scene/           Scene3D.tsx (lazy), Workers.tsx, Building.tsx, assets/ (+LICENSE.md)
-    ui/              shared accessible primitives (Button, Dialog, Tabs, …)
+    ui/              shared accessible primitives (Button, Dialog, Markdown, Tabs, …)
 docker/              base.Dockerfile (vibecode/base), claude-code.Dockerfile
 scripts/             dev.mjs, update-prices.mjs, set-password.ts
 tests/
@@ -437,6 +437,8 @@ Never a shell. The child runs in its own process group, and timeout or abort sig
   <AppStoreProvider store={store}>                                         // AppStoreProvider.tsx: start() on mount, stop on unmount
   useApp(selector: (s: AppSnapshot) => T): T                               // store.ts; useSyncExternalStore; throws outside the provider
   getState(signal?): Promise<StateResponse>                                // api.ts; GET /api/state, zod-validated, failures → ApiError
+  sendSparMessage(productId, message, signal?): Promise<OkResponse>        // api.ts; POST /api/products/:id/spar (reply arrives as events)
+  savePrdDraft(productId, markdown, signal?): Promise<OkResponse>          // api.ts; PUT /api/products/:id/prd-draft
   ```
   - `createAppStore` holds the snapshot and the connection, with no React involved. `start()` connects, and the function it returns disconnects. It can be started again after a stop.
   - `AppStoreProvider` puts one store in context and keeps it connected while it is mounted.

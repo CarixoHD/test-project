@@ -389,3 +389,152 @@ a {
 .ui-dialog__close:hover {
   border-color: var(--line);
 }
+
+/* Hidden on screen, still read by assistive technology (e.g. live announcements). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.ui-markdown > :first-child {
+  margin-top: 0;
+}
+
+.ui-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.ui-markdown pre {
+  overflow-x: auto;
+}
+
+/* ---- spec tab ------------------------------------------------------------------------------ */
+
+.spec-tab {
+  display: grid;
+  gap: var(--space-6);
+  align-items: start;
+}
+
+@media (min-width: 64rem) {
+  .spec-tab {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+.spec-chat,
+.spec-prd {
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+
+.spec-chat__transcript {
+  display: grid;
+  gap: var(--space-3);
+  max-height: 32rem;
+  overflow-y: auto;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+
+.spec-chat__message {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  overflow-wrap: anywhere;
+}
+
+/* Who spoke is also written out; colour and offset only reinforce it. */
+.spec-chat__message--owner {
+  margin-left: var(--space-8);
+  background: var(--tone-info-fill);
+}
+
+.spec-chat__message--agent {
+  margin-right: var(--space-8);
+  background: var(--tone-neutral-fill);
+}
+
+.spec-chat__author {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+.spec-chat__text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.spec-chat__empty,
+.spec-prd__meta,
+.spec-prd__empty {
+  color: var(--ink-muted);
+}
+
+.spec-chat__thinking {
+  min-height: 1.5em;
+  margin: 0 0 var(--space-2);
+  font-style: italic;
+  color: var(--ink-muted);
+}
+
+.spec-chat__form textarea,
+.spec-prd__editor textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.spec-prd__editor textarea {
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-size: 0.875rem;
+}
+
+.spec-prd__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.spec-prd__header h2 {
+  margin: 0;
+}
+
+.spec-prd__meta {
+  margin: var(--space-1) 0 var(--space-3);
+  font-size: 0.875rem;
+}
+
+.spec-prd__notice:not(:empty) {
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  color: var(--tone-warning-ink);
+  background: var(--tone-warning-fill);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-control);
+}
+
+.spec-prd__notice p {
+  margin: 0 0 var(--space-2);
+}
+
+.spec-prd__actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.spec-prd__preview {
+  max-height: 40rem;
+  overflow-y: auto;
+}

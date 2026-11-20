@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { SPAR_MESSAGE_MAX, SparRequestSchema } from '../../../shared/dto.ts';
 import type { ProductId } from '../../../shared/ids.ts';
 import type { SparMessage } from '../../../shared/state.ts';
@@ -22,6 +22,13 @@ export function SparringChat({ productId }: { productId: ProductId }) {
   );
   const loaded = useApp((s) => s.loaded);
   const replies = countAgentReplies(messages);
+  const transcriptRef = useRef<HTMLOListElement>(null);
+
+  // Keep the newest message in view as the conversation grows.
+  useEffect(() => {
+    const list = transcriptRef.current;
+    if (list !== null) list.scrollTop = list.scrollHeight;
+  }, [messages.length]);
 
   // Replies present once the snapshot is in are history; only later ones are announced.
   const [historyReplies, setHistoryReplies] = useState<number | null>(loaded ? replies : null);
@@ -37,7 +44,7 @@ export function SparringChat({ productId }: { productId: ProductId }) {
   return (
     <section className="spec-chat" aria-labelledby="spec-chat-heading">
       <h2 id="spec-chat-heading">Sparring</h2>
-      <ol className="spec-chat__transcript" aria-label="Conversation">
+      <ol ref={transcriptRef} className="spec-chat__transcript" aria-label="Conversation">
         {messages.map((m) => (
           <li key={m.id} className={`spec-chat__message spec-chat__message--${m.role}`}>
             <p className="spec-chat__author">{m.role === 'owner' ? 'You' : 'Sparring agent'}</p>
