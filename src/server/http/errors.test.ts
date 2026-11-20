@@ -15,9 +15,7 @@ function setup() {
   app.get('/api/default', () => fail({ ok: false, reason: 'cannot start an issue' }));
   app.get('/api/missing', () => fail({ ok: false, reason: 'no such issue', code: 'not_found' }));
   app.get('/api/stale', () => fail({ ok: false, reason: 'stale rev', code: 'conflict' }));
-  app.get('/api/leak', () =>
-    fail({ ok: false, reason: `bad key ${SECRET}`, code: 'invalid' }),
-  );
+  app.get('/api/leak', () => fail({ ok: false, reason: `bad key ${SECRET}`, code: 'invalid' }));
   app.get('/api/zod', () => {
     z.object({ name: z.string() }).parse({});
     return new Response('unreachable');
@@ -63,7 +61,9 @@ describe('HTTP error mapping', () => {
   it('maps zod validation errors to 400 invalid', async () => {
     const { status, body } = await errorOf(await setup().request('/api/zod'));
     expect(status).toBe(400);
-    expect(body).toMatchObject({ error: { code: 'invalid', message: expect.stringContaining('name') } });
+    expect(body).toMatchObject({
+      error: { code: 'invalid', message: expect.stringContaining('name') },
+    });
   });
 
   it('maps unexpected errors to 500 internal without leaking secrets', async () => {

@@ -5,7 +5,7 @@ export interface AppDeps {
   store: Store;
   redactor: { redact(text: string): string };
   /** Directory with the built SPA. Served only when it exists. */
-  webRoot?: string;
+  webRoot?: string | undefined;
   /** SSE heartbeat interval; defaults to HEARTBEAT_MS. Tests shorten it. */
-  heartbeatMs?: number;
+  heartbeatMs?: number | undefined;
 }

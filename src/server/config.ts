@@ -38,9 +38,7 @@ export interface Config {
 export function parseConfig(env: Record<string, string | undefined>, home = homedir()): Config {
   const parsed = EnvSchema.safeParse(env);
   if (!parsed.success) {
-    const details = parsed.error.issues
-      .map((i) => `${i.path.join('.')}: ${i.message}`)
-      .join('; ');
+    const details = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
     throw new Error(`Invalid configuration: ${details}`);
   }
   const e = parsed.data;

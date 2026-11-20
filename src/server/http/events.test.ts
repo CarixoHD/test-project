@@ -26,7 +26,10 @@ function sseReader(res: Response) {
         if (remaining <= 0) throw new Error(`timed out; stream so far:\n${text}`);
         let timer: ReturnType<typeof setTimeout> | undefined;
         const timeout = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`timed out; stream so far:\n${text}`)), remaining);
+          timer = setTimeout(
+            () => reject(new Error(`timed out; stream so far:\n${text}`)),
+            remaining,
+          );
         });
         try {
           const chunk = await Promise.race([reader.read(), timeout]);
@@ -159,9 +162,7 @@ describe('GET /api/events', () => {
       expect(String(event?.seq)).toBe(msg.id);
     }
     expect(msgs.map((m) => m.id)).toEqual(['1', '2', '3', '4', '5']);
-    expect(store.eventsSince(0).map((e) => JSON.stringify(e))).toEqual(
-      msgs.map((m) => m.data[0]),
-    );
+    expect(store.eventsSince(0).map((e) => JSON.stringify(e))).toEqual(msgs.map((m) => m.data[0]));
     await sse.cancel();
   });
 
