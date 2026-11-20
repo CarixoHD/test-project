@@ -1,6 +1,11 @@
 import type { ProductState } from '../../../shared/state.ts';
+import { SparringChat } from './SparringChat.tsx';
 
-/** Spec tab of a product. Stub: the sparring chat and PRD editor replace it (own file on purpose). */
+/** Spec tab of a product: the sparring chat next to the live PRD draft. */
 export function SpecTab({ product }: { product: ProductState }) {
-  return <p>The spec chat and PRD editor for {product.name} will appear here.</p>;
+  return (
+    <div className="spec-tab">
+      <SparringChat productId={product.id} />
+    </div>
+  );
 }
