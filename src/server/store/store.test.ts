@@ -242,3 +242,25 @@ describe('store.q.sparMessages / prdDraft', () => {
     expect(store.q.prdDraft(P)).toMatchObject({ markdown: '# D', baseVersion: 0 });
   });
 });
+
+describe('store.q.prdVersionMarkdown', () => {
+  it('returns the markdown of an applied version, null for an unknown one', () => {
+    const { store } = setup();
+    store.commit(() => [productCreated()]);
+    for (const version of [1, 2]) {
+      store.commit(() => [
+        {
+          type: 'prd.applied',
+          productId: P,
+          entityId: null,
+          v: 1,
+          data: { version, markdown: `# v${String(version)}`, summary: null },
+        },
+      ]);
+    }
+
+    expect(store.q.prdVersionMarkdown(P, 1)).toBe('# v1');
+    expect(store.q.prdVersionMarkdown(P, 2)).toBe('# v2');
+    expect(store.q.prdVersionMarkdown(P, 3)).toBeNull();
+  });
+});

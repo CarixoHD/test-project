@@ -3,6 +3,7 @@ import { emptyState } from '../../shared/state.ts';
 import { IssueIdSchema } from '../../shared/ids.ts';
 import {
   addIssue,
+  applyPrdChanges,
   ApiError,
   cancelIssue,
   editIssue,
@@ -107,6 +108,15 @@ describe('api', () => {
     await expect(handoffProduct('p 1')).resolves.toEqual({ ok: true });
     const [url, init] = fetchFn.mock.calls[0] as FetchArgs;
     expect(url).toBe('/api/products/p%201/handoff');
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeUndefined();
+  });
+
+  it('applyPrdChanges POSTs without a body to the product apply-prd endpoint', async () => {
+    const fetchFn = stubFetch(json({ ok: true }));
+    await expect(applyPrdChanges('p 1')).resolves.toEqual({ ok: true });
+    const [url, init] = fetchFn.mock.calls[0] as FetchArgs;
+    expect(url).toBe('/api/products/p%201/apply-prd');
     expect(init.method).toBe('POST');
     expect(init.body).toBeUndefined();
   });

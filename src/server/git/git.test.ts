@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -64,6 +64,8 @@ describe('safety flags', () => {
     await git.mainSha('p1');
     await git.removeWorktree(wt.dir);
     await git.pruneWorktrees('p1');
+    await git.addWorktree('p1', 'r2');
+    await git.clearWorktrees();
     await gitVersionOk({ exec: recordingExec });
 
     expect(GIT_SAFETY_FLAGS).toEqual([
@@ -254,6 +256,47 @@ describe('worktrees', () => {
     await git.pruneWorktrees('p1');
 
     expect(await rawGit(['--git-dir', repoOf('p1'), 'worktree', 'list'])).not.toContain('r1');
+  });
+
+  it('clearWorktrees removes every worktree dir, stale entry and vibecode/* branch of every repo', async () => {
+    await git.initRepo('p2');
+    await git.addWorktree('p1', 'r1');
+    await git.addWorktree('p2', 'r2', 'main', { detached: true });
+    const gone = await git.addWorktree('p2', 'r3');
+    await rm(gone.dir, { recursive: true, force: true });
+    await mkdir(join(dataDir, 'worktrees', 'junk'));
+    await rawGit(['--git-dir', repoOf('p1'), 'branch', 'owner-branch', 'main']);
+
+    await git.clearWorktrees();
+
+    expect(await readdir(join(dataDir, 'worktrees'))).toEqual([]);
+    for (const p of ['p1', 'p2']) {
+      expect(await rawGit(['--git-dir', repoOf(p), 'worktree', 'list'])).not.toMatch(/r\d/);
+    }
+    const heads = (p: string) =>
+      rawGit(['--git-dir', repoOf(p), 'for-each-ref', '--format=%(refname:short)', 'refs/heads/']);
+    expect(await heads('p1')).toBe('main\nowner-branch');
+    expect(await heads('p2')).toBe('main');
+  });
+});
+
+describe('listRepos and removeRepo', () => {
+  it('lists the ids of `<id>.git` directories only, sorted', async () => {
+    expect(await git.listRepos()).toEqual([]);
+    await git.initRepo('p2');
+    await git.initRepo('p1');
+    await writeFile(join(dataDir, 'repos', 'file.git'), 'not a dir');
+    await mkdir(join(dataDir, 'repos', 'plain-dir'));
+    await mkdir(join(dataDir, 'repos', '-bad.git'));
+    expect(await git.listRepos()).toEqual(['p1', 'p2']);
+  });
+
+  it('removeRepo deletes the bare repo and is a no-op when it is gone', async () => {
+    await git.initRepo('p1');
+    await git.removeRepo('p1');
+    expect(existsSync(repoOf('p1'))).toBe(false);
+    await expect(git.removeRepo('p1')).resolves.toBeUndefined();
+    await expect(git.removeRepo('../x')).rejects.toThrow('Invalid product id');
   });
 });
 

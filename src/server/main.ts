@@ -21,6 +21,7 @@ import {
   sparTurn,
   type OrchestratorDeps,
 } from './pipeline/index.ts';
+import { recover } from './recovery/index.ts';
 import { createPreviews, selectRuntime } from './sandbox/index.ts';
 import { createSecrets, redactor } from './security/index.ts';
 import { createStore, type Store } from './store/index.ts';
@@ -121,6 +122,18 @@ export async function start(
       console.error(redactor.redact(`sparring turn failed: ${String(err)}`));
     },
   });
+  // Restart recovery (§4.11): nothing of the previous process is live; reconcile it before the
+  // scheduler can start new runs.
+  await recover({
+    store,
+    db,
+    git,
+    runtime,
+    clock,
+    log: (line) => {
+      console.warn(redactor.redact(line));
+    },
+  });
   const previews = createPreviews({
     store,
     ids,
@@ -130,7 +143,19 @@ export async function start(
     redactor,
     dataDir: config.dataDir,
   });
-  const app = createApp({ store, ids, git, redactor, webRoot, settings, sparring, previews });
+  const app = createApp({
+    store,
+    ids,
+    git,
+    redactor,
+    webRoot,
+    settings,
+    sparring,
+    previews,
+    // apply-prd commits docs/PRD.md under the merge lock; `scheduler` is created below and read
+    // only when a request arrives.
+    withMergeLock: (productId, fn) => scheduler.withMergeLock(productId, fn),
+  });
   // The orchestrator merges under the scheduler's lock and the scheduler runs the orchestrator:
   // the lock closure reads `scheduler` only during a run, after it has been created below.
   const orchestrator = createOrchestrator({

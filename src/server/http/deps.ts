@@ -1,4 +1,4 @@
-import type { IdGen } from '../../shared/ids.ts';
+import type { IdGen, ProductId } from '../../shared/ids.ts';
 import type { AccountSettings, Sparring } from '../commands/index.ts';
 import type { Git } from '../git/index.ts';
 import type { Previews } from '../sandbox/index.ts';
@@ -12,6 +12,8 @@ export interface AppDeps {
   redactor: { redact(text: string): string };
   /** Account settings (GET|PUT /api/settings); those routes exist only when given. */
   settings?: AccountSettings | undefined;
+  /** The scheduler's per-product merge lock; apply-prd commits docs/PRD.md under it. */
+  withMergeLock?: (<T>(productId: ProductId, fn: () => Promise<T>) => Promise<T>) | undefined;
   /** Sparring turns (POST /spar). Optional until main.ts wires the pipeline; absent → 500. */
   sparring?: Sparring | undefined;
   /** Preview of main (POST|DELETE /api/products/:id/preview); those routes exist only when given. */

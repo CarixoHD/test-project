@@ -84,3 +84,4 @@ cancelled; a dependency on a cancelled issue can never be satisfied.
 ## Why you are running now
 
 {{triggers}}
+{{prdChange}}

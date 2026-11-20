@@ -29,8 +29,11 @@ export type CommandDeps = { store: Store; ids: IdGen };
 export type ApplyPlanOptions = {
   /** Validated `.vibecode/project.json` → `product.settings_changed{project}` in the same commit. */
   project?: ProjectConfig;
-  /** Set for replans (PRD v > 1): `inbox.created{kind:'replan'}` with this text, same commit. */
-  replanSummary?: string;
+  /**
+   * Set for replans (PRD v > 1): `prd.summarized{version, summary}` stores the plan summary on
+   * that PRD version and `inbox.created{kind:'replan'}` posts it, both in the same commit.
+   */
+  replan?: { version: number; summary: string };
 };
 
 export type ApplyPlanResult =
@@ -81,7 +84,7 @@ export function applyPlan(
   const events = deps.store.commit((tx) => {
     built = buildPlan(tx.q, deps.ids, productId, parsed.data, consumedSeq, {
       ...(project === undefined ? {} : { project: project.data }),
-      ...(opts.replanSummary === undefined ? {} : { replanSummary: opts.replanSummary }),
+      ...(opts.replan === undefined ? {} : { replan: opts.replan }),
     });
     return built.ok ? built.drafts : [];
   });
@@ -145,7 +148,14 @@ function buildPlan(
       data: { project: opts.project },
     });
   }
-  if (opts.replanSummary !== undefined) {
+  if (opts.replan !== undefined) {
+    board.drafts.push({
+      type: 'prd.summarized',
+      productId,
+      entityId: null,
+      v: 1,
+      data: { version: opts.replan.version, summary: opts.replan.summary },
+    });
     board.drafts.push({
       type: 'inbox.created',
       productId,
@@ -154,7 +164,7 @@ function buildPlan(
       data: {
         kind: 'replan',
         title: `Plan updated for ${product.name}`,
-        body: opts.replanSummary,
+        body: opts.replan.summary,
         link: `/products/${productId}`,
       },
     });

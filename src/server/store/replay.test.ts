@@ -300,6 +300,7 @@ function commands(): EventDraft[][] {
     ],
     [onProduct('prd.draft_saved', { markdown: '# Todo v2', baseVersion: 1 })],
     [onProduct('prd.applied', { version: 2, markdown: '# Todo v2!', summary: 'Adds sharing' })],
+    [onProduct('prd.summarized', { version: 2, summary: 'Planned sharing issues' })],
     [onProduct('product.phase_changed', { phase: 'complete' })],
   ];
 }

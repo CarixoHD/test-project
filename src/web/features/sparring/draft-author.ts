@@ -34,3 +34,17 @@ export function describeAuthor(author: DraftAuthor): string {
       return `when PRD v${String(author.version)} was applied`;
   }
 }
+
+/**
+ * Whether the draft differs from the latest applied PRD version. `prd.applied` resets the draft
+ * to that version at that version's time; any later save counts as a change (the server
+ * refuses an apply whose text is unchanged).
+ */
+export function hasUnappliedChanges(
+  draft: PrdDraft | null,
+  versions: readonly PrdVersionMeta[],
+): boolean {
+  const latest = versions.at(-1);
+  if (draft === null || latest === undefined) return false;
+  return !(draft.baseVersion === latest.version && draft.updatedAt === latest.createdAt);
+}
