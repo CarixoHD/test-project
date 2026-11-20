@@ -1,5 +1,6 @@
 export { createApp } from './app.ts';
 export type { AppDeps } from './deps.ts';
+export { readJson } from './body.ts';
 export {
   ERROR_STATUS,
   fail,
