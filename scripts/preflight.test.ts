@@ -82,4 +82,22 @@ describe('preflight CLI', () => {
     expect(result.stderr).toContain(process.execPath);
     expect(result.stderr).toContain(process.version);
   });
+
+  it('dev.mjs refuses to start with the same message', () => {
+    const dev = fileURLToPath(new URL('./dev.mjs', import.meta.url));
+    const result = spawnSync(process.execPath, ['--no-experimental-strip-types', dev], {
+      encoding: 'utf8',
+      env: { ...env, PORT: '1' },
+      timeout: 10_000,
+    });
+    const expected = nodeProblem({
+      version: process.version,
+      typescript: false,
+      execPath: process.execPath,
+      nodeOptions: '',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain(expected);
+  });
 });
