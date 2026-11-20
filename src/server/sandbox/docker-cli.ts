@@ -40,14 +40,29 @@ const MANAGE_TIMEOUT_MS = 60_000;
 const SIGNAL_TIMEOUT_MS = 10_000;
 const DEFAULT_KILL_GRACE_MS = 5_000;
 /**
- * In-container wrapper for execs with a `killSignal`: records the shell's pid in the file `$1`,
- * then execs the argv (same pid). A signal to the host `docker exec` client is not forwarded
- * into the container (non-TTY), so stops are delivered there with KILL_SCRIPT instead.
+ * In-container wrapper around every Sandbox.exec. It records the shell's pid in the file `$1`,
+ * gives up if a stop already arrived (cancel marker `$1.cancel`), then execs the argv: same pid,
+ * same stdio, same exit code. A `docker exec` process leads its own process group (runc calls
+ * setsid), so KILL_SCRIPT can signal the command's whole tree. A signal to the host `docker exec`
+ * client is not forwarded into the container (non-TTY), hence this mechanism.
  */
-const PID_WRAPPER = 'echo $$ > "$1"; shift; exec "$@"';
-/** `kill -s <SIG> <pid from file>`, run in the container by a separate `docker exec`. */
-const KILL_SCRIPT = 'kill -s "$1" "$(cat "$2")"';
+const EXEC_WRAPPER = 'echo $$ > "$1"; if [ -e "$1.cancel" ]; then exit 143; fi; shift; exec "$@"';
+/**
+ * Run in the container by a separate `docker exec` with `<SIG> <pidFile>`. It writes the cancel
+ * marker BEFORE reading the pid file, while the wrapper writes the pid file before checking the
+ * marker: so either the wrapper sees the marker and never starts the command, or this sees the
+ * pid. It signals the process group, falls back to the pid alone, and succeeds when the process
+ * is already gone. After SIGKILL it removes the pid file (the marker stays for a late wrapper).
+ */
+const KILL_SCRIPT =
+  ': > "$2.cancel" || exit 1; pid=$(cat "$2" 2>/dev/null) || exit 0; [ -n "$pid" ] || exit 0; ' +
+  'case $pid in *[!0-9]*) echo "bad pid file" >&2; exit 1;; esac; ' +
+  'kill -s "$1" -- "-$pid" 2>/dev/null || kill -s "$1" "$pid" 2>/dev/null || ! kill -0 "$pid" 2>/dev/null || exit 1; ' +
+  'if [ "$1" = KILL ]; then rm -f "$2"; fi';
 const SIGNAL_NAMES = { SIGINT: 'INT', SIGTERM: 'TERM' } as const;
+/** The util/exec timeout of the client is a backstop behind our own deadline + grace period. */
+const CLIENT_BACKSTOP_MS = 10_000;
+const MAX_TIMER_MS = 2 ** 31 - 1;
 const BUILD_TIMEOUT_MS = 30 * 60_000;
 const MAX_STREAMED = 10 * 1024 * 1024;
 const MAX_ERROR_DETAIL = 2000;
@@ -66,6 +81,8 @@ export type DockerCliRuntimeOptions = {
   baseImageDir?: string | undefined;
   /** After an in-container stop signal, how long until SIGKILL; default 5000. */
   killGraceMs?: number | undefined;
+  /** Warnings (failed in-container kills), already redacted; default console.warn. */
+  log?: ((line: string) => void) | undefined;
   /** Injected so unit tests can stub util/exec and assert argv. */
   exec?: typeof defaultExec;
   spawnStream?: typeof defaultSpawnStream;
@@ -76,6 +93,7 @@ export class DockerCliRuntime implements ContainerRuntime {
   readonly #exec: typeof defaultExec;
   readonly #spawnStream: typeof defaultSpawnStream;
   readonly #docker: string;
+  readonly #log: (line: string) => void;
   readonly #builds = new Map<string, Promise<void>>();
   #networks: Promise<void> | undefined;
 
@@ -84,6 +102,7 @@ export class DockerCliRuntime implements ContainerRuntime {
     this.#exec = o.exec ?? defaultExec;
     this.#spawnStream = o.spawnStream ?? defaultSpawnStream;
     this.#docker = o.docker ?? 'docker';
+    this.#log = o.log ?? ((line: string) => console.warn(line));
   }
 
   async available(): Promise<boolean> {
@@ -298,67 +317,104 @@ export class DockerCliRuntime implements ContainerRuntime {
   #sandbox(name: string): Sandbox {
     return {
       name,
-      exec: (argv, o) =>
-        o.killSignal === undefined
-          ? this.#run(['exec', '-i', '-w', WORKSPACE, name, ...argv], o)
-          : this.#execSignalled(name, argv, o, o.killSignal),
+      exec: (argv, o) => this.#execInContainer(name, argv, o),
       close: () => this.remove(name),
     };
   }
 
   /**
-   * An exec whose abort delivers `killSignal` to the process inside the container (by pid
-   * file), then after the grace period SIGKILL there and to the host client.
+   * Every Sandbox.exec runs under EXEC_WRAPPER. On timeout or abort, `killSignal` (default
+   * SIGTERM) goes to the command's process group inside the container, then after the grace
+   * period SIGKILL there and to the host client. The deadline is ours, not util/exec's, so a
+   * timeout takes the same in-container path as an abort.
    */
-  async #execSignalled(
-    name: string,
-    argv: readonly string[],
-    o: ExecOpts,
-    killSignal: keyof typeof SIGNAL_NAMES,
-  ): Promise<ExecResult> {
+  async #execInContainer(name: string, argv: readonly string[], o: ExecOpts): Promise<ExecResult> {
     if (o.signal?.aborted === true) return { ...ABORTED };
     const pidFile = `/tmp/vibecode-exec-${randomUUID()}.pid`;
+    const firstSignal = SIGNAL_NAMES[o.killSignal ?? 'SIGTERM'];
+    const graceMs = this.#o.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
     const client = new AbortController();
+    const kills: Promise<void>[] = [];
+    let stoppedBy: 'timeout' | 'abort' | undefined;
     let grace: NodeJS.Timeout | undefined;
-    let stopped = false;
-    const onAbort = (): void => {
-      stopped = true;
-      void this.#signalInContainer(name, pidFile, SIGNAL_NAMES[killSignal]);
+    const stop = (why: 'timeout' | 'abort'): void => {
+      if (stoppedBy !== undefined) return;
+      stoppedBy = why;
+      kills.push(this.#signalInContainer(name, pidFile, firstSignal, why));
       grace = setTimeout(() => {
-        void this.#signalInContainer(name, pidFile, 'KILL');
+        kills.push(this.#signalInContainer(name, pidFile, 'KILL', why));
         client.abort();
-      }, this.#o.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
+      }, graceMs);
     };
+    const onAbort = (): void => stop('abort');
+    const deadline = setTimeout(() => stop('timeout'), Math.min(o.timeoutMs, MAX_TIMER_MS));
     o.signal?.addEventListener('abort', onAbort, { once: true });
     try {
       const r = await this.#run(
-        ['exec', '-i', '-w', WORKSPACE, name, 'sh', '-c', PID_WRAPPER, 'sh', pidFile, ...argv],
-        { ...o, signal: client.signal },
+        ['exec', '-i', '-w', WORKSPACE, name, 'sh', '-c', EXEC_WRAPPER, 'sh', pidFile, ...argv],
+        {
+          ...o,
+          signal: client.signal,
+          timeoutMs: Math.min(o.timeoutMs + graceMs + CLIENT_BACKSTOP_MS, MAX_TIMER_MS),
+        },
         'SIGKILL',
       );
-      return { ...r, aborted: r.aborted || stopped };
+      return {
+        ...r,
+        timedOut: stoppedBy === 'timeout' || (stoppedBy === undefined && r.timedOut),
+        aborted: stoppedBy === 'abort' || (stoppedBy === undefined && r.aborted),
+      };
     } finally {
+      clearTimeout(deadline);
       clearTimeout(grace);
       o.signal?.removeEventListener('abort', onAbort);
+      await Promise.all(kills);
     }
   }
 
-  /** Best effort: the process may already be gone, or not have written its pid yet. */
-  async #signalInContainer(name: string, pidFile: string, sig: string): Promise<void> {
+  /**
+   * Signals the exec's process group inside the container (see KILL_SCRIPT). Never throws:
+   * the grace-period SIGKILL of the client still applies, but a failure is logged with context.
+   */
+  async #signalInContainer(name: string, pidFile: string, sig: string, why: string): Promise<void> {
+    let failure: string;
     try {
-      await this.#exec(this.#docker, ['exec', name, 'sh', '-c', KILL_SCRIPT, 'sh', sig, pidFile], {
-        timeoutMs: SIGNAL_TIMEOUT_MS,
-      });
-    } catch {
-      // The grace-period SIGKILL of the client still applies.
+      const r = await this.#exec(
+        this.#docker,
+        ['exec', name, 'sh', '-c', KILL_SCRIPT, 'sh', sig, pidFile],
+        { timeoutMs: SIGNAL_TIMEOUT_MS },
+      );
+      if (r.code === 0) return;
+      failure = r.timedOut ? 'timed out' : detail(r);
+    } catch (err) {
+      failure = err instanceof Error ? err.message : String(err);
     }
+    this.#log(
+      redactor.redact(
+        `Could not send SIG${sig} inside container ${name} (after ${why}) to the process ` +
+          `group in ${pidFile}: ${failure}`,
+      ),
+    );
   }
 
-  /** A command whose output belongs to the caller (exec / runOnce). */
+  /**
+   * A command whose output belongs to the caller (exec / runOnce). A stopped daemon becomes
+   * DOCKER_NOT_RUNNING (an infra error), never a command result such as a failed check.
+   */
   async #run(
     argv: string[],
     o: ExecOpts,
     clientKillSignal: NodeJS.Signals = 'SIGINT',
+  ): Promise<ExecResult> {
+    const r = await this.#runRaw(argv, o, clientKillSignal);
+    if (daemonDown(r)) throw new Error(DOCKER_NOT_RUNNING);
+    return r;
+  }
+
+  async #runRaw(
+    argv: string[],
+    o: ExecOpts,
+    clientKillSignal: NodeJS.Signals,
   ): Promise<ExecResult> {
     const base: ExecOptions = {
       input: o.stdin,
@@ -487,6 +543,11 @@ function isCode(err: unknown, code: string): boolean {
 
 function unavailable(err: unknown): unknown {
   return err instanceof ExecError && err.code === 'ENOENT' ? new Error(DOCKER_NOT_RUNNING) : err;
+}
+
+/** The docker CLI exits 125 (run) or 1 (exec) with a connection error when the daemon is down. */
+function daemonDown(r: { code: number | null; stderr: string }): boolean {
+  return (r.code === 125 || r.code === 1) && DAEMON_DOWN.test(r.stderr);
 }
 
 function assertContainerName(name: string): void {

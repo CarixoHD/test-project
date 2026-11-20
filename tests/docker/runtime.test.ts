@@ -147,4 +147,23 @@ describe('DockerCliRuntime against a real Docker daemon', () => {
       await sb.close();
     }
   });
+
+  it('leaves no process behind in the container after an exec timeout', async () => {
+    const sb = await rt.open(await spec());
+    try {
+      const r = await sb.exec(sh('sleep 300; echo never'), { timeoutMs: 1000 });
+      expect(r.timedOut).toBe(true);
+      expect(r.stdout).not.toContain('never');
+      // `sleep 300` is a child of the exec's shell, so only a process-group kill reaches it.
+      const ps = await sb.exec(
+        sh('for f in /proc/[0-9]*/cmdline; do tr "\\0" " " < "$f"; echo; done'),
+        T,
+      );
+      expect(ps.code).toBe(0);
+      expect(ps.stdout).toContain('sleep infinity');
+      expect(ps.stdout).not.toContain('sleep 300');
+    } finally {
+      await sb.close();
+    }
+  }, 60_000);
 });
