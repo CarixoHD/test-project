@@ -2,7 +2,7 @@
 // docker CLI through util/exec only (argv arrays, never a shell). Every container is created from
 // buildRunArgs; before that, the worktree is resolved with realpath and confined to
 // realpath(<dataDir>/worktrees), because Docker follows symlinks in bind sources.
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { lstat, readFile, realpath, truncate, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ProjectConfigSchema } from '../../shared/agent-results.ts';
@@ -36,6 +36,17 @@ const CLAUDE_DOCKERFILE = 'claude-code.Dockerfile';
 export const DEFAULT_BASE_IMAGE_DIR = path.resolve(import.meta.dirname, '../../../docker');
 
 const MANAGE_TIMEOUT_MS = 60_000;
+const SIGNAL_TIMEOUT_MS = 10_000;
+const DEFAULT_KILL_GRACE_MS = 5_000;
+/**
+ * In-container wrapper for execs with a `killSignal`: records the shell's pid in the file `$1`,
+ * then execs the argv (same pid). A signal to the host `docker exec` client is not forwarded
+ * into the container (non-TTY), so stops are delivered there with KILL_SCRIPT instead.
+ */
+const PID_WRAPPER = 'echo $$ > "$1"; shift; exec "$@"';
+/** `kill -s <SIG> <pid from file>`, run in the container by a separate `docker exec`. */
+const KILL_SCRIPT = 'kill -s "$1" "$(cat "$2")"';
+const SIGNAL_NAMES = { SIGINT: 'INT', SIGTERM: 'TERM' } as const;
 const BUILD_TIMEOUT_MS = 30 * 60_000;
 const MAX_STREAMED = 10 * 1024 * 1024;
 const MAX_ERROR_DETAIL = 2000;
@@ -52,6 +63,8 @@ export type DockerCliRuntimeOptions = {
   docker?: string | undefined;
   /** Directory holding base.Dockerfile and claude-code.Dockerfile; default the repo's docker/. */
   baseImageDir?: string | undefined;
+  /** After an in-container stop signal, how long until SIGKILL; default 5000. */
+  killGraceMs?: number | undefined;
   /** Injected so unit tests can stub util/exec and assert argv. */
   exec?: typeof defaultExec;
   spawnStream?: typeof defaultSpawnStream;
@@ -273,18 +286,71 @@ export class DockerCliRuntime implements ContainerRuntime {
   #sandbox(name: string): Sandbox {
     return {
       name,
-      exec: (argv, o) => this.#run(['exec', '-i', '-w', WORKSPACE, name, ...argv], o),
+      exec: (argv, o) =>
+        o.killSignal === undefined
+          ? this.#run(['exec', '-i', '-w', WORKSPACE, name, ...argv], o)
+          : this.#execSignalled(name, argv, o, o.killSignal),
       close: () => this.remove(name),
     };
   }
 
+  /**
+   * An exec whose abort delivers `killSignal` to the process inside the container (by pid
+   * file), then after the grace period SIGKILL there and to the host client.
+   */
+  async #execSignalled(
+    name: string,
+    argv: readonly string[],
+    o: ExecOpts,
+    killSignal: keyof typeof SIGNAL_NAMES,
+  ): Promise<ExecResult> {
+    if (o.signal?.aborted === true) return { ...ABORTED };
+    const pidFile = `/tmp/vibecode-exec-${randomUUID()}.pid`;
+    const client = new AbortController();
+    let grace: NodeJS.Timeout | undefined;
+    const onAbort = (): void => {
+      void this.#signalInContainer(name, pidFile, SIGNAL_NAMES[killSignal]);
+      grace = setTimeout(() => {
+        void this.#signalInContainer(name, pidFile, 'KILL');
+        client.abort();
+      }, this.#o.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
+    };
+    o.signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const r = await this.#run(
+        ['exec', '-i', '-w', WORKSPACE, name, 'sh', '-c', PID_WRAPPER, 'sh', pidFile, ...argv],
+        { ...o, signal: client.signal },
+        'SIGKILL',
+      );
+      return { ...r, aborted: r.aborted || o.signal?.aborted === true };
+    } finally {
+      clearTimeout(grace);
+      o.signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /** Best effort: the process may already be gone, or not have written its pid yet. */
+  async #signalInContainer(name: string, pidFile: string, sig: string): Promise<void> {
+    try {
+      await this.#exec(this.#docker, ['exec', name, 'sh', '-c', KILL_SCRIPT, 'sh', sig, pidFile], {
+        timeoutMs: SIGNAL_TIMEOUT_MS,
+      });
+    } catch {
+      // The grace-period SIGKILL of the client still applies.
+    }
+  }
+
   /** A command whose output belongs to the caller (exec / runOnce). */
-  async #run(argv: string[], o: ExecOpts): Promise<ExecResult> {
+  async #run(
+    argv: string[],
+    o: ExecOpts,
+    clientKillSignal: NodeJS.Signals = 'SIGINT',
+  ): Promise<ExecResult> {
     const base: ExecOptions = {
       input: o.stdin,
       timeoutMs: o.timeoutMs,
       signal: o.signal,
-      killSignal: 'SIGINT',
+      killSignal: clientKillSignal,
     };
     try {
       if (o.onLine === undefined) {
@@ -428,6 +494,15 @@ function detail(r: UtilExecResult): string {
   );
   return redactor.redact(text);
 }
+
+const ABORTED: ExecResult = {
+  code: null,
+  stdout: '',
+  stderr: '',
+  timedOut: false,
+  aborted: true,
+  truncated: false,
+};
 
 function toResult(r: UtilExecResult): ExecResult {
   return {

@@ -516,6 +516,128 @@ describe('open and Sandbox', () => {
     expect(r).toMatchObject({ code: 3, stdout: 'a\nb\n', stderr: 'oops\n' });
   });
 
+  describe('killSignal: delivered inside the container', () => {
+    /**
+     * A docker stub whose `docker exec -i` (the agent process) keeps running until either an
+     * in-container `kill -s INT` arrives (the process ends its turn) or the client is aborted.
+     */
+    function hangingDocker(o: { endsOnSignal: boolean }) {
+      const calls: Call[] = [];
+      const done = (aborted: boolean) =>
+        ({ code: aborted ? null : 0, signal: null, timedOut: false, aborted }) as const;
+      let finish: ((aborted: boolean) => void) | undefined;
+      const exec = (_cmd: string, argv: readonly string[], opts: ExecOptions) => {
+        calls.push({ argv: [...argv], o: opts, streamed: false });
+        if (argv[0] === 'exec' && argv[1] === '-i') {
+          return new Promise<ExecResult>((resolve) => {
+            finish = (aborted) => {
+              resolve({ ...done(aborted), stdout: 'partial\n', stderr: '', truncated: false });
+            };
+            opts.signal?.addEventListener('abort', () => finish?.(true), { once: true });
+          });
+        }
+        if (argv[0] === 'exec' && argv.includes('INT') && o.endsOnSignal) finish?.(false);
+        return Promise.resolve({ ...done(false), stdout: '', stderr: '', truncated: false });
+      };
+      const spawnStream = () => Promise.reject(new Error('not used'));
+      return { calls, exec, spawnStream, argvs: () => calls.map((c) => c.argv) };
+    }
+
+    const signalled = (stub: { killGraceMs?: number; docker: ReturnType<typeof hangingDocker> }) =>
+      new DockerCliRuntime({
+        dataDir,
+        uid: 1000,
+        gid: 1000,
+        exec: stub.docker.exec,
+        spawnStream: stub.docker.spawnStream,
+        killGraceMs: stub.killGraceMs ?? 60_000,
+      });
+
+    it('records the pid in the container and sends SIGINT there on abort', async () => {
+      const docker = hangingDocker({ endsOnSignal: true });
+      const sb = await signalled({ docker }).open(spec());
+      const ac = new AbortController();
+      const running = sb.exec(['claude', '-p'], {
+        timeoutMs: 60_000,
+        signal: ac.signal,
+        killSignal: 'SIGINT',
+      });
+      await Promise.resolve();
+      const [, main] = docker.argvs();
+      expect(main?.slice(0, 7)).toEqual([
+        'exec',
+        '-i',
+        '-w',
+        '/workspace',
+        'vibecode-01RUN',
+        'sh',
+        '-c',
+      ]);
+      const pidFile = main?.[9] ?? '';
+      expect(pidFile).toMatch(/^\/tmp\/vibecode-exec-[0-9a-f-]{36}\.pid$/);
+      expect(main?.slice(8)).toEqual(['sh', pidFile, 'claude', '-p']);
+      // The wrapper records its pid, then execs the argv (same pid, so the signal reaches it).
+      expect(main?.[7]).toContain('$$');
+      expect(main?.[7]).toContain('exec "$@"');
+
+      ac.abort();
+      const r = await running;
+
+      expect(docker.argvs()[2]).toEqual([
+        'exec',
+        'vibecode-01RUN',
+        'sh',
+        '-c',
+        expect.stringContaining('kill -s'),
+        'sh',
+        'INT',
+        pidFile,
+      ]);
+      expect(docker.argvs()).toHaveLength(3); // ended on SIGINT: no SIGKILL fallback
+      expect(r).toMatchObject({ aborted: true, stdout: 'partial\n' });
+    });
+
+    it('falls back to SIGKILL in the container and kills the client after the grace period', async () => {
+      const docker = hangingDocker({ endsOnSignal: false });
+      const sb = await signalled({ docker, killGraceMs: 10 }).open(spec());
+      const ac = new AbortController();
+      const running = sb.exec(['claude'], {
+        timeoutMs: 60_000,
+        signal: ac.signal,
+        killSignal: 'SIGINT',
+      });
+      await Promise.resolve();
+      ac.abort();
+      const r = await running;
+
+      const pidFile = docker.argvs()[1]?.[9];
+      const kills = docker
+        .argvs()
+        .slice(2)
+        .map((a) => a.slice(-2));
+      expect(kills).toEqual([
+        ['INT', pidFile],
+        ['KILL', pidFile],
+      ]);
+      expect(docker.calls[1]?.o.killSignal).toBe('SIGKILL');
+      expect(r.aborted).toBe(true);
+    });
+
+    it('does not start the process when the signal is already aborted', async () => {
+      const docker = hangingDocker({ endsOnSignal: true });
+      const sb = await signalled({ docker }).open(spec());
+      const ac = new AbortController();
+      ac.abort();
+      const r = await sb.exec(['claude'], {
+        timeoutMs: 1000,
+        signal: ac.signal,
+        killSignal: 'SIGINT',
+      });
+      expect(r).toMatchObject({ code: null, aborted: true });
+      expect(docker.argvs()).toHaveLength(1);
+    });
+  });
+
   it('reports timeouts and aborts', async () => {
     const stub = stubDocker((argv) =>
       argv[0] === 'exec'
