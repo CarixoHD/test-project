@@ -360,10 +360,7 @@ describe('applyPlan: invalid plans commit nothing', () => {
     {
       name: 'cancel then create depending on it in the same plan',
       reason: /create "x": dependency ".*" is cancelled/,
-      ops: ({ a }) => [
-        { op: 'cancel', id: a, reason: 'gone' },
-        create('x', [a]),
-      ],
+      ops: ({ a }) => [{ op: 'cancel', id: a, reason: 'gone' }, create('x', [a])],
     },
     {
       name: 'a valid op followed by an invalid one',
