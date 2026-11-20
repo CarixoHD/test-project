@@ -23,6 +23,8 @@ import {
 } from '../util/exec.ts';
 import { redactor } from '../security/index.ts';
 import {
+  AddressPoolsExhaustedError,
+  DOCKER_ADDRESS_POOLS_EXHAUSTED,
   DOCKER_NOT_RUNNING,
   DockerCliRuntime,
   EGRESS_ICC_ENABLED,
@@ -415,6 +417,92 @@ describe('ensureNetworks', () => {
         .map(isProbe),
     ).toEqual([true]);
     expect(stub.argvs()).not.toContainEqual(['network', 'inspect', 'vibecode-preview']);
+  });
+
+  /** The daemon's stderr when every default address pool is in use (Docker 29). */
+  const POOLS_EXHAUSTED =
+    'Error response from daemon: could not find an available, non-overlapping IPv4 address ' +
+    'pool among the defaults to assign to the network';
+
+  function expectPoolsExhausted(err: unknown) {
+    expect(err).toBeInstanceOf(AddressPoolsExhaustedError);
+    expect(err).toMatchObject({ code: DOCKER_ADDRESS_POOLS_EXHAUSTED });
+    expect(err).not.toBeInstanceOf(IccUnsupportedError);
+    const message = err instanceof Error ? err.message : '';
+    expect(message).toContain('run out of network address ranges');
+    expect(message).toContain('docker network prune');
+    expect(message).toContain('docker network ls');
+    expect(message).toContain('default-address-pools');
+    expect(message).toContain('daemon.json');
+    expect(message).toContain('non-overlapping IPv4 address pool');
+  }
+
+  it('rejects with AddressPoolsExhaustedError when the probe finds no free address pool', async () => {
+    const secret = 'sk-ant-api03-pools-redaction-test-secret-0123456789';
+    redactor.register(secret);
+    const stub = stubDocker((argv) =>
+      argv[1] === 'create' && isProbe(argv)
+        ? { code: 1, stderr: `${POOLS_EXHAUSTED} ${secret}` }
+        : healthyDocker(argv),
+    );
+    const lines: string[] = [];
+    const err = await runtime(stub, { log: (l) => lines.push(l) })
+      .ensureNetworks()
+      .catch((e: unknown) => e);
+    expectPoolsExhausted(err);
+    expect(err instanceof Error ? err.message : '').not.toContain(secret);
+    // Probe cleanup unchanged: one best-effort rm, no warning for a never-created probe.
+    const argvs = stub.argvs();
+    expect(argvs.filter((a) => a[1] === 'rm').map(isProbe)).toEqual([true]);
+    expect(argvs.filter((a) => a.includes('vibecode-egress'))).toEqual([EGRESS_OPTIONS_ARGV]);
+    expect(argvs).not.toContainEqual(['network', 'inspect', 'vibecode-preview']);
+    expect(lines).toEqual([]);
+  });
+
+  it('rejects with AddressPoolsExhaustedError when creating vibecode-egress finds no pool', async () => {
+    const stub = stubDocker((argv) => {
+      if (argv[1] === 'inspect') return { code: 1, stderr: 'network not found' };
+      if (argv[1] === 'create' && argv.includes('vibecode-egress')) {
+        return { code: 1, stderr: POOLS_EXHAUSTED };
+      }
+      return {};
+    });
+    const err = await runtime(stub)
+      .ensureNetworks()
+      .catch((e: unknown) => e);
+    expectPoolsExhausted(err);
+    // No ICC-on retry, and nothing created after it.
+    const creates = stub.argvs().filter((a) => a[1] === 'create' && !isProbe(a));
+    expect(creates).toEqual([
+      [
+        'network',
+        'create',
+        '--driver',
+        'bridge',
+        '--opt',
+        'com.docker.network.bridge.enable_icc=false',
+        'vibecode-egress',
+      ],
+    ]);
+    expect(stub.argvs()).not.toContainEqual(['network', 'inspect', 'vibecode-preview']);
+  });
+
+  it('rejects with AddressPoolsExhaustedError when creating vibecode-preview finds no pool', async () => {
+    const stub = stubDocker((argv) => {
+      if (argv[1] === 'inspect' && argv.includes('vibecode-preview')) {
+        return { code: 1, stderr: 'network not found' };
+      }
+      if (argv[1] === 'create' && argv.includes('vibecode-preview')) {
+        return { code: 1, stderr: POOLS_EXHAUSTED };
+      }
+      return healthyDocker(argv);
+    });
+    const err = await runtime(stub)
+      .ensureNetworks()
+      .catch((e: unknown) => e);
+    expectPoolsExhausted(err);
+    const creates = stub.argvs().filter((a) => a[1] === 'create' && !isProbe(a));
+    expect(creates).toEqual([['network', 'create', '--driver', 'bridge', 'vibecode-preview']]);
   });
 
   it('logs, but does not throw, when removing the probe network fails', async () => {

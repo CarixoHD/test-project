@@ -98,6 +98,37 @@ export class EgressIccEnabledError extends Error {
   }
 }
 
+/** Stable code of AddressPoolsExhaustedError. */
+export const DOCKER_ADDRESS_POOLS_EXHAUSTED = 'DOCKER_ADDRESS_POOLS_EXHAUSTED';
+/**
+ * The daemon's refusal to create a network because every default address pool is in use.
+ * Docker 29: "could not find an available, non-overlapping IPv4 address pool among the defaults
+ * to assign to the network".
+ */
+const ADDRESS_POOLS_EXHAUSTED_RE =
+  /could not find an available, non-overlapping IPv[46] address pool/i;
+
+/**
+ * Thrown by ensureNetworks when the ICC probe or creating `vibecode-egress` / `vibecode-preview`
+ * fails because Docker has no free address range left. Still fails closed (ADR 6): the probe is
+ * not skipped, the owner frees or widens the pools.
+ */
+export class AddressPoolsExhaustedError extends Error {
+  readonly code = DOCKER_ADDRESS_POOLS_EXHAUSTED;
+
+  /** `daemonDetail`: the daemon's stderr, already redacted. */
+  constructor(daemonDetail: string) {
+    super(
+      `Docker has run out of network address ranges, so Vibecode cannot create its networks and ` +
+        'runs no networked containers. Fix: remove unused networks with `docker network prune` ' +
+        '(or list them with `docker network ls` and remove old ones with `docker network rm`), ' +
+        'or widen `default-address-pools` in the Docker daemon.json and restart Docker, then ' +
+        `restart Vibecode. Docker said: ${daemonDetail}`,
+    );
+    this.name = 'AddressPoolsExhaustedError';
+  }
+}
+
 /** Repository of the fallback image, tagged `:<content hash>` (see baseImageTag). */
 export const BASE_IMAGE = 'vibecode/base';
 /**
@@ -345,6 +376,9 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
       if (n.name === NETWORKS.egress && ICC_UNSUPPORTED_RE.test(r.stderr)) {
         throw new IccUnsupportedError(detail(r));
       }
+      if (ADDRESS_POOLS_EXHAUSTED_RE.test(r.stderr)) {
+        throw new AddressPoolsExhaustedError(detail(r));
+      }
       throw new Error(`Could not create the Docker network ${n.name}: ${detail(r)}`);
     }
   }
@@ -393,6 +427,9 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
       created = r.code === 0;
       if (created) return;
       if (ICC_UNSUPPORTED_RE.test(r.stderr)) throw new IccUnsupportedError(detail(r));
+      if (ADDRESS_POOLS_EXHAUSTED_RE.test(r.stderr)) {
+        throw new AddressPoolsExhaustedError(detail(r));
+      }
       throw new Error(
         `Could not verify that Docker can turn off inter-container traffic: creating the probe ` +
           `network ${name} failed: ${detail(r)}`,
