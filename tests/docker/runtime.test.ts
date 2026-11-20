@@ -1,7 +1,7 @@
 // Real-Docker checks of the container security policy (ARCHITECTURE §4.8, ADR 6).
 // Run with `npm run test:docker`. Without a running Docker daemon these tests FAIL, never skip.
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -94,6 +94,61 @@ describe('DockerCliRuntime against a real Docker daemon', () => {
     expect(r.stdout.trim()).toBe('0');
     expect(r.stdout).not.toContain('WROTE');
     expect(await readFile(path.join(s.worktree, '.git'), 'utf8')).toBe(GIT_POINTER);
+  });
+
+  // Sparring (and reviewers, previews) mount the workspace read-only, so Docker cannot create the
+  // /workspace/.git mountpoint itself: a brand-new product's scratch worktree has no .git (#202).
+  describe.each([
+    ['no .git', 'none'],
+    ['a .git file (git worktree)', 'file'],
+    ['a .git directory', 'dir'],
+  ] as const)('a sandbox on a workspace with %s', (_name, kind) => {
+    it.each([true, false])('starts and never exposes the real .git (readOnly %s)', async (ro) => {
+      const runId = `t${randomBytes(6).toString('hex')}`;
+      const dir = path.join(dataDir, 'worktrees', runId);
+      await mkdir(dir);
+      await writeFile(path.join(dir, 'README.md'), 'hello\n');
+      const gitPath = path.join(dir, '.git');
+      if (kind === 'file') await writeFile(gitPath, GIT_POINTER);
+      if (kind === 'dir') {
+        await mkdir(gitPath);
+        await writeFile(path.join(gitPath, 'HEAD'), 'ref: refs/heads/main\n');
+        await writeFile(path.join(gitPath, 'config'), '[core]\n\tbare = false\n');
+      }
+      const sb = await rt.open({
+        runId,
+        productId: 'dockertest',
+        role: 'agent',
+        image,
+        worktree: dir,
+        readOnly: ro,
+        network: 'none',
+      });
+      try {
+        const r = await sb.exec(
+          sh(
+            'cat README.md; ' +
+              'if [ -d .git ]; then echo "dir $(ls -A .git | wc -l)"; else echo "file $(wc -c < .git)"; fi; ' +
+              '(echo x > .git/HEAD) 2>/dev/null && echo WROTE; ' +
+              '(echo x > .git/injected) 2>/dev/null && echo WROTE; ' +
+              '(echo x > .git) 2>/dev/null && echo WROTE; true',
+          ),
+          T,
+        );
+        expect(r.code).toBe(0);
+        const lines = r.stdout.trim().split('\n');
+        expect(lines[0]).toBe('hello');
+        expect(lines[1]).toMatch(/^(dir|file) 0$/);
+        expect(r.stdout).not.toContain('WROTE');
+      } finally {
+        await sb.close();
+      }
+      if (kind === 'file') expect(await readFile(gitPath, 'utf8')).toBe(GIT_POINTER);
+      if (kind === 'dir') {
+        expect((await readdir(gitPath)).sort()).toEqual(['HEAD', 'config']);
+        expect(await readFile(path.join(gitPath, 'HEAD'), 'utf8')).toBe('ref: refs/heads/main\n');
+      }
+    });
   });
 
   it('gives network-none containers no interface but loopback (needs no internet)', async () => {

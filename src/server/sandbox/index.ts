@@ -26,6 +26,7 @@ export {
   containerName,
   limitArgs,
   managedLabels,
+  type GitMask,
 } from './run-args.ts';
 export {
   fileOpArgv,

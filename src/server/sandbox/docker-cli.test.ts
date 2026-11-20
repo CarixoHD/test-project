@@ -1007,6 +1007,79 @@ describe('mask file <dataDir>/empty', () => {
   });
 });
 
+describe('/workspace/.git mountpoint and mask type (#202)', () => {
+  const runArgv = (stub: ReturnType<typeof stubDocker>) =>
+    stub.argvs().find((a) => a[0] === 'run') ?? [];
+
+  it('creates an empty .git placeholder file before docker run when the worktree has none', async () => {
+    const gitPath = path.join(wt, '.git');
+    const seen: string[] = [];
+    const stub = stubDocker((argv) => {
+      if (argv[0] === 'run') seen.push(existsSync(gitPath) ? 'present' : 'missing');
+      return {};
+    });
+    await runtime(stub).open(spec({ readOnly: true }));
+    expect(seen).toEqual(['present']);
+    const st = await lstat(gitPath);
+    expect(st.isFile()).toBe(true);
+    expect(st.size).toBe(0);
+    expect(runArgv(stub)).toEqual([
+      'run',
+      '--detach',
+      ...buildRunArgs(spec({ readOnly: true, worktree: realWt }), HOST(), 'file'),
+      'sleep',
+      'infinity',
+    ]);
+  });
+
+  it('keeps an existing .git pointer file untouched and masks it with data/empty', async () => {
+    await writeFile(path.join(wt, '.git'), 'gitdir: /x\n');
+    const stub = stubDocker();
+    await runtime(stub).runOnce(spec({ role: 'check', readOnly: true }), ['true'], T);
+    expect(await readFile(path.join(wt, '.git'), 'utf8')).toBe('gitdir: /x\n');
+    expect(runArgv(stub)).toContain(
+      `type=bind,src=${path.join(realData, 'empty')},dst=/workspace/.git,readonly`,
+    );
+  });
+
+  it('masks a .git directory with the empty directory data/empty.d, created before docker run', async () => {
+    await mkdir(path.join(wt, '.git'));
+    await writeFile(path.join(wt, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    const maskDir = path.join(dataDir, 'empty.d');
+    const seen: boolean[] = [];
+    const stub = stubDocker((argv) => {
+      if (argv[0] === 'run') seen.push(existsSync(maskDir));
+      return {};
+    });
+    await runtime(stub).open(spec({ readOnly: true }));
+    expect(seen).toEqual([true]);
+    expect((await lstat(maskDir)).isDirectory()).toBe(true);
+    expect(await readdir(maskDir)).toEqual([]);
+    expect(runArgv(stub)).toEqual([
+      'run',
+      '--detach',
+      ...buildRunArgs(spec({ readOnly: true, worktree: realWt }), HOST(), 'dir'),
+      'sleep',
+      'infinity',
+    ]);
+  });
+
+  it('refuses a non-empty data/empty.d and a .git symlink, without calling docker', async () => {
+    await mkdir(path.join(wt, '.git'));
+    await mkdir(path.join(dataDir, 'empty.d'));
+    await writeFile(path.join(dataDir, 'empty.d', 'leak'), 'x');
+    const stub = stubDocker();
+    await expect(runtime(stub).open(spec())).rejects.toThrow(/empty\.d must be an empty directory/);
+
+    await rm(path.join(wt, '.git'), { recursive: true });
+    await symlink('/etc', path.join(wt, '.git'));
+    await expect(runtime(stub).open(spec())).rejects.toThrow(
+      /\.git .*neither a file nor a directory/,
+    );
+    expect(stub.calls).toEqual([]);
+  });
+});
+
 describe('worktree confinement (realpath)', () => {
   it('refuses a symlink under data/worktrees that points outside, without calling docker', async () => {
     const outside = await mkdtemp(path.join(tmpdir(), 'vibecode-outside-'));
