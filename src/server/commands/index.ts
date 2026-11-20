@@ -1,5 +1,6 @@
 export {
   applyPlan,
+  checkPlan,
   type ApplyPlanOptions,
   type ApplyPlanResult,
   type CommandDeps,

@@ -8,7 +8,7 @@ import {
 } from '../../shared/agent-results.ts';
 import type { IssueStatus, IssueView } from '../../shared/domain.ts';
 import type { Event, EventDraft } from '../../shared/events.ts';
-import type { IdGen, IssueId, ProductId } from '../../shared/ids.ts';
+import type { IdByKind, IdGen, IdKind, IssueId, ProductId } from '../../shared/ids.ts';
 import { transition } from '../../shared/issues.ts';
 import type { ProductState } from '../../shared/state.ts';
 import type { Queries, Store } from '../store/index.ts';
@@ -75,6 +75,55 @@ export function applyPlan(
   consumedSeq: number,
   opts: ApplyPlanOptions = {},
 ): ApplyPlanResult {
+  const input = parseInput(plan, opts);
+  if (!input.ok) return input;
+  let built: Built = fail('plan was not applied');
+  const events = deps.store.commit((tx) => {
+    built = buildPlan(tx.q, deps.ids, productId, input.plan, consumedSeq, input.opts);
+    return built.ok ? built.drafts : [];
+  });
+  // Reassigned inside the builder; TS cannot see that the callback ran.
+  const result = built as Built;
+  return result.ok ? { ok: true, events, createdIds: result.createdIds } : result;
+}
+
+/**
+ * Would `applyPlan` accept this plan against the current store state? Commits nothing and
+ * takes no ids, so callers can check before side effects (the orchestrator, before merging
+ * setup files to main). Same reasons as `applyPlan`.
+ */
+export function checkPlan(
+  deps: Pick<CommandDeps, 'store'>,
+  productId: ProductId,
+  plan: PlanResult,
+  consumedSeq: number,
+  opts: ApplyPlanOptions = {},
+): { ok: true } | Fail {
+  const input = parseInput(plan, opts);
+  if (!input.ok) return input;
+  const built = buildPlan(
+    deps.store.q,
+    scratchIds(),
+    productId,
+    input.plan,
+    consumedSeq,
+    input.opts,
+  );
+  return built.ok ? { ok: true } : built;
+}
+
+/** Placeholder ids for a dry run; never committed. */
+function scratchIds(): IdGen {
+  let n = 0;
+  return {
+    next: <K extends IdKind>(kind: K) => `plan-check-${kind}-${String(++n)}` as IdByKind[K],
+  };
+}
+
+function parseInput(
+  plan: PlanResult,
+  opts: ApplyPlanOptions,
+): { ok: true; plan: PlanResult; opts: ApplyPlanOptions } | Fail {
   const parsed = PlanResultSchema.safeParse(plan);
   if (!parsed.success) return fail(`invalid plan: ${z.prettifyError(parsed.error)}`);
   const project =
@@ -82,17 +131,14 @@ export function applyPlan(
   if (project?.success === false) {
     return fail(`invalid project config: ${z.prettifyError(project.error)}`);
   }
-  let built: Built = fail('plan was not applied');
-  const events = deps.store.commit((tx) => {
-    built = buildPlan(tx.q, deps.ids, productId, parsed.data, consumedSeq, {
+  return {
+    ok: true,
+    plan: parsed.data,
+    opts: {
       ...(project === undefined ? {} : { project: project.data }),
       ...(opts.replan === undefined ? {} : { replan: opts.replan }),
-    });
-    return built.ok ? built.drafts : [];
-  });
-  // Reassigned inside the builder; TS cannot see that the callback ran.
-  const result = built as Built;
-  return result.ok ? { ok: true, events, createdIds: result.createdIds } : result;
+    },
+  };
 }
 
 function buildPlan(
