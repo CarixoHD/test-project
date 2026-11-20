@@ -3,13 +3,21 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Event, EventDraft } from '../../shared/events.ts';
-import type { IssueId, QuestionId } from '../../shared/ids.ts';
+import {
+  AgentIdSchema,
+  AttemptIdSchema,
+  QuestionIdSchema,
+  type IssueId,
+  type QuestionId,
+} from '../../shared/ids.ts';
 import { isReady } from '../../shared/issues.ts';
-import { answerQuestion } from '../commands/index.ts';
+import { answerQuestion, cancelIssue } from '../commands/index.ts';
 import type { FakeScript } from '../llm/index.ts';
 import { createScheduler, type RunHandle, type Timer } from '../scheduler/index.ts';
 import type { Store } from '../store/index.ts';
 import { expectSnapshotMatchesReplay } from '../store/testing.ts';
+import { interruptAttempt, startAttempt } from './attempt-events.ts';
+import { outcomeOf } from './attempt-outcome.ts';
 import { P, setupAttempt, type Harness, type HarnessOptions } from './attempt-testing.ts';
 import { orchestratorPrompt } from './orchestrator-prompt.ts';
 
@@ -217,6 +225,84 @@ describe('orchestrator questions', () => {
     } finally {
       await s.stop();
     }
+    expectSnapshotMatchesReplay(h.store);
+  });
+});
+
+describe('cancelling an issue held by a question', () => {
+  it('withdraws the question and settles its inbox item in the cancel commit', async () => {
+    const h = await setup();
+    const id = h.addIssue('Login');
+    await h.run(id);
+    const qid = heldQuestion(h, id);
+    const before = h.store.snapshot().lastSeq;
+
+    expect(cancelIssue(h.deps, id).ok).toBe(true);
+
+    const [item] = Object.values(h.store.snapshot().state.inbox);
+    expect(h.store.eventsSince(before).map((e) => [e.type, e.entityId])).toEqual([
+      ['issue.cancelled', id],
+      ['question.withdrawn', qid],
+      ['inbox.read', item?.id],
+    ]);
+    const { state } = h.store.snapshot();
+    expect(state.questions[qid]).toMatchObject({ answer: null, withdrawnAt: expect.any(Number) });
+    expect(state.inbox).toEqual({ [item?.id ?? '']: expect.objectContaining({ read: true }) });
+    expect(answerQuestion(h.deps, qid, ANSWER)).toMatchObject({ ok: false, code: 'conflict' });
+    expectSnapshotMatchesReplay(h.store);
+  });
+
+  it('does not wake the orchestrator', async () => {
+    const h = await setup();
+    building(h.store);
+    const id = h.addIssue('Login');
+    await h.run(id);
+    const { s, orchestrators } = scheduler(h);
+    s.start();
+    try {
+      expect(cancelIssue(h.deps, id).ok).toBe(true);
+      expect(orchestrators).toHaveLength(0);
+    } finally {
+      await s.stop();
+    }
+  });
+
+  it('a cancel racing an attempt that ends with a question discards the attempt instead', async () => {
+    const h = await setup();
+    const id = h.addIssue('Login');
+    const ref = {
+      store: h.store,
+      productId: P,
+      issueId: id,
+      attemptId: AttemptIdSchema.parse('attempt-race'),
+    };
+    expect(
+      startAttempt(ref, { baseSha: 'a'.repeat(40), branch: 'vibecode/attempt-race' }),
+    ).not.toBeNull();
+    // The owner cancels after the pipeline's own cancel check, before the interruption commit.
+    expect(cancelIssue(h.deps, id).ok).toBe(true);
+    const before = h.store.snapshot().lastSeq;
+
+    interruptAttempt(
+      ref,
+      'question',
+      `The implementer asked the owner: ${QUESTION}`,
+      outcomeOf({}),
+      {
+        question: {
+          id: QuestionIdSchema.parse('question-race'),
+          agentId: AgentIdSchema.parse('agent-race'),
+          text: QUESTION,
+        },
+      },
+    );
+
+    const types = h.store.eventsSince(before).map((e) => e.type);
+    expect(types).toEqual(['attempt.ended']);
+    expect(h.store.q.attempt(ref.attemptId)).toMatchObject({ status: 'discarded', counted: false });
+    expect(h.store.q.issue(id)).toMatchObject({ status: 'cancelled', heldQuestionId: null });
+    expect(h.store.snapshot().state.questions).toEqual({});
+    expect(h.store.snapshot().state.inbox).toEqual({});
     expectSnapshotMatchesReplay(h.store);
   });
 });

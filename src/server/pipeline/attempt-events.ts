@@ -175,7 +175,8 @@ export type QuestionDraft = { id: QuestionId; agentId: AgentId; text: string };
  * backend.limited, but only when it changes the backend's projected limit, so parallel attempts
  * hitting the same limit record it (and its inbox item) once. `question` also commits
  * question.asked{target:'issue'} and issue.held, so the scheduler skips the issue until the
- * owner answers.
+ * owner answers; when the issue was cancelled meanwhile (re-read inside the commit), the
+ * question is dropped and the attempt is discarded instead.
  */
 export function interruptAttempt(
   ref: AttemptRef,
@@ -186,6 +187,9 @@ export function interruptAttempt(
 ): void {
   ref.store.commit((tx) => {
     const { limit, runAfter, question } = o;
+    if (question !== undefined && tx.q.issue(ref.issueId)?.status === 'cancelled') {
+      return [endedDraft(ref, 'discarded', feedback, outcome)];
+    }
     const limited = limit !== undefined && limitChanged(tx, limit) ? [limitedDraft(limit)] : [];
     const asked = question === undefined ? [] : questionDrafts(ref, question);
     return [
