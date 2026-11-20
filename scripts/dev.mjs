@@ -4,6 +4,19 @@ import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
+import { nodeProblem } from './preflight.mjs';
+
+// The API child runs .ts via Node type stripping (ADR 0012): refuse to start without it.
+const problem = nodeProblem({
+  version: process.version,
+  typescript: process.features.typescript,
+  execPath: process.execPath,
+  nodeOptions: process.env.NODE_OPTIONS,
+});
+if (problem !== null) {
+  console.error(problem);
+  process.exit(1);
+}
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const DATA_DIR = '.data/dev';
