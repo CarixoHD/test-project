@@ -126,8 +126,8 @@ export function ScenePanel({
       </h2>
       <div id={bodyId} className="scene-panel__body" hidden={!expanded}>
         <p className="scene-panel__note">
-          A picture of the work in progress. The board and the agent list show the same
-          information as text.
+          A picture of the work in progress. The board and the agent list show the same information
+          as text.
         </p>
         <div ref={viewport} className="scene-panel__viewport" aria-hidden="true">
           {loaded && (

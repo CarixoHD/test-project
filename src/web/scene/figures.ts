@@ -1,7 +1,7 @@
+import type { BufferGeometry } from 'three';
 import {
   AnimationClip,
   BoxGeometry,
-  BufferGeometry,
   CanvasTexture,
   Color,
   ConeGeometry,
@@ -56,15 +56,31 @@ function hatGeometry(look: FigureLook): BufferGeometry {
   switch (look.hat) {
     case 'hardhat':
       return merge([
-        painted(new SphereGeometry(0.2, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), look.hatColor, new Vector3(0, 0.98, 0)),
+        painted(
+          new SphereGeometry(0.2, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2),
+          look.hatColor,
+          new Vector3(0, 0.98, 0),
+        ),
         painted(new CylinderGeometry(0.25, 0.25, 0.03, 12), look.hatColor, new Vector3(0, 0.98, 0)),
       ]);
     case 'helmet':
-      return painted(new SphereGeometry(0.21, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2.2), look.hatColor, new Vector3(0, 0.97, 0));
+      return painted(
+        new SphereGeometry(0.21, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2.2),
+        look.hatColor,
+        new Vector3(0, 0.97, 0),
+      );
     case 'cap':
-      return painted(new CylinderGeometry(0.19, 0.2, 0.1, 10), look.hatColor, new Vector3(0, 1.02, 0));
+      return painted(
+        new CylinderGeometry(0.19, 0.2, 0.1, 10),
+        look.hatColor,
+        new Vector3(0, 1.02, 0),
+      );
     case 'beret':
-      return painted(new CylinderGeometry(0.22, 0.2, 0.06, 12), look.hatColor, new Vector3(0.03, 1.03, 0));
+      return painted(
+        new CylinderGeometry(0.22, 0.2, 0.06, 12),
+        look.hatColor,
+        new Vector3(0.03, 1.03, 0),
+      );
   }
 }
 
@@ -114,14 +130,23 @@ export function figureTemplate(figure: Figure): Group {
 const X = new Vector3(1, 0, 0);
 const quat = (angle: number) => new Quaternion().setFromAxisAngle(X, angle).toArray();
 const quatTrack = (name: string, times: number[], angles: number[]) =>
-  new QuaternionKeyframeTrack(name, times, angles.flatMap((a) => quat(a)));
+  new QuaternionKeyframeTrack(
+    name,
+    times,
+    angles.flatMap((a) => quat(a)),
+  );
 
 export type ClipName = 'walk' | 'work' | 'idle' | 'sit';
 
 /** One clip per activity; each worker plays them on its own AnimationMixer. */
 export const CLIPS: Record<ClipName, AnimationClip> = {
   walk: new AnimationClip('walk', 0.5, [
-    new NumberKeyframeTrack(`${RIG}.position[y]`, [0, 0.125, 0.25, 0.375, 0.5], [0, 0.05, 0, 0.05, 0], InterpolateSmooth),
+    new NumberKeyframeTrack(
+      `${RIG}.position[y]`,
+      [0, 0.125, 0.25, 0.375, 0.5],
+      [0, 0.05, 0, 0.05, 0],
+      InterpolateSmooth,
+    ),
     quatTrack(`${ARMS}.quaternion`, [0, 0.25, 0.5], [0.4, -0.4, 0.4]),
   ]),
   work: new AnimationClip('work', 0.7, [

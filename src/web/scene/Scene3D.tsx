@@ -1,10 +1,10 @@
 import { ContactShadows } from '@react-three/drei';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { InstancedMesh } from 'three';
 import {
   AnimationMixer,
   BoxGeometry,
-  InstancedMesh,
   Matrix4,
   MeshStandardMaterial,
   Object3D,
@@ -45,12 +45,29 @@ const WALK_SPEED = 2.2; // units per second
 
 declare global {
   interface Window {
-    /** Render stats for the E2E smoke test; set in dev/test builds only. */
-    __vibecodeScene?: { drawCalls: number; triangles: number; frames: number };
+    /** Render stats for the E2E smoke test; set in dev/test builds or with SCENE_STATS_FLAG. */
+    __vibecodeScene?: {
+      drawCalls: number;
+      triangles: number;
+      frames: number;
+      /** Figures and pieces in the scene state being drawn. */
+      workers: number;
+      pieces: number;
+    };
   }
 }
 
-const EXPOSE_STATS = import.meta.env.DEV || import.meta.env.MODE === 'test';
+/** localStorage flag that turns the stats on in a production build (the E2E smoke test). */
+export const SCENE_STATS_FLAG = 'vibecode.debug.sceneStats';
+
+function exposeStats(): boolean {
+  if (import.meta.env.DEV || import.meta.env.MODE === 'test') return true;
+  try {
+    return localStorage.getItem(SCENE_STATS_FLAG) === '1';
+  } catch {
+    return false;
+  }
+}
 
 function webglAvailable(): boolean {
   return typeof ResizeObserver !== 'undefined' && typeof WebGL2RenderingContext !== 'undefined';
@@ -61,6 +78,7 @@ export default function Scene3D({ scene, frameloop, reducedMotion }: Scene3DProp
     return <p className="scene-panel__loading">This browser cannot show the 3D view.</p>;
   }
   const animate = !reducedMotion;
+  const stats = exposeStats();
   return (
     <Canvas
       className="scene-panel__canvas"
@@ -87,7 +105,7 @@ export default function Scene3D({ scene, frameloop, reducedMotion }: Scene3DProp
         frames={animate ? Infinity : 1}
       />
       <RenderOnChange frameloop={frameloop} scene={scene} />
-      {EXPOSE_STATS && <StatsProbe />}
+      {stats && <StatsProbe scene={scene} />}
     </Canvas>
   );
 }
@@ -101,18 +119,21 @@ function RenderOnChange({ frameloop, scene }: { frameloop: Frameloop; scene: Sce
   return null;
 }
 
-function StatsProbe() {
+function StatsProbe({ scene }: { scene: SceneState }) {
   const gl = useThree((s) => s.gl);
   const frames = useRef(0);
-  // Runs before each render, so it reports the previous frame's main pass.
+  // Runs first in each frame, before ContactShadows' own passes, so `info` still holds the
+  // previous frame's main render (R3F renders the scene after every useFrame callback).
   useFrame(() => {
     frames.current += 1;
     window.__vibecodeScene = {
       drawCalls: gl.info.render.calls,
       triangles: gl.info.render.triangles,
       frames: frames.current,
+      workers: scene.workers.length,
+      pieces: scene.pieces.length,
     };
-  });
+  }, -1000);
   useEffect(() => () => void delete window.__vibecodeScene, []);
   return null;
 }
@@ -218,7 +239,9 @@ function PieceInstances({
   useLayoutEffect(() => {
     const m = mesh.current;
     if (m === null) return;
-    pieces.forEach((p, i) => m.setMatrixAt(i, pieceMatrix(p, half, since.has(p.issueId) ? 0 : 1, matrix)));
+    pieces.forEach((p, i) =>
+      m.setMatrixAt(i, pieceMatrix(p, half, since.has(p.issueId) ? 0 : 1, matrix)),
+    );
     m.count = pieces.length;
     m.instanceMatrix.needsUpdate = true;
     m.computeBoundingSphere();
@@ -278,7 +301,11 @@ function DebrisPiles({ scene }: { scene: SceneState }) {
     invalidate();
   }, [piles, invalidate]);
   return (
-    <instancedMesh ref={mesh} args={[undefined, undefined, MAX_DEBRIS * RUBBLE.length]} frustumCulled={false}>
+    <instancedMesh
+      ref={mesh}
+      args={[undefined, undefined, MAX_DEBRIS * RUBBLE.length]}
+      frustumCulled={false}
+    >
       <boxGeometry args={[0.5, 0.3, 0.4]} />
       <meshStandardMaterial color="#7d7468" roughness={1} />
     </instancedMesh>

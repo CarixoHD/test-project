@@ -16,7 +16,15 @@ const P = ProductIdSchema.parse('p1');
 let seq = 0;
 const event = (type: string, entityId: string | null, data: unknown): Event => {
   seq += 1;
-  return EventSchema.parse({ seq, ts: 1_700_000_000_000 + seq, type, productId: P, entityId, v: 1, data });
+  return EventSchema.parse({
+    seq,
+    ts: 1_700_000_000_000 + seq,
+    type,
+    productId: P,
+    entityId,
+    v: 1,
+    data,
+  });
 };
 
 const productCreated = () =>
