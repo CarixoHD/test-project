@@ -299,20 +299,25 @@ It throws if a mount source contains `docker.sock` or is outside `data/worktrees
 Preview: `startPreview(productId) → {url}` and `stopPreview(productId)`. It uses a detached worktree of main, the product image, `project.preview.command` and a read-only mount. It polls `GET /` for up to 60 s. Only one preview runs per product.
 
 ### 4.9 server/git
-All git commands run on the host with `-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.file.allow=never`. Product repositories are bare: `data/repos/<productId>.git`.
+All git commands run on the host with `-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.file.allow=never` (`GIT_SAFETY_FLAGS`, always first in argv), a timeout, `GIT_CONFIG_GLOBAL=/dev/null` + `GIT_CONFIG_NOSYSTEM=1`, inherited `GIT_DIR`-style variables removed, and the fixed `AGENT_IDENTITY` as author and committer. Product repositories are bare: `data/repos/<productId>.git`. Product and run ids must be safe path segments (`[A-Za-z0-9][A-Za-z0-9_-]*`); repo paths must be relative, normalised and outside `.git`.
 ```ts
-initRepo(productId): Promise<void>                         // bare repo + initial commit (README, docs/PRD.md)
-addWorktree(productId, runId, ref='main'): Promise<{dir; branch; baseSha}>
+gitVersionOk(deps?): Promise<boolean>                      // host git >= 2.38
+createGit({dataDir, exec?, timeoutMs?}): Git               // exec injectable so tests can observe argv
+initRepo(productId): Promise<void>                         // bare repo + initial commit (README, docs/PRD.md); no-op if main exists
+addWorktree(productId, runId, ref='main', {detached?}): Promise<{dir; branch: string|null; baseSha}>
+                                                           // dir = data/worktrees/<runId>, branch = vibecode/<runId> (null when detached)
 commitAll(dir, message): Promise<{sha:string|null; diff:string}>   // null when nothing changed
 cleanWorktree(dir): Promise<void>                          // reset --hard + clean -ffdx (after checks)
+mainSha(productId): Promise<string>; readFileAtMain(productId, path): Promise<string|null>
 integrate(productId, branch, baseSha, message): Promise<
   | {kind:'fast'; tree; commitSha}                         // main == baseSha
   | {kind:'merged'; commitSha; dir}                        // merge-tree clean; dir = integration worktree to re-check
   | {kind:'conflict'; paths:string[]}>
 advanceMain(productId, commitSha, expectedOld): Promise<void>     // update-ref with old-value guard
-commitFilesOnMain(productId, files: Record<string,string>, msg): Promise<string>  // PRD.md on handoff/apply
+commitFilesOnMain(productId, files: Record<string,string>, msg): Promise<string>  // PRD.md on handoff/apply; plumbing with a temp index, one commit, update-ref with old-value guard
 push(productId, remote): Promise<void>                    // token via GIT_ASKPASS env; redacted
-removeWorktree(dir): Promise<void>; pruneWorktrees(productId): Promise<void>
+removeWorktree(dir): Promise<void>                        // only under data/worktrees; also deletes its vibecode/* branch; no-op if dir is gone
+pruneWorktrees(productId): Promise<void>
 ```
 Main history has **one commit per merged issue**: `commit-tree <merged tree> -p main -m "#<n> <title>"`.
 

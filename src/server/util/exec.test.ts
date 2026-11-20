@@ -287,6 +287,31 @@ describe('exec redaction', () => {
     expect(lines).toEqual(['***6789']);
   });
 
+  it.each([
+    ['LF', '\n'],
+    ['CRLF', '\r\n'],
+  ])('never streams any line of a registered multi-line secret (%s)', async (_name, eol) => {
+    const secretLines = [
+      `pem-${eol.length}-line-one-AAAAbbbbCCCC`,
+      `pem-${eol.length}-line-two-DDDDeeeeFFFF`,
+      `pem-${eol.length}-line-three-GGGGhhhh`,
+    ];
+    const secret = secretLines.join(eol);
+    redactor.register(secret);
+    const script = 'process.stdout.write(`before\\n${process.argv[1]}\\nafter\\n`)';
+    const lines: string[] = [];
+    await spawnStream(NODE, nodeArgs(script, secret), {
+      timeoutMs: 10_000,
+      onLine: (line) => lines.push(line),
+    });
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toBe('before');
+    expect(lines[4]).toBe('after');
+    for (const secretLine of secretLines) {
+      for (const line of lines) expect(leaks(line, secretLine)).toBe(false);
+    }
+  });
+
   it('redacts secrets from error messages and stacks', async () => {
     const missing = join(dir, `bin-${SECRET}`);
     const err: unknown = await exec(missing, [`--token=${SECRET}`], { timeoutMs: 10_000 }).catch(
