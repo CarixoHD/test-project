@@ -7,7 +7,13 @@ import {
   type OkResponse,
 } from '../../../shared/dto.ts';
 import { ProductIdSchema } from '../../../shared/ids.ts';
-import { createProduct, handoff, savePrdDraft } from '../../commands/index.ts';
+import {
+  createProduct,
+  handoff,
+  pauseProduct,
+  resumeProduct,
+  savePrdDraft,
+} from '../../commands/index.ts';
 import type { AppDeps } from '../deps.ts';
 import { readJson } from '../body.ts';
 import { fail } from '../errors.ts';
@@ -15,7 +21,9 @@ import { fail } from '../errors.ts';
 /**
  * POST /api/products {name, idea} → 201 {id}; POST /api/products/:id/spar {message} → 202
  * (the reply arrives as events); PUT /api/products/:id/prd-draft {markdown};
- * POST /api/products/:id/handoff → 200 (409 outside sparring or with an empty draft).
+ * POST /api/products/:id/handoff → 200 (409 outside sparring or with an empty draft);
+ * POST /api/products/:id/pause | resume → 200 (409 when already in that state, or resuming
+ * while the budget is exhausted).
  */
 export function registerProductRoutes(app: Hono, deps: AppDeps): void {
   app.post('/api/products', async (c) => {
@@ -48,6 +56,22 @@ export function registerProductRoutes(app: Hono, deps: AppDeps): void {
   app.post('/api/products/:id/handoff', async (c) => {
     const productId = ProductIdSchema.parse(c.req.param('id'));
     const result = await handoff(deps, productId);
+    if (!result.ok) fail(result);
+    const body: OkResponse = { ok: true };
+    return c.json(body);
+  });
+
+  app.post('/api/products/:id/pause', (c) => {
+    const productId = ProductIdSchema.parse(c.req.param('id'));
+    const result = pauseProduct(deps, productId);
+    if (!result.ok) fail(result);
+    const body: OkResponse = { ok: true };
+    return c.json(body);
+  });
+
+  app.post('/api/products/:id/resume', (c) => {
+    const productId = ProductIdSchema.parse(c.req.param('id'));
+    const result = resumeProduct(deps, productId);
     if (!result.ok) fail(result);
     const body: OkResponse = { ok: true };
     return c.json(body);
