@@ -25,6 +25,7 @@
     "scripts",
     "tests",
     "vite.config.ts",
+    "drizzle.config.ts",
     "vitest.config.ts",
     "playwright.config.ts"
   ]
