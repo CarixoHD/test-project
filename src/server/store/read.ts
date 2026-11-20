@@ -9,6 +9,7 @@ import {
   IssueStateSchema,
   PrdDraftSchema,
   ProductStateSchema,
+  QuestionStateSchema,
   SparMessageSchema,
   type AgentView,
   type AttemptState,
@@ -18,10 +19,18 @@ import {
   type IssueState,
   type PrdDraft,
   type ProductState,
+  type QuestionState,
   type SparMessage,
   type UsageTotals,
 } from '../../shared/state.ts';
-import type { AgentId, AttemptId, InboxId, IssueId, ProductId } from '../../shared/ids.ts';
+import type {
+  AgentId,
+  AttemptId,
+  InboxId,
+  IssueId,
+  ProductId,
+  QuestionId,
+} from '../../shared/ids.ts';
 import { type Db, schema } from '../db/index.ts';
 import { readSettingsChangedAt, totalsFromRow } from './project-account.ts';
 
@@ -169,6 +178,9 @@ export interface Queries {
   productUsage(productId: ProductId): UsageTotals;
   issueUsage(issueId: IssueId): UsageTotals;
   inboxItem(id: InboxId): InboxItem | null;
+  question(id: QuestionId): QuestionState | null;
+  /** Questions an issue's agents asked (target issue), oldest first. */
+  questionsByIssue(issueId: IssueId): QuestionState[];
   /** The projected agent (also after it exited), null when unknown. */
   agent(id: AgentId): AgentView | null;
   /** The sparring transcript in arrival (event seq) order. */
@@ -228,6 +240,19 @@ export function createQueries(db: Db): Queries {
     inboxItem(id) {
       const r = db.select().from(s.inbox).where(eq(s.inbox.id, id)).get();
       return r === undefined ? null : InboxItemSchema.parse(inboxView(r));
+    },
+    question(id) {
+      const r = db.select().from(s.questions).where(eq(s.questions.id, id)).get();
+      return r === undefined ? null : QuestionStateSchema.parse(r);
+    },
+    questionsByIssue(issueId) {
+      return db
+        .select()
+        .from(s.questions)
+        .where(eq(s.questions.issueId, issueId))
+        .orderBy(asc(s.questions.createdAt), asc(s.questions.id))
+        .all()
+        .map((r) => QuestionStateSchema.parse(r));
     },
     agent(id) {
       const r = db.select().from(s.agents).where(eq(s.agents.id, id)).get();

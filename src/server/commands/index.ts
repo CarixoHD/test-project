@@ -68,3 +68,4 @@ export {
   type CheckBudgetResult,
 } from './budget.ts';
 export { clearBackendLimit, type ClearBackendLimitResult } from './backend-limits.ts';
+export { answerQuestion, type AnswerQuestionResult } from './questions.ts';

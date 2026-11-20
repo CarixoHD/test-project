@@ -218,3 +218,15 @@ export const SavePrdDraftRequestSchema = z.object({
     .max(PRD_MARKDOWN_MAX, `The draft must be at most ${PRD_MARKDOWN_MAX} characters`),
 });
 export type SavePrdDraftRequest = z.input<typeof SavePrdDraftRequestSchema>;
+
+export const ANSWER_MAX = 8000;
+
+/** `POST /api/questions/:id/answer`: the owner's answer to an agent's question. */
+export const AnswerQuestionRequestSchema = z.object({
+  text: z
+    .string({ error: 'An answer is required' })
+    .trim()
+    .min(1, 'An answer is required')
+    .max(ANSWER_MAX, `The answer must be at most ${ANSWER_MAX} characters`),
+});
+export type AnswerQuestionRequest = z.input<typeof AnswerQuestionRequestSchema>;
