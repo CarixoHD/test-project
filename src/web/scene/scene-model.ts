@@ -1,3 +1,4 @@
+import type { AgentId } from '../../shared/ids.ts';
 import type {
   Figure,
   PieceType,
@@ -23,6 +24,11 @@ export function sceneFrameloop(v: {
   expanded: boolean;
   onScreen: boolean;
   reducedMotion: boolean;
+  /**
+   * A worker figure was clicked: the panel opens that agent's AgentPanel. The only thing the
+   * scene can do; it never controls agents (ADR 8). Must keep its identity across renders.
+   */
+  onPickWorker?: ((agentId: AgentId) => void) | undefined;
 }): Frameloop {
   if (!v.expanded || !v.onScreen) return 'never';
   return v.reducedMotion ? 'demand' : 'always';
@@ -142,4 +148,9 @@ export interface Scene3DProps {
   frameloop: Frameloop;
   /** prefers-reduced-motion: no placement, walk or work animations. */
   reducedMotion: boolean;
+  /**
+   * A worker figure was clicked: the panel opens that agent's AgentPanel. The only thing the
+   * scene can do; it never controls agents (ADR 8). Must keep its identity across renders.
+   */
+  onPickWorker?: ((agentId: AgentId) => void) | undefined;
 }
