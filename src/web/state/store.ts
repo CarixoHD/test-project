@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useSyncExternalStore } from 'react';
 import { parseEvent, type Event } from '../../shared/events.ts';
 import { emptyState, reduce, type ClientState } from '../../shared/state.ts';
-import { ApiError, getState } from './api.ts';
+import { ApiError, getState, recheckSession } from './api.ts';
 
 // The browser's live copy of ClientState (ARCHITECTURE §4.12). It loads GET /api/state,
 // follows /api/events (SSE) and applies each event with the shared `reduce`, so the UI and the
@@ -128,7 +128,17 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
       schedule(retryDelayMs * failures, () => {
         if (gen === generation) openStream(gen);
       });
+      void stopIfSessionGone(gen);
     }
+  }
+
+  /**
+   * EventSource cannot see the status that closed it; a 401 means the session expired or was
+   * ended. GET /api/session tells (and shows Login via onUnauthorized); then stop retrying.
+   */
+  async function stopIfSessionGone(gen: number): Promise<void> {
+    const session = await recheckSession();
+    if (gen === generation && session === 'unauthenticated') disconnect();
   }
 
   async function loadSnapshot(gen: number): Promise<void> {
