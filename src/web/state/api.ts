@@ -6,6 +6,7 @@ import {
   OkResponseSchema,
   SettingsResponseSchema,
   SettingsUpdateResponseSchema,
+  StartPreviewResponseSchema,
   StateResponseSchema,
   type AddIssueRequest,
   type AddIssueResponse,
@@ -18,6 +19,7 @@ import {
   type SettingsResponse,
   type SettingsUpdateRequest,
   type SettingsUpdateResponse,
+  type StartPreviewResponse,
   type StateResponse,
 } from '../../shared/dto.ts';
 
@@ -192,6 +194,34 @@ export function pauseProduct(productId: string, signal?: AbortSignal): Promise<O
 export function resumeProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
   return request(`/api/products/${encodeURIComponent(productId)}/resume`, {
     method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Waits for the server's 60 s readiness poll plus worktree, image and container start. */
+const START_PREVIEW_TIMEOUT_MS = 3 * 60_000;
+
+/**
+ * Runs the product's current main as a preview (replacing a running one) and resolves with its
+ * URL once it answers; 409 without a preview config or when it fails to start.
+ */
+export function startPreview(
+  productId: string,
+  signal?: AbortSignal,
+): Promise<StartPreviewResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/preview`, {
+    method: 'POST',
+    schema: StartPreviewResponseSchema,
+    timeoutMs: START_PREVIEW_TIMEOUT_MS,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Stops the product's preview; 409 when none is running. */
+export function stopPreview(productId: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/preview`, {
+    method: 'DELETE',
     schema: OkResponseSchema,
     ...(signal ? { signal } : {}),
   });
