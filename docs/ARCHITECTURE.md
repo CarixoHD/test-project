@@ -153,7 +153,8 @@ function sceneFromState(state: ClientState, productId): SceneState;  // tested: 
 //   agentId → bubble until question.answered or question.withdrawn; agent.exited → worker removed. backend.limited is a
 //   no-op: the server emits agent.state rate_limited per affected agent.
 // scene-layout.ts (re-exported by scene.ts)
-function layoutPiece(index:number, totalIssues:number): {type:PieceType; pos:[number,number,number]; rotY:number};
+function layoutPiece(index:number, totalIssues:number): {type:PieceType; pos:[number,number,number]; rotY:number; corner:boolean};
+//   corner: true only for the one wall/window per side (last clockwise slot) whose -x end meets the next side; the view shortens just that piece so sides meet like a pinwheel. False for floor/roof.
 //   W×W footprint, storeys bottom-up (floor slab, then 4·W walls/windows), roof = index totalIssues-1.
 ```
 
