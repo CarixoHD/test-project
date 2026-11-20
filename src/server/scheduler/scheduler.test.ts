@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PlanResult } from '../../shared/agent-results.ts';
 import type { Event, EventDraft } from '../../shared/events.ts';
 import { ProductIdSchema, type IssueId, type ProductId } from '../../shared/ids.ts';
-import { applyPlan } from '../commands/index.ts';
+import { applyPlan, cancelIssue } from '../commands/index.ts';
 import { open } from '../db/index.ts';
 import { Redactor, redactor as sharedRedactor } from '../security/index.ts';
 import { createStore, type Store } from '../store/index.ts';
@@ -173,7 +173,7 @@ function setup(
     await stopped;
   }
 
-  return { store, clock, scheduler, timer, plan, complete, shutdown, ...fake };
+  return { store, clock, ids, scheduler, timer, plan, complete, shutdown, ...fake };
 }
 
 describe('scheduler: attempts', () => {
@@ -459,6 +459,32 @@ describe('scheduler: orchestrator', () => {
   it('skips the orchestrator while its backend is blocked', () => {
     const t = setup({}, { isBackendBlocked: (_p, role) => role === 'orchestrator' });
     t.scheduler.start();
+    expect(t.orchestrators()).toHaveLength(0);
+  });
+
+  it('owner-cancelling an issue that others wait on wakes the orchestrator (stranded dependents)', () => {
+    const t = setup();
+    const ids = t.plan([create('a'), create('b', ['a']), create('c')]);
+    t.scheduler.start();
+    expect(t.orchestrators()).toHaveLength(0);
+
+    const r = cancelIssue({ store: t.store, ids: t.ids }, idOf(ids, 'a'));
+    expect(r.ok).toBe(true);
+    // No timer tick: the issue.cancelled event itself wakes the scheduler.
+    expect(t.orchestrators()).toHaveLength(1);
+    const o = nth(t.orchestrators(), 0);
+    if (o.kind !== 'orchestrator') throw new Error('expected orchestrator');
+    expect(o.triggers).toMatchObject([
+      { type: 'issue.cancelled', entityId: idOf(ids, 'a'), data: { stranded: [idOf(ids, 'b')] } },
+    ]);
+  });
+
+  it('owner-cancelling an issue nothing waits on does not wake the orchestrator', () => {
+    const t = setup();
+    const ids = t.plan([create('a'), create('b', ['a']), create('c')]);
+    t.scheduler.start();
+    expect(cancelIssue({ store: t.store, ids: t.ids }, idOf(ids, 'c')).ok).toBe(true);
+    t.timer.fire();
     expect(t.orchestrators()).toHaveLength(0);
   });
 

@@ -401,6 +401,30 @@ describe('POST /api/issues/:id/cancel', () => {
     expect((await ctx.app.request(`/api/issues/${a}/cancel`, json('POST'))).status).toBe(200);
   });
 
+  it('records the unfinished dependents it strands, so the orchestrator is told', async () => {
+    const ctx = setup();
+    const a = await add(ctx, { title: 'A', body: '' });
+    const b = await add(ctx, { title: 'B', body: '', dependsOn: [a] });
+    const c = await add(ctx, { title: 'C', body: '', dependsOn: [a] });
+    const d = await add(ctx, { title: 'D', body: '', dependsOn: [a] });
+    await add(ctx, { title: 'E', body: '' });
+    expect((await ctx.app.request(`/api/issues/${c}/cancel`, json('POST'))).status).toBe(200);
+    expect((await ctx.app.request(`/api/issues/${a}/cancel`, json('POST'))).status).toBe(200);
+    expect(lastEvent(ctx)).toMatchObject({
+      type: 'issue.cancelled',
+      entityId: a,
+      data: { by: 'owner', stranded: [b, d] },
+    });
+    expectSnapshotMatchesReplay(ctx.store);
+  });
+
+  it('records no stranded list when nothing unfinished depends on the issue', async () => {
+    const ctx = setup();
+    const a = await add(ctx, { title: 'A', body: '' });
+    expect((await ctx.app.request(`/api/issues/${a}/cancel`, json('POST'))).status).toBe(200);
+    expect(lastEvent(ctx)?.data).not.toHaveProperty('stranded');
+  });
+
   it('returns 409 for a completed issue and commits nothing', async () => {
     const ctx = setup();
     const a = await add(ctx, { title: 'A', body: '' });
