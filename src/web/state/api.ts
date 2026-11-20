@@ -181,6 +181,15 @@ export function handoffProduct(productId: string, signal?: AbortSignal): Promise
   });
 }
 
+/** Clears an account-wide backend limit, e.g. Claude Code's needs_login after logging in. */
+export function clearBackendLimit(backend: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/backends/${encodeURIComponent(backend)}/clear`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
 /** Applies the edited PRD draft as the next version; 409 when it equals the latest version. */
 export function applyPrdChanges(productId: string, signal?: AbortSignal): Promise<OkResponse> {
   return request(`/api/products/${encodeURIComponent(productId)}/apply-prd`, {

@@ -121,4 +121,30 @@ describe('DockerCliRuntime against a real Docker daemon', () => {
       await sb.close();
     }
   });
+
+  it('delivers killSignal SIGINT to the process inside the container on abort', async () => {
+    const sb = await rt.open(await spec());
+    try {
+      const ac = new AbortController();
+      const lines: string[] = [];
+      const running = sb.exec(
+        sh('trap "echo got-int; exit 7" INT; echo ready; while true; do sleep 0.1; done'),
+        {
+          ...T,
+          signal: ac.signal,
+          killSignal: 'SIGINT',
+          onLine: (l) => {
+            lines.push(l);
+            if (l === 'ready') ac.abort();
+          },
+        },
+      );
+      const r = await running;
+      expect(r.stdout).toContain('got-int');
+      expect(r.code).toBe(7);
+      expect(r.aborted).toBe(true);
+    } finally {
+      await sb.close();
+    }
+  });
 });

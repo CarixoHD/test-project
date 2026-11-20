@@ -134,7 +134,13 @@ async function orchestrate(
   const wt = await deps.git.addWorktree(productId, run.runId);
   let sandbox: Sandbox | undefined;
   try {
-    const image = await deps.runtime.ensureImage({ productId, contextDir: wt.dir });
+    // Claude Code: the derived image FROM the product image, plus the CLI login volume (ADR 4).
+    const claude = model.provider === 'claude-code';
+    const image = await deps.runtime.ensureImage({
+      productId,
+      contextDir: wt.dir,
+      ...(claude ? { claude } : {}),
+    });
     sandbox = await deps.runtime.open({
       runId: run.runId,
       productId,
@@ -143,7 +149,7 @@ async function orchestrate(
       worktree: wt.dir,
       readOnly: false,
       network: 'egress',
-      ...(model.provider === 'claude-code' ? { claude: true } : {}),
+      ...(claude ? { claude } : {}),
     });
     const webSearch = capabilities(model).webSearch;
     const prd = await readRepoFile(wt.dir, 'docs/PRD.md');
