@@ -13,6 +13,7 @@ import {
   type CountedStatus,
   type QuestionDraft,
 } from './attempt-events.ts';
+import { limitOf, LOGIN_RETRY_DELAY_MS } from './backend-limit.ts';
 import type { RecordedRunContext } from './run-recorded.ts';
 
 // How an attempt ends (ADR 7): merged, a counted failure, an uncounted error, an interruption
@@ -164,14 +165,15 @@ export function agentFailed(ctx: OutcomeCtx, r: Failed, p: Partial<AttemptOutcom
     case 'stopped':
       return stopped(ctx, r.reason, p);
     case 'rate_limited': {
-      const { backend, until } = agent;
-      const limit = { backend, until, needsLogin: false, reason: r.reason };
-      return interrupted('rate_limited', r.reason, p, { runAfter: until, limit });
+      const limit = limitOf(agent, r.reason);
+      return interrupted('rate_limited', r.reason, p, { runAfter: agent.until, limit });
     }
     case 'auth_required': {
-      const limit = { backend: agent.backend, until: null, needsLogin: true, reason: r.reason };
-      const runAfter = ctx.deps.clock.now() + ERROR_RETRY_DELAY_MS;
-      return interrupted('auth_required', r.reason, p, { runAfter, limit });
+      const runAfter = ctx.deps.clock.now() + LOGIN_RETRY_DELAY_MS;
+      return interrupted('auth_required', r.reason, p, {
+        runAfter,
+        limit: limitOf(agent, r.reason),
+      });
     }
     default:
       return assertNever(agent);
