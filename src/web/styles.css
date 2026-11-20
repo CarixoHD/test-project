@@ -618,6 +618,32 @@ a {
   font-size: 0.875rem;
 }
 
+/* Backend banner: a text line per limited backend; the live wrapper stays, empty, while OK. */
+.backend-status:empty {
+  display: none;
+}
+
+.backend-status__banner {
+  padding: var(--space-2) var(--space-3);
+  background: var(--tone-warning-fill);
+  border-left: 4px solid var(--tone-warning-ink);
+  border-radius: var(--radius-control);
+}
+
+.backend-status__list {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--tone-warning-ink);
+}
+
+.backend-status__list a {
+  color: inherit;
+  font-weight: 600;
+}
+
 /* Board: header with the "Add issue" button, then six status columns that scroll sideways. */
 .board__header {
   display: flex;

@@ -6,13 +6,7 @@ import type { BackendLimit } from '../../../shared/state-schema.ts';
 export type BackendNotice =
   | { backend: string; label: string; kind: 'needs_login' }
   /** `resumesAt` is null when the limit has no known reset time. */
-  | {
-      backend: string;
-      label: string;
-      kind: 'rate_limited';
-      until: number | null;
-      resumesAt: string | null;
-    };
+  | { backend: string; label: string; kind: 'rate_limited'; resumesAt: string | null };
 
 export type TimeFormat = { locale?: string; timeZone?: string };
 
@@ -52,13 +46,12 @@ export function backendNotices(
     const label = backendLabel(backend);
     if (limit.needsLogin) notices.push({ backend, label, kind: 'needs_login' });
     else if (limit.until === null)
-      notices.push({ backend, label, kind: 'rate_limited', until: null, resumesAt: null });
+      notices.push({ backend, label, kind: 'rate_limited', resumesAt: null });
     else if (limit.until > now)
       notices.push({
         backend,
         label,
         kind: 'rate_limited',
-        until: limit.until,
         resumesAt: resumeTime(limit.until, now, fmt),
       });
   }
@@ -74,10 +67,13 @@ export function noticeText(n: BackendNotice): string {
     : `${n.label} rate limited until ${n.resumesAt} — work resumes automatically`;
 }
 
-/** The earliest future `until` among the notices: when the banner must re-render. */
-export function nextExpiry(notices: readonly BackendNotice[]): number | null {
-  const times = notices.flatMap((n) =>
-    n.kind === 'rate_limited' && n.until !== null ? [n.until] : [],
+/** The earliest rate-limit `until` after `now`: when the banner must re-render. */
+export function nextExpiry(
+  limits: Readonly<Record<string, BackendLimit>>,
+  now: number,
+): number | null {
+  const times = Object.values(limits).flatMap((l) =>
+    !l.needsLogin && l.until !== null && l.until > now ? [l.until] : [],
   );
   return times.length === 0 ? null : Math.min(...times);
 }
