@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import type { BackendLimit } from '../../../shared/state-schema.ts';
 import { useApp, type AppSnapshot } from '../../state/store.ts';
-import { backendNotices, nextExpiry, noticeText } from './backend-status-model.ts';
+import { NEEDS_LOGIN_FIX, backendNotices, nextExpiry, noticeText } from './backend-status-model.ts';
 
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
@@ -53,7 +53,7 @@ function BackendNotices({ limits }: { limits: Limits }) {
           <li key={n.backend}>
             {n.kind === 'needs_login' ? (
               <>
-                {n.label} needs login — see <Link to="/settings">Settings</Link>
+                {n.label} needs login — see <Link to="/settings">Settings</Link>. {NEEDS_LOGIN_FIX}
               </>
             ) : (
               noticeText(n)

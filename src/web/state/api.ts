@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   AddIssueResponseSchema,
+  ClaudeCodeTokenViewSchema,
   CreateProductResponseSchema,
   EditIssueResponseSchema,
   GitTokenViewSchema,
@@ -13,6 +14,7 @@ import {
   type AddIssueRequest,
   type AnswerQuestionRequest,
   type AddIssueResponse,
+  type ClaudeCodeTokenView,
   type CreateProductRequest,
   type CreateProductResponse,
   type EditIssueRequest,
@@ -248,6 +250,29 @@ export function handoffProduct(productId: string, signal?: AbortSignal): Promise
   return request(`/api/products/${encodeURIComponent(productId)}/handoff`, {
     method: 'POST',
     schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+const CLAUDE_TOKEN_URL = '/api/backends/claude-code/token';
+
+/** Whether the Claude subscription token (ADR 13) is set; never the token, at most its last 4. */
+export function getClaudeCodeToken(signal?: AbortSignal): Promise<ClaudeCodeTokenView> {
+  return request(CLAUDE_TOKEN_URL, {
+    schema: ClaudeCodeTokenViewSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Sets (string) or removes (null) the Claude subscription token (write-only). */
+export function updateClaudeCodeToken(
+  token: string | null,
+  signal?: AbortSignal,
+): Promise<ClaudeCodeTokenView> {
+  return request(CLAUDE_TOKEN_URL, {
+    method: 'PUT',
+    body: { token },
+    schema: ClaudeCodeTokenViewSchema,
     ...(signal ? { signal } : {}),
   });
 }

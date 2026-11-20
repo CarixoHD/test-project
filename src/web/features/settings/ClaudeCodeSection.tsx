@@ -3,6 +3,7 @@ import type { BackendLimit } from '../../../shared/state-schema.ts';
 import { ApiError, clearBackendLimit } from '../../state/api.ts';
 import { useApp, type AppSnapshot } from '../../state/store.ts';
 import { Button, StatusBadge, type BadgeTone } from '../../ui/index.ts';
+import { ClaudeTokenField } from './ClaudeTokenField.tsx';
 import { useClaudeLogin } from './use-claude-login.ts';
 
 const BACKEND = 'claude-code';
@@ -44,7 +45,7 @@ function statusOf(limit: BackendLimit | undefined, expiredUntil: number | null):
       tone: 'danger',
       label: 'Needs login',
       detail:
-        'Claude Code runs are paused until you log in again. Run the login command, then press "I\'ve logged in".',
+        'Claude Code runs are paused until you log in again. Paste a new subscription token above, or run the terminal login command and press "I\'ve logged in".',
     };
   }
   if (limit !== undefined && limit.until === null) {
@@ -65,8 +66,8 @@ function statusOf(limit: BackendLimit | undefined, expiredUntil: number | null):
 }
 
 /**
- * Claude Code (subscription) backend (ADR 4): the one-time login commands, the live status from
- * `backendLimits`, and "I've logged in" to clear needs_login. Vibecode never sees the login.
+ * Claude Code (subscription) backend (ADR 4, ADR 13): the subscription token, the live status from
+ * `backendLimits`, "I've logged in" to clear needs_login, and the terminal login as an alternative.
  */
 export function ClaudeCodeSection() {
   const headingId = useId();
@@ -106,8 +107,12 @@ export function ClaudeCodeSection() {
       <p className="settings-section__intro">
         Use your Claude Pro or Max subscription by choosing the Claude Code provider for a role.
         Agents then run the official Claude Code CLI inside their containers, logged in with your
-        own account. Vibecode never reads or stores that login.
+        own account. Paste a subscription token below: Vibecode stores it only on this machine,
+        never shows it again, and only gives it to the Claude Code CLI. Logging in from a terminal
+        still works as an alternative.
       </p>
+
+      <ClaudeTokenField />
 
       <h3>Status</h3>
       <p className="settings-claude__status">
@@ -131,33 +136,35 @@ export function ClaudeCodeSection() {
         </p>
       ) : null}
 
-      <h3>One-time setup</h3>
-      <p>
-        Run these in a terminal on the machine that runs Vibecode: build the image, create the
-        volume, then log in. The login runs as your own user, like the agents. Log in again the same
-        way whenever Claude Code reports that the login expired.
-      </p>
-      {setup.error !== null ? (
-        <p role="alert" className="ui-field__error">
-          {setup.error}
+      <details className="settings-claude__terminal">
+        <summary>Alternative: log in from a terminal</summary>
+        <p>
+          Run these in a terminal on the machine that runs Vibecode: build the image, create the
+          volume, then log in. The login runs as your own user, like the agents. Log in again the
+          same way whenever Claude Code reports that the login expired.
         </p>
-      ) : null}
-      {commands !== null ? (
-        <ol className="settings-claude__steps">
-          {STEPS.map((step) => (
-            <li key={step.id}>
-              <code className="settings-claude__command">{commands[step.id]}</code>
-              <Button
-                aria-label={`Copy ${step.what}`}
-                onClick={() => void copy(step.what, commands[step.id])}
-              >
-                Copy
-              </Button>
-            </li>
-          ))}
-        </ol>
-      ) : null}
-      {commands === null && setup.error === null ? <p>Loading the setup commands…</p> : null}
+        {setup.error !== null ? (
+          <p role="alert" className="ui-field__error">
+            {setup.error}
+          </p>
+        ) : null}
+        {commands !== null ? (
+          <ol className="settings-claude__steps">
+            {STEPS.map((step) => (
+              <li key={step.id}>
+                <code className="settings-claude__command">{commands[step.id]}</code>
+                <Button
+                  aria-label={`Copy ${step.what}`}
+                  onClick={() => void copy(step.what, commands[step.id])}
+                >
+                  Copy
+                </Button>
+              </li>
+            ))}
+          </ol>
+        ) : null}
+        {commands === null && setup.error === null ? <p>Loading the setup commands…</p> : null}
+      </details>
       <p role="status" className="settings-notice">
         {notice}
       </p>

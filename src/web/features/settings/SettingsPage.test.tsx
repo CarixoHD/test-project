@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  ClaudeCodeTokenUpdateRequestSchema,
   SettingsUpdateRequestSchema,
   type ClaudeLoginResponse,
   type SettingsResponse,
@@ -114,6 +115,12 @@ let initialState: ClientState;
 let cleared: string[];
 /** What GET /api/backends/claude-code/login answers (null: a 500). */
 let loginCommands: ClaudeLoginResponse | null;
+/** The stored Claude subscription token (GET|PUT /api/backends/claude-code/token). */
+let claudeToken: string | null;
+/** Bodies of PUT /api/backends/claude-code/token. */
+let tokenPuts: unknown[];
+/** When set, PUT /api/backends/claude-code/token answers with this error status. */
+let tokenPutFails: number | null;
 const CLAUDE_TAG = `vibecode/claude-code:${'ab12'.repeat(16)}`;
 const LOGIN_COMMANDS: ClaudeLoginResponse = {
   build: `docker buildx build --load --tag ${CLAUDE_TAG} --file /opt/vibecode/docker/claude-code.Dockerfile /opt/vibecode/docker`,
@@ -124,6 +131,9 @@ const LOGIN_COMMANDS: ClaudeLoginResponse = {
 beforeEach(() => {
   server = new FakeSettingsServer();
   loginCommands = LOGIN_COMMANDS;
+  claudeToken = null;
+  tokenPuts = [];
+  tokenPutFails = null;
   initialState = emptyState;
   cleared = [];
   vi.stubGlobal('EventSource', FakeEventSource);
@@ -146,6 +156,27 @@ beforeEach(() => {
           loginCommands === null
             ? Response.json({ error: { code: 'internal', message: 'boom' } }, { status: 500 })
             : Response.json(loginCommands),
+        );
+      }
+      if (url === '/api/backends/claude-code/token') {
+        if (method === 'PUT') {
+          const body = JSON.parse(String(init?.body)) as unknown;
+          tokenPuts.push(body);
+          if (tokenPutFails !== null) {
+            return Promise.resolve(
+              Response.json(
+                { error: { code: 'invalid', message: 'A token must not contain whitespace' } },
+                { status: tokenPutFails },
+              ),
+            );
+          }
+          claudeToken = ClaudeCodeTokenUpdateRequestSchema.parse(body).token;
+        }
+        return Promise.resolve(
+          Response.json({
+            set: claudeToken !== null,
+            last4: claudeToken === null ? null : claudeToken.slice(-4),
+          }),
         );
       }
       const clear = /^\/api\/backends\/([^/]+)\/clear$/.exec(url);
@@ -451,6 +482,9 @@ describe('Settings: Claude Code', () => {
     const { user } = await renderSettings();
     const r = region();
     const login = await within(r).findByText(LOGIN_COMMANDS.login);
+    // Collapsed by default: the token is the main way in; the terminal login is the alternative.
+    expect(login).not.toBeVisible();
+    await user.click(within(r).getByText('Alternative: log in from a terminal'));
     expect(login).toBeVisible();
     expect(login.textContent).toContain('--user 1501:20 ');
     expect(within(r).getByText(LOGIN_COMMANDS.build)).toBeVisible();
@@ -553,5 +587,98 @@ describe('Settings: Claude Code', () => {
 
     expect(await within(region()).findByText('OK')).toBeVisible();
     expect(within(region()).queryByText('Needs login')).toBeNull();
+  });
+
+  const TOKEN = 'sk-ant-oat01-SUBSCRIPTIONSECRET-k9z8';
+  const tokenInput = () => within(region()).getByLabelText('Subscription token');
+
+  it('saves a pasted token, then shows only its last 4 characters', async () => {
+    const { user } = await renderSettings();
+    const input = await within(region()).findByLabelText('Subscription token');
+    expect(input).toHaveAttribute('type', 'password');
+    expect(input).toHaveValue('');
+    expect(within(region()).getByText(/claude setup-token/)).toBeVisible();
+
+    await user.click(input);
+    await user.paste(TOKEN);
+    await user.click(within(region()).getByRole('button', { name: 'Save token' }));
+
+    expect(await within(region()).findByText('Token set (…k9z8)')).toBeVisible();
+    expect(tokenPuts).toEqual([{ token: TOKEN }]);
+    expect(within(region()).getByText('Saved. Claude Code runs use this token.')).toBeVisible();
+    expect(within(region()).queryByLabelText('Subscription token')).toBeNull();
+    expect(pageContains(TOKEN)).toBe(false);
+    expect(pageContains('SUBSCRIPTIONSECRET')).toBe(false);
+  });
+
+  it('saves with Enter from the keyboard', async () => {
+    const { user } = await renderSettings();
+    await user.click(await within(region()).findByLabelText('Subscription token'));
+    await user.keyboard('sk-ant-oat01-KEYBOARDKEYBOARD-ab12{Enter}');
+    expect(await within(region()).findByText('Token set (…ab12)')).toBeVisible();
+    expect(tokenPuts).toEqual([{ token: 'sk-ant-oat01-KEYBOARDKEYBOARD-ab12' }]);
+  });
+
+  it('shows a stored token masked, never prefilled, and replaces it', async () => {
+    claudeToken = 'sk-ant-oat01-OLDOLDOLDOLD-1111';
+    const { user } = await renderSettings();
+    expect(await within(region()).findByText('Token set (…1111)')).toBeVisible();
+    expect(within(region()).queryByLabelText('Subscription token')).toBeNull();
+
+    await user.click(within(region()).getByRole('button', { name: 'Replace token' }));
+    expect(tokenInput()).toHaveValue('');
+    expect(tokenInput()).toHaveFocus();
+    await user.keyboard('sk-ant-oat01-NEWNEWNEWNEW-2222{Enter}');
+
+    expect(await within(region()).findByText('Token set (…2222)')).toBeVisible();
+    expect(pageContains('OLDOLDOLD')).toBe(false);
+    expect(pageContains('NEWNEWNEW')).toBe(false);
+  });
+
+  it('removes the token after confirmation and offers the empty field again', async () => {
+    claudeToken = 'sk-ant-oat01-REMOVEREMOVE-3333';
+    const { user } = await renderSettings();
+    await user.click(await within(region()).findByRole('button', { name: 'Remove token' }));
+    const dialog = screen.getByRole('dialog', { name: 'Remove the Claude Code token?' });
+    expect(tokenPuts).toEqual([]);
+    await user.click(within(dialog).getByRole('button', { name: 'Remove token' }));
+
+    expect(await within(region()).findByLabelText('Subscription token')).toHaveValue('');
+    expect(tokenPuts).toEqual([{ token: null }]);
+    expect(within(region()).queryByText(/Token set/)).toBeNull();
+  });
+
+  it('keeps the token when removal is cancelled', async () => {
+    claudeToken = 'sk-ant-oat01-KEEPKEEPKEEP-4444';
+    const { user } = await renderSettings();
+    await user.click(await within(region()).findByRole('button', { name: 'Remove token' }));
+    const dialog = screen.getByRole('dialog', { name: 'Remove the Claude Code token?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(tokenPuts).toEqual([]);
+    expect(within(region()).getByText('Token set (…4444)')).toBeVisible();
+  });
+
+  it('shows an alert when saving fails, without the typed token in it', async () => {
+    tokenPutFails = 400;
+    const { user } = await renderSettings();
+    await user.click(await within(region()).findByLabelText('Subscription token'));
+    await user.paste(TOKEN);
+    await user.click(within(region()).getByRole('button', { name: 'Save token' }));
+
+    const alert = await within(region()).findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'Could not save the token: A token must not contain whitespace',
+    );
+    expect(alert.textContent).not.toContain('SUBSCRIPTIONSECRET');
+    expect(within(region()).queryByText(/Token set/)).toBeNull();
+    expect(tokenInput()).toHaveFocus();
+  });
+
+  it('asks for a token instead of saving an empty field', async () => {
+    const { user } = await renderSettings();
+    await within(region()).findByLabelText('Subscription token');
+    await user.click(within(region()).getByRole('button', { name: 'Save token' }));
+    expect(await within(region()).findByText('Paste a token first.')).toBeVisible();
+    expect(tokenPuts).toEqual([]);
   });
 });
