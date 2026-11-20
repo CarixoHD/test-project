@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router';
 import { useAuth, type Auth } from './features/auth/index.ts';
+import { InboxNavLink, InboxNotifier } from './features/inbox/index.ts';
 import { useApp, type ConnectionStatus } from './state/store.ts';
 import { Button } from './ui/index.ts';
 
@@ -36,9 +37,13 @@ export function Layout() {
           <ul>
             {NAV.map((item) => (
               <li key={item.to}>
-                <NavLink to={item.to} end={item.end}>
-                  {item.label}
-                </NavLink>
+                {item.to === '/inbox' ? (
+                  <InboxNavLink />
+                ) : (
+                  <NavLink to={item.to} end={item.end}>
+                    {item.label}
+                  </NavLink>
+                )}
               </li>
             ))}
           </ul>
@@ -48,6 +53,7 @@ export function Layout() {
         </p>
         {auth?.passwordSet === true ? <LogoutButton auth={auth} /> : null}
       </header>
+      <InboxNotifier />
       <main id={MAIN_ID} tabIndex={-1} className="app-main">
         <Outlet />
       </main>

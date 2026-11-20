@@ -10,6 +10,7 @@ import {
   StartPreviewResponseSchema,
   StateResponseSchema,
   type AddIssueRequest,
+  type AnswerQuestionRequest,
   type AddIssueResponse,
   type CreateProductRequest,
   type CreateProductResponse,
@@ -344,6 +345,30 @@ export function editIssue(
 export function cancelIssue(issueId: string, signal?: AbortSignal): Promise<OkResponse> {
   return request(`/api/issues/${encodeURIComponent(issueId)}/cancel`, {
     method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Marks an inbox item read; the change arrives as `inbox.read` (already read is fine). */
+export function markInboxRead(itemId: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/inbox/${encodeURIComponent(itemId)}/read`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Answers an agent's question; 409 when it was already answered. */
+export function answerQuestion(
+  questionId: string,
+  text: string,
+  signal?: AbortSignal,
+): Promise<OkResponse> {
+  const body: AnswerQuestionRequest = { text };
+  return request(`/api/questions/${encodeURIComponent(questionId)}/answer`, {
+    method: 'POST',
+    body,
     schema: OkResponseSchema,
     ...(signal ? { signal } : {}),
   });
