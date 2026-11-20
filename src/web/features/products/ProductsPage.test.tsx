@@ -6,7 +6,7 @@ import { EventSchema, type Event } from '../../../shared/events.ts';
 import { emptyState } from '../../../shared/state.ts';
 import { App } from '../../App.tsx';
 import { routes } from '../../routes.tsx';
-import { createAppStore } from '../../state/store.ts';
+import { createAppStore, type AppStore } from '../../state/store.ts';
 
 // The products feature end to end in the browser: real store, router and API client, with
 // the network (fetch + EventSource) faked at the global boundary.
@@ -81,10 +81,26 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function renderApp(path = '/') {
+async function renderApp(path = '/') {
   const router = createMemoryRouter(routes, { initialEntries: [path] });
-  render(<App store={createAppStore()} router={router} />);
+  const store = createAppStore();
+  render(<App store={store} router={router} />);
+  // Wait on the store's start itself (snapshot loaded or failed), not on a polling timeout.
+  await act(() => settled(store));
   return router;
+}
+
+/** Resolves once the store has loaded its snapshot or given up with an error. */
+function settled(store: AppStore): Promise<void> {
+  const done = () => store.getSnapshot().loaded || store.getSnapshot().error !== null;
+  return new Promise((resolve) => {
+    if (done()) return resolve();
+    const unsubscribe = store.subscribe(() => {
+      if (!done()) return;
+      unsubscribe();
+      resolve();
+    });
+  });
 }
 
 const stream = (): FakeEventSource => {
@@ -94,8 +110,8 @@ const stream = (): FakeEventSource => {
 
 describe('ProductsPage', () => {
   it('lists products live as product.created events arrive, with the phase as text', async () => {
-    renderApp();
-    expect(await screen.findByText('No products yet.')).toBeInTheDocument();
+    await renderApp();
+    expect(screen.getByText('No products yet.')).toBeInTheDocument();
 
     act(() => stream().send(productCreated(1, 'p1', 'Todo app')));
 
@@ -110,8 +126,8 @@ describe('ProductsPage', () => {
 
   it('creates a product with the keyboard and opens its page once it arrives', async () => {
     const user = userEvent.setup();
-    const router = renderApp();
-    await screen.findByText('No products yet.');
+    const router = await renderApp();
+    screen.getByText('No products yet.');
 
     await user.click(screen.getByLabelText('Name'));
     await user.keyboard('Todo app');
@@ -137,8 +153,8 @@ describe('ProductsPage', () => {
 
   it('shows validation messages next to the fields and does not submit', async () => {
     const user = userEvent.setup();
-    renderApp();
-    await screen.findByText('No products yet.');
+    await renderApp();
+    screen.getByText('No products yet.');
 
     await user.type(screen.getByLabelText('Name'), '   ');
     await user.click(screen.getByRole('button', { name: 'Create product' }));
@@ -154,8 +170,8 @@ describe('ProductsPage', () => {
   });
 
   it('limits the field lengths', async () => {
-    renderApp();
-    await screen.findByText('No products yet.');
+    await renderApp();
+    screen.getByText('No products yet.');
     expect(screen.getByLabelText('Name')).toHaveAttribute('maxlength', '80');
     expect(screen.getByLabelText('Idea')).toHaveAttribute('maxlength', '4000');
   });
@@ -164,8 +180,8 @@ describe('ProductsPage', () => {
     const user = userEvent.setup();
     postResponse = () =>
       Response.json({ error: { code: 'invalid', message: 'Name is taken' } }, { status: 400 });
-    const router = renderApp();
-    await screen.findByText('No products yet.');
+    const router = await renderApp();
+    screen.getByText('No products yet.');
 
     await user.type(screen.getByLabelText('Name'), 'Todo');
     await user.type(screen.getByLabelText('Idea'), 'Todos');
@@ -179,8 +195,8 @@ describe('ProductsPage', () => {
 
 describe('ProductPage', () => {
   it('shows the product name and the Build, Spec and Settings tabs', async () => {
-    renderApp('/products/p1');
-    await screen.findByRole('heading', { level: 1, name: 'Product not found' });
+    await renderApp('/products/p1');
+    screen.getByRole('heading', { level: 1, name: 'Product not found' });
     act(() => stream().send(productCreated(1, 'p1', 'Todo app')));
 
     expect(screen.getByRole('heading', { level: 1, name: 'Todo app' })).toBeInTheDocument();
