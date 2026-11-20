@@ -233,13 +233,20 @@ runAgent<T>(spec: {
   agentId: string; role: Role; model: ModelRef;  // ModelRef = {provider, model}; provider 'claude-code' selects the CLI backend
   instructions: string; prompt: string; schema: ZodType<T>;
   sandbox?: Sandbox; tools: ToolName[]; webSearch?: boolean;
-  limits: {maxSteps: number; wallClockMs: number};
+  limits: {maxSteps: number; wallClockMs: number; stepTimeoutMs?: number /* default 10 min */};
   shouldStop: () => boolean;
+  modelDeps: ModelDeps; clock: Clock;            // llm model() deps (secrets, provider config, fake script)
+  onActivity?: (line: string) => void;           // redacted lines: tool calls, tool errors, assistant text
+  onUsage?: (u: StepUsage) => void;              // per step: Usage buckets + step + providerMetadata
 }): Promise<
   | {kind:'ok'; result:T} | {kind:'stopped'} | {kind:'rate_limited'; until:number; backend:string}
   | {kind:'auth_required'; backend:string} | {kind:'error'; message:string; transient:boolean}>
 ```
 - **ApiBackend.** This is our own step loop over AI SDK `streamText` with tools. The tools are `read_file, write_file, edit_file, list_dir, grep, run`, plus a `finish` tool whose input schema is `schema`. It checks `shouldStop()` between steps. Every tool executes through `sandbox.exec`. The loop runs on the host, so keys never enter a container. Tool output is truncated in the middle to 30k characters. Web search, when enabled, is the provider-native tool from `llm/capabilities.ts`.
+  - Implemented in `agents/api-backend.ts` (the only agents file that imports `ai`). Each step is one `streamText` call with `maxRetries: 0` and an `abortSignal` that fires on `wallClockMs` (→ error, non-transient) or `stepTimeoutMs` (→ error, transient); the wall clock is also checked between steps. `maxSteps` without a valid `finish` → error. Invalid `finish` input goes back to the model as a tool error.
+  - Errors: 429 → `rate_limited` (`until` from `retry-after`, else now + 60 s; `backend` = provider); 401/403 → non-transient error pointing to Settings; 5xx/network → transient error; `MissingProviderSetupError` → non-transient error with its message.
+  - `webSearches` per step = max(provider-executed `web_search` tool results, Anthropic `usage.server_tool_use.web_search_requests`). Web search is added only when `spec.webSearch` and `capabilities(ref).webSearch` (OpenRouter via `ModelDeps.webSearch`).
+  - Until ClaudeCodeBackend lands, provider `claude-code` returns `{kind:'error', message:'Claude Code backend not available yet', transient:false}`.
 - **ClaudeCodeBackend.** It runs `claude -p --output-format stream-json --verbose --permission-mode acceptEdits --allowedTools <role list> --permission-prompts none --strict-mcp-config --max-turns N --json-schema <schema> --model <m>` through `sandbox.exec`. The prompt goes on stdin. The environment has `CLAUDE_CONFIG_DIR=/home/agent/.claude` and `DISABLE_AUTOUPDATER=1`, and `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are never set. `--bare` is never used. The backend parses the NDJSON output:
   - `rate_limit_event.status=="rejected"` + `resetsAt` becomes `rate_limited`. If those are missing, it falls back to `api_retry.error=="rate_limit"` or to parsing the "resets …" text.
   - `authentication_failed` or "Login expired" becomes `auth_required`.
@@ -266,8 +273,9 @@ fakeModel(script: FakeScript, {vars?}): LanguageModel;  // MockLanguageModelV4 f
 Unknown models are `unpriced` and are never counted as $0. If OpenRouter's `usage.cost` is present in provider metadata, it is used instead of our computed cost. OpenRouter goes through `@ai-sdk/openai-compatible` with `usage: {include: true}` in the request body and a metadata extractor that copies `usage.cost` (generate and stream).
 
 A `FakeScript` is JSON: a list of turns, one per model call (doGenerate or doStream):
-`{text?, toolCalls?: [{name, input}], usage?: {input, output, cacheRead, cacheWrite, reasoning}, error?: {status: 429, retryAfterSeconds?} | {status: 401}}`.
-`{{path}}` placeholders in `text` and in string values of tool `input` are filled from `vars` (an unknown variable throws). An `error` turn throws an `APICallError` (429 is retryable and has a `retry-after` header; 401 is not). An exhausted script throws.
+`{text?, toolCalls?: [{name, input}], usage?: {input, output, cacheRead, cacheWrite, reasoning}, error?: {status: 429, retryAfterSeconds?} | {status: 401 | 403 | 503}, webSearches?: [{query}], hang?: true}`.
+`webSearches` streams provider-executed `web_search` tool calls and results; `hang` never answers until the call's abortSignal fires.
+`{{path}}` placeholders in `text` and in string values of tool `input` are filled from `vars` (an unknown variable throws). An `error` turn throws an `APICallError` (429 and 503 are retryable, 429 with a `retry-after` header; 401 and 403 are not). An exhausted script throws.
 
 Only `src/server/llm` and `src/server/agents/api-backend.ts` may import `ai` or `@ai-sdk/*` (ESLint enforces this).
 
