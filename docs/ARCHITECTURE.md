@@ -664,7 +664,7 @@ Product repository contract, which the orchestrator writes:
 | server units | Vitest (`unit`) | store with `:memory:` DB + real migrations; `buildRunArgs` security assertions (no docker.sock, `.git` mask, cap-drop, no secret env); redactor; bind policy; password/session; ClaudeCode NDJSON parser against fixture files in `src/server/agents/fixtures/`; git module against real git in tmp dirs |
 | server integration | Vitest (`unit`) | full pipeline with `fake` LLM + `FakeContainerRuntime` + real git. It covers create → spar → handoff → plan (3 issues with deps) → attempts → merge (`main` has 3 commits). It also covers retry with feedback, failed → orchestrator rewrite, pause/resume, budget auto-pause, rate-limit backoff, restart recovery, cancel during an attempt, apply-PRD replan, and snapshot ≡ replayed events. HTTP is tested through `app.request()`. |
 | web | Vitest (`web`, jsdom) + Testing Library | board columns update from events, issue forms, inbox badge, settings masking, AgentPanel; axe-free a11y queries by role and name |
-| browser E2E | Playwright (`npm run test:e2e`) | server in demo mode on a temp data dir: live board updates, add/edit/cancel issue, inbox, settings and password, one Scene3D render smoke (canvas present, draw calls under 60) |
+| browser E2E | Playwright (`npm run test:e2e`) | built SPA + server in demo mode on a temp data dir, Chromium (global setup fails loudly when it is missing). `tests/e2e/board.spec.ts`: create product → spar → handoff → issues reach Completed live, add/edit/cancel issue, SSE outage → snapshot reload matches the server, inbox badge and mark read. Still to come: settings and password, one Scene3D render smoke (canvas present, draw calls under 60) |
 | docker E2E | Vitest (`npm run test:docker`) | real Docker: fake agents commit in containers, checks run with network none, merge to main, preview serves on 127.0.0.1, containers have no docker.sock, recovery removes orphans |
 
 Rules: no test needs network, API keys or a Claude subscription. Time is injected (`Clock`), as are ids (`IdGen`) where order matters. `npm test` must finish in under 60 s.
@@ -675,7 +675,7 @@ The harness runs these commands on every change, so the scaffold issue MUST defi
 
 | Script | Command |
 |---|---|
-| `typecheck` | `tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.web.json` |
+| `typecheck` | `tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.e2e.json` (the last one gives the Playwright specs the DOM lib) |
 | `lint` | `eslint . && prettier --check .` |
 | `format` | `prettier --write .` |
 | `test` | `vitest run --project unit --project web` |

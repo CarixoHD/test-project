@@ -29,7 +29,7 @@ Unit tests sit next to the code: `foo.ts` → `foo.test.ts`, and `Board.tsx` →
 | Lint (ESLint + Prettier check) | `npm run lint` |
 | Auto-format / fix | `npm run format` then `npx eslint --fix .` |
 | DB migration after editing `src/server/db/schema.ts` | `npm run db:generate` (commit the generated SQL) |
-| Browser E2E (needs `npx playwright install chromium`) | `npm run test:e2e` |
+| Browser E2E (needs `npx playwright install --with-deps chromium`) | `npm run test:e2e` |
 | Docker suite (needs Docker) | `npm run test:docker` |
 | Production | `npm run build && npm start` |
 
