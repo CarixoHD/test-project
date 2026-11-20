@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -161,6 +161,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount (stopping the store and its stream) while the fake network is still in place.
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -169,7 +171,8 @@ async function renderSettings() {
   render(<App store={createAppStore()} router={router} />);
   await screen.findByRole('heading', { level: 1, name: 'Settings' });
   await screen.findByRole('region', { name: 'Providers' });
-  return { user: userEvent.setup() };
+  // No timer yield between keystrokes: under full-suite load each yield costs a scheduler turn.
+  return { user: userEvent.setup({ delay: null }) };
 }
 
 const providerGroup = (name: string) => screen.getByRole('group', { name });
@@ -189,7 +192,9 @@ describe('Settings: provider keys', () => {
     const input = within(anthropic).getByLabelText('Anthropic API key');
     expect(input).toHaveAttribute('type', 'password');
 
-    await user.type(input, KEY);
+    // Pasted, as a key usually is; typing ~40 characters one by one was the slow step under load.
+    await user.click(input);
+    await user.paste(KEY);
     await user.click(within(anthropic).getByRole('button', { name: 'Save Anthropic key' }));
 
     expect(await within(providerGroup('Anthropic')).findByText('Key ending in wxyz')).toBeVisible();

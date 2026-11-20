@@ -34,6 +34,12 @@ async function rawGit(args: string[], cwd?: string): Promise<string> {
   return r.stdout.trim();
 }
 const repoOf = (productId: string): string => join(dataDir, 'repos', `${productId}.git`);
+/** Paths of the worktrees git knows for a repo (the bare repo itself is listed first). */
+const worktreePaths = async (productId: string): Promise<string[]> =>
+  (await rawGit(['--git-dir', repoOf(productId), 'worktree', 'list', '--porcelain']))
+    .split('\n')
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => line.slice('worktree '.length));
 const commitCount = (productId: string): Promise<string> =>
   rawGit(['--git-dir', repoOf(productId), 'rev-list', '--count', 'main']);
 
@@ -253,11 +259,11 @@ describe('worktrees', () => {
   it('pruneWorktrees forgets worktrees whose directory was deleted', async () => {
     const wt = await git.addWorktree('p1', 'r1');
     await rm(wt.dir, { recursive: true, force: true });
-    expect(await rawGit(['--git-dir', repoOf('p1'), 'worktree', 'list'])).toContain('r1');
+    expect(await worktreePaths('p1')).toEqual([repoOf('p1'), wt.dir]);
 
     await git.pruneWorktrees('p1');
 
-    expect(await rawGit(['--git-dir', repoOf('p1'), 'worktree', 'list'])).not.toContain('r1');
+    expect(await worktreePaths('p1')).toEqual([repoOf('p1')]);
   });
 
   it('clearWorktrees removes every worktree dir, stale entry and vibecode/* branch of every repo', async () => {
@@ -273,7 +279,7 @@ describe('worktrees', () => {
 
     expect(await readdir(join(dataDir, 'worktrees'))).toEqual([]);
     for (const p of ['p1', 'p2']) {
-      expect(await rawGit(['--git-dir', repoOf(p), 'worktree', 'list'])).not.toMatch(/r\d/);
+      expect(await worktreePaths(p)).toEqual([repoOf(p)]);
     }
     const heads = (p: string) =>
       rawGit(['--git-dir', repoOf(p), 'for-each-ref', '--format=%(refname:short)', 'refs/heads/']);
