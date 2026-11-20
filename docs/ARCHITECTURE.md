@@ -350,14 +350,39 @@ Never a shell. The child runs in its own process group, and timeout or abort sig
 - It stops stale previews.
 
 ### 4.12 web
-- `state/store.ts`: `useApp(selector)` is built on `useSyncExternalStore`. On load it fetches `GET /api/state`, then opens `EventSource('/api/events')` and applies the shared `reduce`. After 3 failed reconnects it re-fetches the snapshot.
+- `state/`: the browser's live copy of `ClientState`. It applies events with the shared `reduce`, so the server and the UI read an event the same way.
+  ```ts
+  type ConnectionStatus = 'connecting' | 'live' | 'reconnecting' | 'offline';
+  interface AppSnapshot { state: ClientState; lastSeq: number; status: ConnectionStatus; loaded: boolean; error: string | null }
+  interface AppStore { getSnapshot(): AppSnapshot; subscribe(listener): () => void; start(): () => void /* returns stop */ }
+  createAppStore({eventsUrl='/api/events', retryDelayMs=3000}?): AppStore   // store.ts
+  <AppStoreProvider store={store}>                                         // AppStoreProvider.tsx: start() on mount, stop on unmount
+  useApp(selector: (s: AppSnapshot) => T): T                               // store.ts; useSyncExternalStore; throws outside the provider
+  getState(signal?): Promise<StateResponse>                                // api.ts; GET /api/state, zod-validated, failures → ApiError
+  ```
+  - `createAppStore` holds the snapshot and the connection, with no React involved. `start()` connects, and the function it returns disconnects. It can be started again after a stop.
+  - `AppStoreProvider` puts one store in context and keeps it connected while it is mounted.
+  - `useApp(selector)` returns a slice of `AppSnapshot` and re-renders when that slice changes. The selector must return existing objects, not build new ones each call.
+  - `ConnectionStatus`:
+    - `connecting`: no live connection yet in this session (first load).
+    - `live`: a snapshot is loaded and the event stream is open.
+    - `reconnecting`: the store was live before but the stream or snapshot is being restored.
+    - `offline`: the `GET /api/state` load failed. `error` holds a message for the owner, and loads are retried with exponential backoff (`retryDelayMs · 2^(n-1)`, capped at 30 s). The status stays `offline` until a snapshot loads.
+  - `loaded` becomes true after the first successful snapshot. `error` is cleared on success.
+- Sync protocol (`connect()`):
+  1. Close any previous stream and request, and bump a generation counter so their late callbacks are ignored.
+  2. Open `EventSource(eventsUrl)` first, then fetch `GET /api/state`. Until the snapshot arrives, decoded events are buffered. When the request is sent the buffer is cleared, because the snapshot includes everything committed before then.
+  3. On the snapshot, set `state` and `lastSeq` from `{state, lastSeq}`, then apply the buffered events. From then on, apply each event as it arrives. Every event with `seq <= lastSeq` is skipped as a duplicate. Each remaining event goes through `reduce`, and `lastSeq` advances.
+  4. Stream errors: the browser's own `EventSource` retry is used. If the browser gave up (`readyState === CLOSED`, e.g. a non-200 answer), the store reopens the stream after `retryDelayMs · failures`. A successful `open` resets the failure count. After `MAX_STREAM_FAILURES` (3) consecutive errors, events may have been missed, so the store runs `connect()` again and rebuilds from a fresh snapshot.
+  - Events of a type unknown to this client (a newer server) are dropped silently. Malformed payloads are logged with `console.error` and dropped. The next snapshot reload repairs any gap.
+- SSE wire format (`GET /api/events`): every event is an unnamed message, with no `event:` field, so it reaches `onmessage`. `id:` is the event `seq` and `data:` is the `Event` JSON. Comment lines `:hb` are heartbeats, which the client ignores.
 - Routes:
   - `/` products
   - `/products/:id` with the `Build` tab (board, agent list, cost bar, pause/resume, preview, collapsible Scene3D), the `Spec` tab (chat, PRD editor, handoff/apply) and the `Settings` tab
   - `/products/:id/issues/:issueId` issue detail, with attempts and their log, diff, check and review
   - `/inbox`
   - `/settings`
-- Browser `Notification` fires on `inbox.created` once the owner has granted permission.
+- Browser `Notification` fires on `inbox.created` once the owner has granted permission. This belongs to the inbox feature (`features/inbox`, #33), not to the store.
 - Scene3D is `React.lazy`. It renders `sceneReduce` output, with one InstancedMesh per piece type and `SkeletonUtils.clone` for each worker. When collapsed or off-screen it keeps `frameloop="never"` and stays mounted. Clicking a worker opens the same `AgentPanel` that the agent list uses.
 
 ## 5. Data model (SQLite, `data/vibecode.db`)
