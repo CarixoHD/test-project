@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { z } from 'zod';
+import { recheckSession } from '../../state/api.ts';
 
 // Follows GET /api/agents/:id/log?follow=1 (ARCHITECTURE §4.3): one unnamed SSE message per
 // `{ts, line}`, existing lines first, then `event: end` once the agent has exited.
@@ -52,11 +53,26 @@ export function useAgentLog(agentId: string): AgentLog {
       setLog((prev) => ({ ...prev, status: 'ended' }));
     };
     source.addEventListener('end', onEnd);
+    let unmounted = false;
+    let checking = false;
+    // EventSource cannot read a 401: ask GET /api/session whether the session is gone (that
+    // shows Login via onUnauthorized) instead of letting the browser retry forever.
+    const checkSession = async () => {
+      if (checking) return;
+      checking = true;
+      const session = await recheckSession();
+      checking = false;
+      if (unmounted || session !== 'unauthenticated') return;
+      source.close();
+      setLog((prev) => ({ ...prev, status: 'lost' }));
+    };
     // The browser retries on its own; only a closed source (e.g. 404) is final.
     source.onerror = () => {
       if (source.readyState === EventSource.CLOSED) setLog((prev) => ({ ...prev, status: 'lost' }));
+      void checkSession();
     };
     return () => {
+      unmounted = true;
       source.removeEventListener('end', onEnd);
       source.close();
     };

@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import { SessionResponseSchema } from '../../shared/dto.ts';
+import { AgentIdSchema } from '../../shared/ids.ts';
 import { createAccess, LOGIN_RATE_LIMIT } from '../commands/index.ts';
+import { agentLogPath } from '../pipeline/index.ts';
 import { createSecrets, SESSION_COOKIE } from '../security/index.ts';
 import { createApp } from './app.ts';
 import type { ErrorBody } from './errors.ts';
@@ -293,5 +298,102 @@ describe('POST /api/settings/password', () => {
     expect((await req('/api/state', { headers })).status).toBe(401);
     const fresh = sessionCookie(ok) ?? '';
     expect((await req('/api/state', { headers: { cookie: fresh } })).status).toBe(200);
+  });
+});
+
+describe('SSE streams behind the session check', () => {
+  const AGENT = AgentIdSchema.parse('agent-1');
+  let logsDir: string | undefined;
+
+  afterEach(() => {
+    if (logsDir !== undefined) rmSync(logsDir, { recursive: true, force: true });
+    logsDir = undefined;
+  });
+
+  async function withPasswordAndAgent() {
+    const base = setupStore();
+    const secrets = createSecrets(base);
+    const access = createAccess({ store: base.store, secrets, clock: base.clock });
+    await access.resetPassword(PW);
+    logsDir = mkdtempSync(join(tmpdir(), 'vibecode-auth-sse-'));
+    base.store.commit(() => [
+      productCreated(),
+      {
+        type: 'agent.spawned',
+        productId: TEST_PRODUCT,
+        entityId: AGENT,
+        v: 1,
+        data: {
+          role: 'implementer',
+          model: { provider: 'fake', model: 'fake' },
+          issueId: null,
+          attemptId: null,
+        },
+      },
+    ]);
+    appendFileSync(agentLogPath(logsDir, AGENT), `${JSON.stringify({ ts: 1, line: 'hello' })}\n`);
+    const app = createApp({
+      store: base.store,
+      ids: base.ids,
+      git: base.git,
+      redactor: base.redactor,
+      access,
+      clientKey: () => 'test',
+      logsDir,
+      logPollMs: 20,
+    });
+    const req = (path: string, init: RequestInit = {}) => app.request(`${LOCAL}${path}`, init);
+    const login = await req('/api/login', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ password: PW }),
+    });
+    return { req, cookie: sessionCookie(login) ?? '' };
+  }
+
+  /** Reads the stream until `needle` shows up, then cancels it. */
+  async function readUntil(res: Response, needle: string): Promise<string> {
+    if (res.body === null) throw new Error('no body');
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    const deadline = Date.now() + 2000;
+    while (!text.includes(needle)) {
+      if (Date.now() > deadline) throw new Error(`timed out; stream so far:\n${text}`);
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    await reader.cancel();
+    return text;
+  }
+
+  it('follows an agent log with a valid session cookie and answers 401 without one', async () => {
+    const { req, cookie } = await withPasswordAndAgent();
+    const path = `/api/agents/${AGENT}/log?follow=1`;
+
+    const denied = await req(path);
+    expect(denied.status).toBe(401);
+    expect(await errorCode(denied)).toBe('unauthorized');
+    const forged = await req(path, { headers: { cookie: `${SESSION_COOKIE}=1.2.3` } });
+    expect(forged.status).toBe(401);
+
+    const res = await req(path, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+    expect(await readUntil(res, 'hello')).toContain('"line":"hello"');
+  });
+
+  it('streams /api/events with a valid session cookie and answers 401 without one', async () => {
+    const { req, cookie } = await withPasswordAndAgent();
+
+    const denied = await req('/api/events');
+    expect(denied.status).toBe(401);
+    expect(await errorCode(denied)).toBe('unauthorized');
+
+    const res = await req('/api/events', { headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+    await res.body?.cancel();
   });
 });
