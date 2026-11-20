@@ -18,6 +18,10 @@ export interface AppDeps {
   sparring?: Sparring | undefined;
   /** Preview of main (POST|DELETE /api/products/:id/preview); those routes exist only when given. */
   previews?: Previews | undefined;
+  /** `data/logs` (agent logs, GET /api/agents/:id/log); that route exists only when given. */
+  logsDir?: string | undefined;
+  /** How often a followed agent log is re-read; defaults to LOG_POLL_MS. Tests shorten it. */
+  logPollMs?: number | undefined;
   /** Directory with the built SPA. Served only when it exists. */
   webRoot?: string | undefined;
   /** SSE heartbeat interval; defaults to HEARTBEAT_MS. Tests shorten it. */

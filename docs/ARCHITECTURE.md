@@ -183,7 +183,7 @@ interface Store {
 ```ts
 interface Tx { q: Queries; db: Db }   // db: same connection, inside the transaction; write only tables without events (settings, secrets)
 interface Queries { product(id); issuesByProduct(productId) /* by number */; issue(id); attemptsByIssue(issueId) /* by n */;
-                    attempt(id); productUsage(productId); issueUsage(issueId); inboxItem(id);
+                    attempt(id); productUsage(productId); issueUsage(issueId); inboxItem(id); agent(id) /* or null */;
                     sparMessages(productId) /* seq order */; prdDraft(productId) /* or null */;
                     prdVersionMarkdown(productId, version) /* or null */;
                     setting(key) /* raw JSON or undefined; callers validate */ }   // ClientState shapes; usage zero when none
@@ -205,7 +205,7 @@ These are thin routes. Each one validates with zod, calls a command, and returns
 ```
 GET  /api/state                         → {state, lastSeq}
 GET  /api/events                        SSE; id=seq; replays seq > Last-Event-ID; ':hb' every 15s
-GET  /api/agents/:id/log?follow=1       full redacted agent log (NDJSON file), SSE when follow
+GET  /api/agents/:id/log?follow=1       full redacted agent log as JSON lines {ts, line}; follow → SSE (see below); 404 unknown agent
 GET  /api/attempts/:id/diff | /check    artifacts
 POST /api/products                      {name, idea}       → 201 {id}
 POST /api/products/:id/spar             {message}           → 202; reply arrives as event
@@ -223,6 +223,8 @@ POST /api/backends/:backend/clear       backend.cleared when a limit exists (Set
 POST /api/settings/password             {current?, next}
 POST /api/login {password} · POST /api/logout · GET /api/session
 ```
+
+**Agent log** (`routes/agents.ts`, mounted when `AppDeps.logsDir` is given; `main.ts` passes `data/logs`): the agent must exist (`store.q.agent`), else 404. Every stored line is parsed (`{ts, line}`; malformed lines dropped) and `line` passes through `redactor.redact` again on the way out, so secrets registered after the line was written are masked too. Plain → `application/x-ndjson`, empty before the first line. `?follow=1` → SSE: one unnamed message per line (`data: {ts, line}`), existing lines first, then new complete lines (a line without its newline yet is held back), woken by the agent's events and a `logPollMs` poll (default 500 ms), `:hb` heartbeats; once the agent has exited and its log is fully sent, `event: end` and the stream closes.
 
 **Product settings** (`routes/product-settings.ts`, `commands/product-settings.ts`): `PATCH /api/products/:id/settings` takes `ProductSettingsUpdateRequestSchema` (`shared/dto.ts`, strict, at least one field): `budgetUsd` null or > 0, `maxParallel` and `maxAttempts` integers 1–10, `models` a partial `Record<Role, ModelRef|null>` (null = back to the global default; other roles keep their override), `gitRemote` `{url}`|null. `updateProductSettings({store, ids}, productId, input)` → `{ok; events}` | `{ok:false; code:'invalid'|'not_found'; reason}` commits one `product.settings_changed` with the given fields (`models` = the merged map). In the same commit the budget is re-checked against the new value: a warned product back under 80 % gets `budgetWarned:false` on the event (the next crossing warns again), and `budgetDrafts` adds `budget.warned` / `product.paused{budget}` when the new budget is already 80 % / 100 % spent. Invalid → 400, unknown product → 404, else `{ok:true}`.
 
@@ -509,6 +511,7 @@ Never a shell. The child runs in its own process group, and timeout or abort sig
   editIssue(issueId, EditIssueRequest, signal?): Promise<EditIssueResponse> // api.ts; PATCH /api/issues/:id (stale rev → ApiError status 409)
   cancelIssue(issueId, signal?): Promise<OkResponse>                       // api.ts; POST /api/issues/:id/cancel
   ```
+- `features/agents/index.ts`: `<AgentList product>` (Build tab: the product's live agents, `endedAt === null`, oldest first, each with role label "Foreman (orchestrator)" / "Builder (implementer)" / "Inspector (reviewer)" / "Drafter (sparring)" / "Helper (utility)", provider/model, state text ("Working", "Waiting for owner", "Rate limited until 14:05"), issue link, last activity line, and a "Show log" button) and `<AgentPanel agent issue? open onClose>` (Dialog: role, provider/model, issue, state, live log; reused by the 3D view). The log comes from `useAgentLog(agentId)` (EventSource on `/api/agents/:id/log?follow=1`; starts over on every (re)connect because the server resends the whole log; closes on `end`; keeps the last `MAX_LOG_LINES`). Lines render as plain text; auto-scroll follows the end and pauses while the owner has scrolled up ("Jump to latest" resumes). Shared wording: `roleLabel`, `agentStateText`, `liveAgents`.
 - `features/issues/index.ts`: owner issue dialogs shared by the board and the issue detail page. `<AddIssueDialog productId open onClose>`, `<EditIssueDialog issue open onClose>` (sends the rev the form was loaded from; on 409 shows `STALE_REV_MESSAGE` with the live issue's latest values and a "Reload latest version" button), `<CancelIssueDialog issue open onClose>` (confirmation), plus `isEditable(issue)` / `isCancellable(issue)`. Results arrive as events, so dialogs only close on success.
   - `createAppStore` holds the snapshot and the connection, with no React involved. `start()` connects, and the function it returns disconnects. It can be started again after a stop.
   - `AppStoreProvider` puts one store in context and keeps it connected while it is mounted.

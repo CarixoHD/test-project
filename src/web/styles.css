@@ -904,6 +904,86 @@ a {
   border: 2px solid var(--danger);
 }
 
+/* Agent list: one entry per running agent; facts as a compact term/value grid. */
+.agent-list__heading {
+  margin: 0 0 var(--space-2);
+  font-size: 1rem;
+}
+
+.agent-list__items {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-card {
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+.agent-card__role {
+  margin: 0 0 var(--space-1);
+  font-size: 0.95rem;
+}
+
+.agent-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-2);
+}
+
+.agent-facts dt {
+  color: var(--ink-muted);
+}
+
+.agent-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-card__activity {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+
+/* Agent panel: the dialog widens for the log; the log is plain preformatted text. */
+.ui-dialog:has(.agent-log) {
+  width: min(56rem, 100%);
+}
+
+.agent-log__lines {
+  height: 22rem;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+}
+
+.agent-log__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 2.5rem;
+  margin-top: var(--space-2);
+}
+
+.agent-log__note {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
 .settings-claude__status {
   display: flex;
   flex-wrap: wrap;

@@ -152,6 +152,7 @@ export async function start(
     settings,
     sparring,
     previews,
+    logsDir,
     // apply-prd commits docs/PRD.md under the merge lock; `scheduler` is created below and read
     // only when a request arrives.
     withMergeLock: (productId, fn) => scheduler.withMergeLock(productId, fn),
