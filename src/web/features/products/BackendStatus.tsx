@@ -6,10 +6,16 @@ import { backendNotices, nextExpiry, noticeText } from './backend-status-model.t
 
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
+type Limits = Readonly<Record<string, BackendLimit>>;
+
 const selectLimits = (s: AppSnapshot) => s.state.backendLimits;
 
-/** The current time, refreshed whenever one of the rate limits in `limits` runs out. */
-function useNowForLimits(limits: Readonly<Record<string, BackendLimit>>): number {
+/**
+ * The current time, taken at mount and refreshed whenever one of the rate limits in `limits`
+ * runs out. Callers remount (via `key`) when `limits` changes, so new limits are judged against
+ * the time they arrived rather than a stale earlier time.
+ */
+function useNowForLimits(limits: Limits): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const current = Date.now();
@@ -28,27 +34,33 @@ function useNowForLimits(limits: Readonly<Record<string, BackendLimit>>): number
  */
 export function BackendStatus() {
   const limits = useApp(selectLimits);
-  const notices = backendNotices(limits, useNowForLimits(limits));
-
+  // The live region stays mounted; the notices remount whenever the limits change so their
+  // clock restarts at the current time (an already-past limit never counts as active).
   return (
     <div className="backend-status" role="status">
-      {notices.length > 0 && (
-        <section className="build-tab__slot backend-status__banner" aria-label="Backend status">
-          <ul className="backend-status__list">
-            {notices.map((n) => (
-              <li key={n.backend}>
-                {n.kind === 'needs_login' ? (
-                  <>
-                    {n.label} needs login — see <Link to="/settings">Settings</Link>
-                  </>
-                ) : (
-                  noticeText(n)
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <BackendNotices key={JSON.stringify(limits)} limits={limits} />
     </div>
+  );
+}
+
+function BackendNotices({ limits }: { limits: Limits }) {
+  const notices = backendNotices(limits, useNowForLimits(limits));
+  if (notices.length === 0) return null;
+  return (
+    <section className="build-tab__slot backend-status__banner" aria-label="Backend status">
+      <ul className="backend-status__list">
+        {notices.map((n) => (
+          <li key={n.backend}>
+            {n.kind === 'needs_login' ? (
+              <>
+                {n.label} needs login — see <Link to="/settings">Settings</Link>
+              </>
+            ) : (
+              noticeText(n)
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
