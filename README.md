@@ -61,7 +61,16 @@ Node ≥ 22.18 from an official build (nodejs.org, nvm/fnm or NodeSource; `.nvmr
 git ≥ 2.38. Vibecode runs `.ts` files through Node's built-in type stripping, which distro builds
 such as the Debian/Ubuntu apt `nodejs` package may lack. The npm scripts that run `.ts` files
 (`start`, `dev`, `set-password`, `docker:images`, `docker:prune` and `claude:record`) check Node
-first with `scripts/preflight.mjs` and print what to fix. Docker is needed for real agent runs.
+first with `scripts/preflight.mjs` and print what to fix.
+
+Docker is a host requirement for every real run, including the Claude Code backend; only demo
+mode with `VIBECODE_FAKE_DOCKER=1` runs without it. On Linux the `br_netfilter` kernel module must
+be loaded ([ARCHITECTURE §9](docs/ARCHITECTURE.md#9-running-locally)).
+
+`npm start` serves the web UI that `npm run build` writes to `dist/web`; it does not build it, so
+run `npm run build` after a fresh clone and after each update, then (re)start. Without `dist/web`
+the server still starts and the API works, but it serves no UI (pages return 404); with an old
+build it serves the old UI.
 
 ## Remote access
 
