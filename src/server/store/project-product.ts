@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { EventOf } from '../../shared/events.ts';
 import type { ProductLevelEvent } from '../../shared/state-product.ts';
 import { type Db, schema } from '../db/index.ts';
@@ -73,6 +73,14 @@ export function projectProductEvent(db: Db, e: ProductLevelEvent): void {
     }
     case 'prd.applied':
       return prdApplied(db, e);
+    case 'prd.summarized':
+      db.update(prdVersions)
+        .set({ summary: e.data.summary })
+        .where(
+          and(eq(prdVersions.productId, e.productId), eq(prdVersions.version, e.data.version)),
+        )
+        .run();
+      return;
     case 'orchestrator.cursor_advanced':
       return updateProduct(db, e, { orchestratorCursor: e.data.cursor });
     case 'budget.warned':

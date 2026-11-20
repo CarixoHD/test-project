@@ -40,6 +40,7 @@ const ARCHITECTURE_EVENT_TYPES = [
   'spar.message',
   'prd.draft_saved',
   'prd.applied',
+  'prd.summarized',
   'orchestrator.cursor_advanced',
   'issue.created',
   'issue.edited',
@@ -202,6 +203,16 @@ const SAMPLES: { [K in EventType]: Sample<K> } = {
       data: { version: 2, markdown: '# PRD v2', summary: null },
     },
     invalidData: { version: 0, markdown: '# PRD', summary: null },
+  },
+  'prd.summarized': {
+    valid: {
+      type: 'prd.summarized',
+      productId: P,
+      entityId: null,
+      v: 1,
+      data: { version: 2, summary: 'Added a dark mode issue.' },
+    },
+    invalidData: { version: 2, summary: null },
   },
   'orchestrator.cursor_advanced': {
     valid: {
