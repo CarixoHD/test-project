@@ -6,3 +6,18 @@ export {
   readPriceOverrides,
   readRoleDefaults,
 } from './settings.ts';
+export {
+  agentLogPath,
+  runRecordedAgent,
+  type RecordedAgentSpec,
+  type RecordedRun,
+  type RecordedRunContext,
+  type UsageRecorded,
+} from './run-recorded.ts';
+export {
+  ACTIVITY_INTERVAL_MS,
+  ACTIVITY_TAIL,
+  ActivityBatcher,
+  type SetTimer,
+} from './activity-batcher.ts';
+export { usageCost, type UsageCost } from './usage.ts';
