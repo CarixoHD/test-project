@@ -530,7 +530,8 @@ describe('stopAll', () => {
       const stopping = previews.stopAll().then(() => {
         stopped = true;
       });
-      // No timer needs to fire: stopAll aborts the poll itself.
+      // The start is caught inside fetch (it hangs until aborted), not in the sleep between
+      // polls: stopAll's abort rejects the pending fetch, so no timer needs to fire.
       await stopping;
 
       expect(stopped).toBe(true);
@@ -579,21 +580,124 @@ describe('stopAll', () => {
     expect(store.snapshot().state.previews).toEqual({});
   });
 
-  it('waits for queued starts and refuses starts requested during shutdown', async () => {
-    createProduct();
-    const previews = createPreviews(deps());
+  it('aborts a start that is sleeping between polls without waiting for the poll interval', async () => {
+    vi.useFakeTimers();
+    try {
+      createProduct();
+      // Never ready, and quick about it: each poll is refused at once, so the start spends its
+      // time in the (real, fake-timed) sleep between polls.
+      isUp = () => false;
+      const { sleep: _fakeSleep, ...withRealSleep } = deps({ log: () => {} });
+      const previews = createPreviews(withRealSleep);
 
+      const starting = previews.startPreview(P);
+      let settled = false;
+      void starting.then(() => {
+        settled = true;
+      });
+      // vi.waitFor polls on real timers, so the fake clock does not move while we wait.
+      await vi.waitFor(() => {
+        expect(vi.getTimerCount()).toBe(1);
+      });
+      // One poll done and the sleep timer pending: the start is waiting between polls.
+      expect(fetched).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(1);
+      expect(runtime.detached).toHaveLength(1);
+      const eventsBefore = store.eventsSince(0).length;
+
+      // No timer is advanced: only the abort can wake the sleep.
+      await previews.stopAll();
+      const r = await starting;
+
+      expect(settled).toBe(true);
+      expect(fetched).toHaveLength(1);
+      expect(r).toMatchObject({ ok: false, code: 'conflict' });
+      if (!r.ok) expect(r.reason).toMatch(/shutting down/);
+      const [spec] = runtime.detached;
+      expect(runtime.calls).toContainEqual({
+        kind: 'remove',
+        name: `vibecode-${spec?.runId ?? '?'}`,
+      });
+      expect(await runtime.listManaged()).toEqual([]);
+      expect(await worktrees()).toEqual([]);
+      expect(store.eventsSince(0)).toHaveLength(eventsBefore);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a start queued behind an in-flight one creates nothing once shutdown began', async () => {
+    createProduct();
+    const hold = gate();
+    const polling = gate();
+    const added: string[] = [];
+    const spyGit: Git = {
+      ...git,
+      addWorktree: (...a) => {
+        added.push(a[1]);
+        return git.addWorktree(...a);
+      },
+    };
+    const previews = createPreviews(
+      deps({
+        git: spyGit,
+        fetch: async (url) => {
+          fetched.push(url);
+          polling.open();
+          await hold.promise;
+          return { status: 200 };
+        },
+      }),
+    );
+
+    const first = previews.startPreview(P);
+    await polling.promise;
+    const queued = previews.startPreview(P);
+    const stopping = previews.stopAll();
+    hold.open();
+
+    expect(await first).toMatchObject({ ok: false, code: 'conflict' });
+    const r = await queued;
+    expect(r).toMatchObject({ ok: false, code: 'conflict' });
+    if (!r.ok) expect(r.reason).toMatch(/shutting down/);
+    await stopping;
+    // Only the in-flight start created anything.
+    expect(added).toHaveLength(1);
+    expect(runtime.calls.filter((c) => c.kind === 'ensureImage')).toHaveLength(1);
+    expect(runtime.calls.filter((c) => c.kind === 'runDetached')).toHaveLength(1);
+    expect(await runtime.listManaged()).toEqual([]);
+    expect(await worktrees()).toEqual([]);
+    expect(store.snapshot().state.previews).toEqual({});
+  });
+
+  it('a start dequeued after shutdown began creates nothing; starts requested later are refused', async () => {
+    createProduct();
+    const added: string[] = [];
+    const spyGit: Git = {
+      ...git,
+      addWorktree: (...a) => {
+        added.push(a[1]);
+        return git.addWorktree(...a);
+      },
+    };
+    const previews = createPreviews(deps({ git: spyGit }));
+
+    // Both starts are queued but have not run yet when stopAll aborts.
     const first = previews.startPreview(P);
     const second = previews.startPreview(P);
     const stopping = previews.stopAll();
     const late = previews.startPreview(P);
 
-    await Promise.all([first, second, stopping]);
-    expect(await late).toMatchObject({ ok: false, code: 'conflict' });
-    expect(await runtime.listManaged()).toEqual([]);
+    for (const r of await Promise.all([first, second, late])) {
+      expect(r).toMatchObject({ ok: false, code: 'conflict' });
+      if (!r.ok) expect(r.reason).toMatch(/shutting down/);
+    }
+    await stopping;
+    expect(added).toEqual([]);
+    expect(runtime.calls).toEqual([]);
     expect(await worktrees()).toEqual([]);
     expect(store.snapshot().state.previews).toEqual({});
-    expect(runtime.detached).toHaveLength(2);
   });
 
   it('logs, instead of swallowing, a container that cannot be removed', async () => {
