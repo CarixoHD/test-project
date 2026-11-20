@@ -266,6 +266,88 @@ describe('ensureImage', () => {
   });
 });
 
+describe('ensureImage with claude (derived Claude Code image)', () => {
+  const CLAUDE_DF = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN install claude\n';
+  let dockerDir: string;
+  beforeEach(async () => {
+    dockerDir = path.join(base, 'docker');
+    await mkdir(dockerDir, { recursive: true });
+    await writeFile(path.join(dockerDir, 'base.Dockerfile'), 'FROM debian\n');
+    await writeFile(path.join(dockerDir, 'claude-code.Dockerfile'), CLAUDE_DF);
+  });
+  const missing = (argv: string[]): Reply =>
+    argv[0] === 'image' ? { code: 1, stderr: 'No such image' } : {};
+  const rt = (stub: ReturnType<typeof stubDocker>) =>
+    new DockerCliRuntime({
+      dataDir,
+      uid: 1000,
+      gid: 1000,
+      exec: stub.exec,
+      spawnStream: stub.spawnStream,
+      baseImageDir: dockerDir,
+    });
+
+  it('builds vibecode/claude-code FROM vibecode/base when the product has no Dockerfile', async () => {
+    const ctx = path.join(base, 'p');
+    await mkdir(ctx, { recursive: true });
+    const stub = stubDocker(missing);
+    expect(await rt(stub).ensureImage({ productId: '01PROD', contextDir: ctx, claude: true })).toBe(
+      'vibecode/claude-code',
+    );
+    expect(stub.argvs().slice(2)).toEqual([
+      ['image', 'inspect', '--format', '{{.Id}}', 'vibecode/claude-code'],
+      [
+        'buildx',
+        'build',
+        '--load',
+        '--tag',
+        'vibecode/claude-code',
+        '--build-arg',
+        'BASE_IMAGE=vibecode/base',
+        '--file',
+        path.join(dockerDir, 'claude-code.Dockerfile'),
+        dockerDir,
+      ],
+    ]);
+  });
+
+  it('derives an image FROM the product image, tagged by product tag and Claude Dockerfile', async () => {
+    const ctx = path.join(base, 'p');
+    await mkdir(ctx, { recursive: true });
+    await writeFile(path.join(ctx, 'Dockerfile'), 'FROM debian\n');
+    const stub = stubDocker(missing);
+    const productTag = await rt(stubDocker()).ensureImage({ productId: '01PROD', contextDir: ctx });
+    const tag = await rt(stub).ensureImage({ productId: '01PROD', contextDir: ctx, claude: true });
+    const hash = createHash('sha256').update(`${productTag}\0${CLAUDE_DF}`).digest('hex');
+    expect(tag).toBe(`vibecode/p-01prod-claude:${hash}`);
+    expect(stub.argvs()).toEqual([
+      ['image', 'inspect', '--format', '{{.Id}}', productTag],
+      ['buildx', 'build', '--load', '--tag', productTag, '--file', path.join(ctx, 'Dockerfile'), ctx],
+      ['image', 'inspect', '--format', '{{.Id}}', tag],
+      [
+        'buildx',
+        'build',
+        '--load',
+        '--tag',
+        tag,
+        '--build-arg',
+        `BASE_IMAGE=${productTag}`,
+        '--file',
+        path.join(dockerDir, 'claude-code.Dockerfile'),
+        dockerDir,
+      ],
+    ]);
+  });
+
+  it('reuses a derived image that already exists', async () => {
+    const ctx = path.join(base, 'p');
+    await mkdir(ctx, { recursive: true });
+    const stub = stubDocker();
+    await rt(stub).ensureImage({ productId: '01PROD', contextDir: ctx, claude: true });
+    expect(stub.argvs().map((a) => a[0])).toEqual(['image', 'image']);
+  });
+});
+
 describe('mask file <dataDir>/empty', () => {
   it('is created as an empty regular file before the first docker run, idempotently', async () => {
     const mask = path.join(dataDir, 'empty');

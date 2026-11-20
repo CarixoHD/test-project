@@ -17,6 +17,7 @@ import {
 import { NETWORKS, WORKSPACE, buildRunArgs, containerName } from './run-args.ts';
 import type {
   ContainerRuntime,
+  EnsureImageParams,
   ExecOpts,
   ExecResult,
   HostIdentity,
@@ -28,7 +29,10 @@ import type {
 export const DOCKER_NOT_RUNNING =
   'Docker is not running: start Docker Desktop or the docker service';
 export const BASE_IMAGE = 'vibecode/base';
-/** docker/ at the repo root: base.Dockerfile and its build context. */
+/** vibecode/base plus the pinned Claude Code CLI; also the image the owner logs in with (ADR 4). */
+export const CLAUDE_IMAGE = 'vibecode/claude-code';
+const CLAUDE_DOCKERFILE = 'claude-code.Dockerfile';
+/** docker/ at the repo root: base.Dockerfile, claude-code.Dockerfile and their build context. */
 export const DEFAULT_BASE_IMAGE_DIR = path.resolve(import.meta.dirname, '../../../docker');
 
 const MANAGE_TIMEOUT_MS = 60_000;
@@ -46,7 +50,7 @@ export type DockerCliRuntimeOptions = {
   gid: number;
   /** docker CLI binary; default `docker`. */
   docker?: string | undefined;
-  /** Directory holding base.Dockerfile; default the repo's docker/. */
+  /** Directory holding base.Dockerfile and claude-code.Dockerfile; default the repo's docker/. */
   baseImageDir?: string | undefined;
   /** Injected so unit tests can stub util/exec and assert argv. */
   exec?: typeof defaultExec;
@@ -96,19 +100,46 @@ export class DockerCliRuntime implements ContainerRuntime {
     }
   }
 
-  async ensureImage(p: { productId: string; contextDir: string }): Promise<string> {
+  async ensureImage(p: EnsureImageParams): Promise<string> {
     if (!PRODUCT_ID_RE.test(p.productId)) throw new Error(`Invalid productId: ${p.productId}`);
-    const dockerfile = path.join(p.contextDir, 'Dockerfile');
+    const productImage = await this.#ensureProductImage(p.productId, p.contextDir);
+    if (p.claude !== true) return productImage;
+    return this.#ensureClaudeImage(p.productId, productImage);
+  }
+
+  async #ensureProductImage(productId: string, contextDir: string): Promise<string> {
+    const dockerfile = path.join(contextDir, 'Dockerfile');
     const content = await readIfExists(dockerfile);
     if (content === null) {
-      const dir = this.#o.baseImageDir ?? DEFAULT_BASE_IMAGE_DIR;
+      const dir = this.#imageDir();
       await this.#ensureBuilt(BASE_IMAGE, path.join(dir, 'base.Dockerfile'), dir);
       return BASE_IMAGE;
     }
-    const hash = await imageHash(p.contextDir, content);
-    const tag = `vibecode/p-${p.productId.toLowerCase()}:${hash}`;
-    await this.#ensureBuilt(tag, dockerfile, p.contextDir);
+    const hash = await imageHash(contextDir, content);
+    const tag = `vibecode/p-${productId.toLowerCase()}:${hash}`;
+    await this.#ensureBuilt(tag, dockerfile, contextDir);
     return tag;
+  }
+
+  /**
+   * The derived image FROM `productImage` with the pinned CLI layered on (ADR 4). Over
+   * vibecode/base it is vibecode/claude-code, the image of the login command.
+   */
+  async #ensureClaudeImage(productId: string, productImage: string): Promise<string> {
+    const dir = this.#imageDir();
+    const dockerfile = path.join(dir, CLAUDE_DOCKERFILE);
+    let tag = CLAUDE_IMAGE;
+    if (productImage !== BASE_IMAGE) {
+      const content = await readFile(dockerfile);
+      const hash = createHash('sha256').update(`${productImage}\0`).update(content).digest('hex');
+      tag = `vibecode/p-${productId.toLowerCase()}-claude:${hash}`;
+    }
+    await this.#ensureBuilt(tag, dockerfile, dir, ['--build-arg', `BASE_IMAGE=${productImage}`]);
+    return tag;
+  }
+
+  #imageDir(): string {
+    return this.#o.baseImageDir ?? DEFAULT_BASE_IMAGE_DIR;
   }
 
   async open(spec: SandboxSpec): Promise<Sandbox> {
@@ -207,14 +238,19 @@ export class DockerCliRuntime implements ContainerRuntime {
   }
 
   /** Builds `tag` unless it exists; concurrent callers share one build. */
-  #ensureBuilt(tag: string, dockerfile: string, contextDir: string): Promise<void> {
+  #ensureBuilt(
+    tag: string,
+    dockerfile: string,
+    contextDir: string,
+    buildArgs: readonly string[] = [],
+  ): Promise<void> {
     let build = this.#builds.get(tag);
     if (build === undefined) {
       build = (async () => {
         const found = await this.#manage(['image', 'inspect', '--format', '{{.Id}}', tag]);
         if (found.code === 0) return;
         const r = await this.#manage(
-          ['buildx', 'build', '--load', '--tag', tag, '--file', dockerfile, contextDir],
+          ['buildx', 'build', '--load', '--tag', tag, ...buildArgs, '--file', dockerfile, contextDir],
           BUILD_TIMEOUT_MS,
         );
         if (r.code !== 0) throw new Error(`Image build failed for ${tag}: ${detail(r)}`);
