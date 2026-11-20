@@ -4,8 +4,8 @@ import { renderPrompt } from './prompts.ts';
 import { readRepoFile } from './repo-file.ts';
 
 // Prompts of an attempt's agents (ARCHITECTURE §6 flow 4): the implementer gets the issue, the
-// PRD, AGENTS.md and the previous attempt's feedback; the reviewer gets the issue, the check
-// output and the diff. Everything inserted is data for prompts/implementer.md and reviewer.md.
+// PRD, AGENTS.md, the previous attempt's feedback and the issue's answered questions; the
+// reviewer gets the issue, the check output and the diff. Everything inserted is data for prompts/implementer.md and reviewer.md.
 
 const DIFF_LIMIT = 200_000;
 const CHECK_OUTPUT_LINES = 200;
@@ -29,6 +29,14 @@ function previousFeedback(store: Store, issue: IssueState): string {
   return feedback === undefined || feedback === null || feedback === '' ? NONE : feedback;
 }
 
+/** The issue's answered questions (flow 8), oldest first. */
+function answeredQuestions(store: Store, issue: IssueState): string {
+  const qa = store.q
+    .questionsByIssue(issue.id)
+    .flatMap((q) => (q.answer === null ? [] : [`Q: ${q.text}\nA: ${q.answer}`]));
+  return qa.length === 0 ? NONE : qa.join('\n\n');
+}
+
 export async function implementerPrompt(o: {
   store: Store;
   issue: IssueState;
@@ -47,6 +55,7 @@ export async function implementerPrompt(o: {
     issueTitle: o.issue.title,
     issueBody: o.issue.body,
     feedback: previousFeedback(o.store, o.issue),
+    questions: answeredQuestions(o.store, o.issue),
     agentsMd: agentsMd.ok ? agentsMd.value : '(the repository has no AGENTS.md)',
     prd: prd.ok ? prd.value : '(docs/PRD.md is missing)',
   });

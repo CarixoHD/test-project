@@ -34,7 +34,12 @@ export interface Store {
   snapshot(): { state: ClientState; lastSeq: number };
   /** Events with seq > `seq`, ascending, at most `limit`. */
   eventsSince(seq: number, limit?: number): Event[];
-  /** Called for every committed event, in seq order. Returns an unsubscribe function. */
+  /**
+   * Called for every committed event, in seq order, after the transaction is durable. Returns an
+   * unsubscribe function. A subscriber that throws is isolated: its error goes to
+   * `StoreDeps.onSubscriberError`, the remaining subscribers still get the event, and `commit()`
+   * returns normally (so callers never retry an already durable command).
+   */
   subscribe(fn: (e: Event) => void): () => void;
   q: Queries;
 }
@@ -45,6 +50,23 @@ export interface StoreDeps {
   redactor: { redact(text: string): string };
   /** Derived-event hooks, run in order in every commit (see `CommitHook`). */
   hooks?: readonly CommitHook[];
+  /**
+   * Receives every error a subscriber throws, with the event it was handling. Must not throw.
+   * Default: `console.error` with the error text passed through `redactor`.
+   */
+  onSubscriberError?: SubscriberErrorSink;
+}
+
+export type SubscriberErrorSink = (err: unknown, event: Event) => void;
+
+/** Default sink: one redacted console line per failure. */
+function consoleSink(redactor: StoreDeps['redactor']): SubscriberErrorSink {
+  return (err, event) => {
+    const text = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    console.error(
+      `store subscriber threw on event seq=${event.seq} type=${event.type} (commit is durable): ${redactor.redact(text)}`,
+    );
+  };
 }
 
 /** Applies `redact` to every string in a JSON-like value. */
@@ -57,7 +79,13 @@ function redactDeep(value: unknown, redact: (t: string) => string): unknown {
   return value;
 }
 
-export function createStore({ db, clock, redactor, hooks = [] }: StoreDeps): Store {
+export function createStore({
+  db,
+  clock,
+  redactor,
+  hooks = [],
+  onSubscriberError = consoleSink(redactor),
+}: StoreDeps): Store {
   const listeners = new Set<(e: Event) => void>();
   const q = createQueries(db);
   let committing = false;
@@ -87,19 +115,20 @@ export function createStore({ db, clock, redactor, hooks = [] }: StoreDeps): Sto
     return event;
   }
 
+  /** Never throws: the commit is already durable, so a failing subscriber is only reported. */
   function notify(committed: Event[]): void {
-    const errors: unknown[] = [];
     for (const e of committed) {
       for (const fn of [...listeners]) {
         try {
           fn(e);
         } catch (err) {
-          errors.push(err);
+          try {
+            onSubscriberError(err, e);
+          } catch {
+            // A broken sink must not turn a durable commit into a failure either.
+          }
         }
       }
-    }
-    if (errors.length > 0) {
-      throw new AggregateError(errors, 'store subscribers threw (the commit itself is durable)');
     }
   }
 

@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
-import { exec as defaultExec, type ExecResult } from '../util/exec.ts';
+import { exec as defaultExec, ExecError, type ExecResult } from '../util/exec.ts';
 
 export const GIT_SAFETY_FLAGS = [
   '-c',
@@ -20,6 +20,8 @@ export const GIT_SAFETY_FLAGS = [
 export const AGENT_IDENTITY = { name: 'Vibecode Agent', email: 'agent@vibecode.local' } as const;
 
 export const MIN_GIT_VERSION = [2, 38] as const;
+/** Shown to the owner when gitVersionOk() is false. */
+export const GIT_VERSION_REQUIRED_MESSAGE = `Vibecode needs git >= ${MIN_GIT_VERSION.join('.')} on the host: install or upgrade git`;
 const MAIN_REF = 'refs/heads/main';
 const BRANCH_PREFIX = 'vibecode/';
 const INTEGRATION_PREFIX = 'integrate-';
@@ -35,11 +37,15 @@ export type GitDeps = {
   /** Process runner; defaults to util/exec. Injected so tests can observe every invocation. */
   exec?: typeof defaultExec;
   timeoutMs?: number;
+  /** Warnings (e.g. a skipped non-repo in data/repos); default console.warn. */
+  log?: (line: string) => void;
 };
 export type GitOptions = GitDeps & { dataDir: string };
 
+/** Trailing options of every Git method: aborting rejects the call with a GitError. */
+export type GitCallOptions = { signal?: AbortSignal | undefined };
 export type Worktree = { dir: string; branch: string | null; baseSha: string };
-export type AddWorktreeOptions = { detached?: boolean };
+export type AddWorktreeOptions = GitCallOptions & { detached?: boolean };
 export type CommitResult = { sha: string | null; diff: string };
 export type IntegrateResult =
   | { kind: 'fast'; tree: string; commitSha: string }
@@ -47,30 +53,36 @@ export type IntegrateResult =
   | { kind: 'conflict'; paths: string[] };
 
 export interface Git {
-  initRepo(productId: string): Promise<void>;
+  initRepo(productId: string, o?: GitCallOptions): Promise<void>;
   addWorktree(
     productId: string,
     runId: string,
     ref?: string,
     o?: AddWorktreeOptions,
   ): Promise<Worktree>;
-  commitAll(dir: string, message: string): Promise<CommitResult>;
+  commitAll(dir: string, message: string, o?: GitCallOptions): Promise<CommitResult>;
   /** Paths changed between `fromRef` and HEAD of the worktree (renames as delete + add), sorted. */
-  changedPaths(dir: string, fromRef: string): Promise<string[]>;
-  cleanWorktree(dir: string): Promise<void>;
-  removeWorktree(dir: string): Promise<void>;
-  pruneWorktrees(productId: string): Promise<void>;
+  changedPaths(dir: string, fromRef: string, o?: GitCallOptions): Promise<string[]>;
+  cleanWorktree(dir: string, o?: GitCallOptions): Promise<void>;
+  removeWorktree(dir: string, o?: GitCallOptions): Promise<void>;
+  pruneWorktrees(productId: string, o?: GitCallOptions): Promise<void>;
   /**
    * Recovery: removes every directory under data/worktrees (registered worktrees through
    * `worktree remove`, anything else from disk), prunes stale admin entries in every repo and
-   * deletes leftover vibecode/* branches. main and other branches are never touched.
+   * deletes leftover vibecode/* branches. main and other branches are never touched. A `<id>.git`
+   * directory that is not a git repository is skipped with a logged warning.
    */
-  clearWorktrees(): Promise<void>;
+  clearWorktrees(o?: GitCallOptions): Promise<void>;
   /** Ids of the bare repos in data/repos (`<id>.git` directories with a safe id), sorted. */
-  listRepos(): Promise<string[]>;
+  listRepos(o?: GitCallOptions): Promise<string[]>;
   /** Deletes data/repos/<productId>.git; no-op if it is gone. */
-  removeRepo(productId: string): Promise<void>;
-  commitFilesOnMain(productId: string, files: Record<string, string>, msg: string): Promise<string>;
+  removeRepo(productId: string, o?: GitCallOptions): Promise<void>;
+  commitFilesOnMain(
+    productId: string,
+    files: Record<string, string>,
+    msg: string,
+    o?: GitCallOptions,
+  ): Promise<string>;
   /**
    * Prepares ONE squash commit (parent: current main) for `branch`. Never moves main; the caller
    * re-checks `merged` results in `dir` and then calls advanceMain under the merge lock.
@@ -80,20 +92,47 @@ export interface Git {
     branch: string,
     baseSha: string,
     message: string,
+    o?: GitCallOptions,
   ): Promise<IntegrateResult>;
   /** Moves main to `commitSha` only if it still points at `expectedOld`; else MainMovedError. */
-  advanceMain(productId: string, commitSha: string, expectedOld: string): Promise<void>;
-  mainSha(productId: string): Promise<string>;
-  readFileAtMain(productId: string, path: string): Promise<string | null>;
+  advanceMain(
+    productId: string,
+    commitSha: string,
+    expectedOld: string,
+    o?: GitCallOptions,
+  ): Promise<void>;
+  mainSha(productId: string, o?: GitCallOptions): Promise<string>;
+  /**
+   * `path` at main, or null when main exists but has no such path. Throws GitError when the repo
+   * is missing or main cannot be resolved.
+   */
+  readFileAtMain(productId: string, path: string, o?: GitCallOptions): Promise<string | null>;
 }
 
-/** Infrastructure failure of a git command. The message carries redacted stderr. */
+/** Infrastructure failure of git (failed, aborted, timed out or truncated command; missing repo). */
 export class GitError extends Error {
-  constructor(args: readonly string[], r: ExecResult) {
-    const what = r.timedOut ? 'timed out' : `failed (exit ${String(r.code ?? r.signal)})`;
-    super(`git ${args.join(' ').slice(0, 300)} ${what}: ${r.stderr.trim().slice(0, 2000)}`);
+  constructor(message: string) {
+    super(message);
     this.name = 'GitError';
   }
+}
+
+/** A GitError for a command result; its message carries the (already redacted) stderr. */
+function commandError(args: readonly string[], r: ExecResult): GitError {
+  const what = r.aborted
+    ? 'was aborted'
+    : r.timedOut
+      ? 'timed out'
+      : r.truncated
+        ? 'output was truncated (over the 10 MiB exec buffer)'
+        : `failed (exit ${String(r.code ?? r.signal)})`;
+  return new GitError(
+    `git ${args.join(' ').slice(0, 300)} ${what}: ${r.stderr.trim().slice(0, 2000)}`,
+  );
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new GitError('git operation was aborted');
 }
 
 /** main no longer points at the commit the caller expected; integrate again on the new main. */
@@ -108,25 +147,37 @@ export class MainMovedError extends Error {
   }
 }
 
-type RunOpts = { cwd?: string; input?: string; env?: Record<string, string> };
+type RunOpts = {
+  cwd?: string;
+  input?: string;
+  env?: Record<string, string>;
+  signal?: AbortSignal | undefined;
+};
 type Runner = {
+  /** Any exit code; throws GitError when the command was aborted, timed out or truncated. */
   raw(args: readonly string[], o?: RunOpts): Promise<ExecResult>;
+  /** stdout of a successful (exit 0) command; throws GitError otherwise. */
   run(args: readonly string[], o?: RunOpts): Promise<string>;
 };
 
 function runner(deps: GitDeps): Runner {
   const execFn = deps.exec ?? defaultExec;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const raw = (args: readonly string[], o: RunOpts = {}): Promise<ExecResult> =>
-    execFn('git', [...GIT_SAFETY_FLAGS, ...args], {
+  const raw = async (args: readonly string[], o: RunOpts = {}): Promise<ExecResult> => {
+    const r = await execFn('git', [...GIT_SAFETY_FLAGS, ...args], {
       cwd: o.cwd,
       input: o.input,
       env: { ...gitEnv(), ...o.env },
       timeoutMs,
+      signal: o.signal,
     });
+    // Never hand back partial output: an aborted, timed-out or cut-off command is a failure.
+    if (r.aborted || r.timedOut || r.truncated) throw commandError(args, r);
+    return r;
+  };
   const run = async (args: readonly string[], o: RunOpts = {}): Promise<string> => {
     const r = await raw(args, o);
-    if (r.code !== 0 || r.timedOut || r.aborted) throw new GitError(args, r);
+    if (r.code !== 0) throw commandError(args, r);
     return r.stdout;
   };
   return { raw, run };
@@ -155,9 +206,18 @@ function gitEnv(): Record<string, string | undefined> {
   };
 }
 
-/** True when the host git is at least 2.38 (needed for `merge-tree --write-tree`). */
+/**
+ * True when the host git is at least 2.38 (needed for `merge-tree --write-tree`); false when it is
+ * older, unparsable or cannot be started at all. Show GIT_VERSION_REQUIRED_MESSAGE when false.
+ */
 export async function gitVersionOk(deps: GitDeps = {}): Promise<boolean> {
-  const r = await runner(deps).raw(['--version']);
+  let r: ExecResult;
+  try {
+    r = await runner(deps).raw(['--version']);
+  } catch (err) {
+    if (err instanceof ExecError || err instanceof GitError) return false;
+    throw err;
+  }
   const m = /git version (\d+)\.(\d+)/.exec(r.stdout);
   if (r.code !== 0 || !m) return false;
   const [major, minor] = [Number(m[1]), Number(m[2])];
@@ -188,6 +248,7 @@ function assertRef(ref: string): void {
 
 export function createGit(o: GitOptions): Git {
   const git = runner(o);
+  const log = o.log ?? ((line: string) => console.warn(line));
   const reposDir = resolve(o.dataDir, 'repos');
   const worktreesDir = resolve(o.dataDir, 'worktrees');
   const repoDir = (productId: string): string => {
@@ -200,15 +261,15 @@ export function createGit(o: GitOptions): Git {
     ...args,
   ];
 
-  const resolveCommit = async (gitDir: string, ref: string): Promise<string | null> => {
-    const r = await git.raw([
-      '--git-dir',
-      gitDir,
-      'rev-parse',
-      '--verify',
-      '--quiet',
-      `${ref}^{commit}`,
-    ]);
+  const resolveCommit = async (
+    gitDir: string,
+    ref: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> => {
+    const r = await git.raw(
+      ['--git-dir', gitDir, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`],
+      { signal },
+    );
     return r.code === 0 ? r.stdout.trim() : null;
   };
 
@@ -218,14 +279,19 @@ export function createGit(o: GitOptions): Git {
     parent: string | null,
     files: Record<string, string>,
     msg: string,
+    signal?: AbortSignal,
   ): Promise<string> => {
     const paths = Object.keys(files);
     paths.forEach(assertRepoPath);
+    throwIfAborted(signal);
     const tmp = await mkdtemp(join(tmpdir(), 'vibecode-index-'));
     try {
       const env = { GIT_INDEX_FILE: join(tmp, 'index') };
       const g = (args: readonly string[], input?: string): Promise<string> =>
-        git.run(['--git-dir', gitDir, ...args], input === undefined ? { env } : { env, input });
+        git.run(
+          ['--git-dir', gitDir, ...args],
+          input === undefined ? { env, signal } : { env, input, signal },
+        );
       await g(parent ? ['read-tree', parent] : ['read-tree', '--empty']);
       for (const path of paths) {
         const blob = (
@@ -253,115 +319,163 @@ export function createGit(o: GitOptions): Git {
     return abs;
   };
 
-  const requireCommit = async (gitDir: string, ref: string): Promise<string> => {
+  const requireCommit = async (
+    gitDir: string,
+    ref: string,
+    signal?: AbortSignal,
+  ): Promise<string> => {
     assertRef(ref);
-    const sha = await resolveCommit(gitDir, ref);
+    const sha = await resolveCommit(gitDir, ref, signal);
     if (!sha) throw new Error(`Unknown commit: ${JSON.stringify(ref.slice(0, 200))}`);
     return sha;
   };
 
+  /** Deletes whatever is at a managed worktree path: a registered worktree (and its branch) or plain files. */
+  const discardDir = async (dir: string, signal?: AbortSignal): Promise<void> => {
+    if (!existsSync(dir)) return;
+    try {
+      await api.removeWorktree(dir, { signal });
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      // Not a working git worktree (half-created, or its repo is gone): delete it from disk;
+      // `worktree prune` drops any admin entry it left in the repo.
+    }
+    await rm(dir, { recursive: true, force: true });
+  };
+
+  const isRepo = async (gitDir: string, signal?: AbortSignal): Promise<boolean> => {
+    const r = await git.raw(['--git-dir', gitDir, 'rev-parse', '--is-bare-repository'], {
+      signal,
+    });
+    return r.code === 0;
+  };
+
   const api: Git = {
-    async initRepo(productId) {
+    async initRepo(productId, opts = {}) {
+      const { signal } = opts;
       const gitDir = repoDir(productId);
-      if (existsSync(gitDir) && (await resolveCommit(gitDir, MAIN_REF))) return;
+      if (existsSync(gitDir) && (await resolveCommit(gitDir, MAIN_REF, signal))) return;
+      throwIfAborted(signal);
       await mkdir(reposDir, { recursive: true });
-      await git.run(['init', '--quiet', '--bare', '--initial-branch=main', gitDir]);
+      await git.run(['init', '--quiet', '--bare', '--initial-branch=main', gitDir], { signal });
       await commitFiles(
         gitDir,
         null,
         { 'README.md': README(productId), 'docs/PRD.md': PRD_PLACEHOLDER },
         'Initial commit',
+        signal,
       );
     },
 
     async addWorktree(productId, runId, ref = 'main', opts = {}) {
+      const { signal } = opts;
       assertSafeId('run id', runId);
       assertRef(ref);
+      const gitDir = repoDir(productId);
       const dir = join(worktreesDir, runId);
-      await mkdir(worktreesDir, { recursive: true });
       const branch = opts.detached ? null : `${BRANCH_PREFIX}${runId}`;
+      throwIfAborted(signal);
+      await mkdir(worktreesDir, { recursive: true });
+      // Idempotent: a worktree or branch left behind by a crashed run is discarded first.
+      await discardDir(dir, signal);
+      await git.run(['--git-dir', gitDir, 'worktree', 'prune'], { signal });
+      if (branch !== null && (await resolveCommit(gitDir, `refs/heads/${branch}`, signal))) {
+        await git.run(['--git-dir', gitDir, 'branch', '--quiet', '-D', branch], { signal });
+      }
       const mode = branch === null ? ['--detach'] : ['-b', branch];
-      await git.run(inRepo(productId, ['worktree', 'add', '--quiet', ...mode, dir, ref]));
-      const baseSha = (await git.run(['rev-parse', '--verify', 'HEAD'], { cwd: dir })).trim();
+      await git.run(['--git-dir', gitDir, 'worktree', 'add', '--quiet', ...mode, dir, ref], {
+        signal,
+      });
+      const baseSha = (
+        await git.run(['rev-parse', '--verify', 'HEAD'], { cwd: dir, signal })
+      ).trim();
       return { dir, branch, baseSha };
     },
 
-    async commitAll(dir, message) {
-      await git.run(['add', '--all'], { cwd: dir });
-      const unchanged = await git.raw(['diff', '--cached', '--quiet', 'HEAD'], { cwd: dir });
+    async commitAll(dir, message, opts = {}) {
+      const run = { cwd: dir, signal: opts.signal };
+      await git.run(['add', '--all'], run);
+      const unchangedArgs = ['diff', '--cached', '--quiet', 'HEAD'];
+      const unchanged = await git.raw(unchangedArgs, run);
       if (unchanged.code === 0) return { sha: null, diff: '' };
-      if (unchanged.code !== 1) throw new GitError(['diff', '--cached', '--quiet'], unchanged);
-      const diff = await git.run(['diff', '--cached', '--no-color', '--no-ext-diff', 'HEAD'], {
-        cwd: dir,
-      });
-      await git.run(['commit', '--quiet', '--no-verify', '--no-gpg-sign', '-m', message], {
-        cwd: dir,
-      });
-      const sha = (await git.run(['rev-parse', '--verify', 'HEAD'], { cwd: dir })).trim();
+      if (unchanged.code !== 1) throw commandError(unchangedArgs, unchanged);
+      const diff = await git.run(['diff', '--cached', '--no-color', '--no-ext-diff', 'HEAD'], run);
+      await git.run(['commit', '--quiet', '--no-verify', '--no-gpg-sign', '-m', message], run);
+      const sha = (await git.run(['rev-parse', '--verify', 'HEAD'], run)).trim();
       return { sha, diff };
     },
 
-    async changedPaths(dir, fromRef) {
+    async changedPaths(dir, fromRef, opts = {}) {
       assertRef(fromRef);
       const out = await git.run(
         ['diff', '--name-only', '-z', '--no-renames', '--no-ext-diff', fromRef, 'HEAD', '--'],
-        { cwd: dir },
+        { cwd: dir, signal: opts.signal },
       );
       return [...new Set(out.split('\0').filter((p) => p !== ''))].sort();
     },
 
-    async cleanWorktree(dir) {
-      await git.run(['reset', '--hard', '--quiet'], { cwd: dir });
-      await git.run(['clean', '-ffdxq'], { cwd: dir });
+    async cleanWorktree(dir, opts = {}) {
+      const run = { cwd: dir, signal: opts.signal };
+      await git.run(['reset', '--hard', '--quiet'], run);
+      await git.run(['clean', '-ffdxq'], run);
     },
 
-    async removeWorktree(dir) {
+    async removeWorktree(dir, opts = {}) {
+      const { signal } = opts;
       const abs = worktreeDirOf(dir);
+      throwIfAborted(signal);
       if (!existsSync(abs)) return;
       const commonDir = (
-        await git.run(['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: abs })
+        await git.run(['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+          cwd: abs,
+          signal,
+        })
       ).trim();
-      const head = await git.raw(['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: abs });
+      const head = await git.raw(['symbolic-ref', '--quiet', '--short', 'HEAD'], {
+        cwd: abs,
+        signal,
+      });
       const branch = head.code === 0 ? head.stdout.trim() : null;
-      await git.run(['--git-dir', commonDir, 'worktree', 'remove', '--force', '--force', abs]);
+      await git.run(['--git-dir', commonDir, 'worktree', 'remove', '--force', '--force', abs], {
+        signal,
+      });
       // Only branches this module created; never main or an owner's branch.
       if (branch?.startsWith(BRANCH_PREFIX)) {
-        await git.run(['--git-dir', commonDir, 'branch', '--quiet', '-D', branch]);
+        await git.run(['--git-dir', commonDir, 'branch', '--quiet', '-D', branch], { signal });
       }
     },
 
-    async pruneWorktrees(productId) {
-      await git.run(inRepo(productId, ['worktree', 'prune']));
+    async pruneWorktrees(productId, opts = {}) {
+      await git.run(inRepo(productId, ['worktree', 'prune']), { signal: opts.signal });
     },
 
-    async clearWorktrees() {
+    async clearWorktrees(opts = {}) {
+      const { signal } = opts;
+      throwIfAborted(signal);
       const entries = existsSync(worktreesDir) ? await readdir(worktreesDir) : [];
-      for (const name of entries) {
-        const dir = join(worktreesDir, name);
-        try {
-          await api.removeWorktree(dir);
-        } catch {
-          // Not a working git worktree (half-created, or its repo is gone): delete it from disk;
-          // `worktree prune` below drops any admin entry it left in the repo.
+      for (const name of entries) await discardDir(join(worktreesDir, name), signal);
+      for (const productId of await api.listRepos({ signal })) {
+        if (!(await isRepo(repoDir(productId), signal))) {
+          log(`git: skipping ${repoDir(productId)}: not a git repository`);
+          continue;
         }
-        await rm(dir, { recursive: true, force: true });
-      }
-      for (const productId of await api.listRepos()) {
-        await api.pruneWorktrees(productId);
+        await api.pruneWorktrees(productId, { signal });
         const refs = await git.run(
           inRepo(productId, [
             'for-each-ref',
             '--format=%(refname:short)',
             `refs/heads/${BRANCH_PREFIX}`,
           ]),
+          { signal },
         );
         for (const branch of refs.split('\n').filter((b) => b.startsWith(BRANCH_PREFIX))) {
-          await git.run(inRepo(productId, ['branch', '--quiet', '-D', branch]));
+          await git.run(inRepo(productId, ['branch', '--quiet', '-D', branch]), { signal });
         }
       }
     },
 
-    async listRepos() {
+    async listRepos(opts = {}) {
+      throwIfAborted(opts.signal);
       if (!existsSync(reposDir)) return [];
       const entries = await readdir(reposDir, { withFileTypes: true });
       return entries
@@ -371,75 +485,88 @@ export function createGit(o: GitOptions): Git {
         .sort();
     },
 
-    async removeRepo(productId) {
-      await rm(repoDir(productId), { recursive: true, force: true });
+    async removeRepo(productId, opts = {}) {
+      const gitDir = repoDir(productId);
+      throwIfAborted(opts.signal);
+      await rm(gitDir, { recursive: true, force: true });
     },
 
-    async commitFilesOnMain(productId, files, msg) {
+    async commitFilesOnMain(productId, files, msg, opts = {}) {
       const gitDir = repoDir(productId);
       Object.keys(files).forEach(assertRepoPath);
-      const parent = await resolveCommit(gitDir, MAIN_REF);
+      const parent = await resolveCommit(gitDir, MAIN_REF, opts.signal);
       if (!parent) throw new Error(`Product ${productId} has no main branch`);
-      return commitFiles(gitDir, parent, files, msg);
+      return commitFiles(gitDir, parent, files, msg, opts.signal);
     },
 
-    async mainSha(productId) {
-      const sha = await resolveCommit(repoDir(productId), MAIN_REF);
+    async mainSha(productId, opts = {}) {
+      const sha = await resolveCommit(repoDir(productId), MAIN_REF, opts.signal);
       if (!sha) throw new Error(`Product ${productId} has no main branch`);
       return sha;
     },
 
-    async readFileAtMain(productId, path) {
+    async readFileAtMain(productId, path, opts = {}) {
+      const { signal } = opts;
       assertRepoPath(path);
-      const spec = `${MAIN_REF}:${path}`;
-      const r = await git.raw(inRepo(productId, ['cat-file', 'blob', spec]));
+      const gitDir = repoDir(productId);
+      if (!existsSync(gitDir)) throw new GitError(`Product ${productId} has no repository`);
+      const main = await resolveCommit(gitDir, MAIN_REF, signal);
+      if (!main) throw new GitError(`Product ${productId}: main cannot be resolved`);
+      const spec = `${main}:${path}`;
+      const r = await git.raw(['--git-dir', gitDir, 'cat-file', 'blob', spec], { signal });
       if (r.code === 0) return r.stdout;
-      const exists = await git.raw(inRepo(productId, ['cat-file', '-e', spec]));
+      const exists = await git.raw(['--git-dir', gitDir, 'cat-file', '-e', spec], { signal });
       if (exists.code !== 0) return null;
-      throw new GitError(['cat-file', 'blob', spec], r);
+      throw commandError(['cat-file', 'blob', spec], r);
     },
 
-    async integrate(productId, branch, baseSha, message) {
+    async integrate(productId, branch, baseSha, message, opts = {}) {
+      const { signal } = opts;
       const gitDir = repoDir(productId);
-      const main = await api.mainSha(productId);
-      const head = await requireCommit(gitDir, branch);
-      const base = await requireCommit(gitDir, baseSha);
+      const main = await api.mainSha(productId, { signal });
+      const head = await requireCommit(gitDir, branch, signal);
+      const base = await requireCommit(gitDir, baseSha, signal);
       const squash = (tree: string): Promise<string> =>
         git
-          .run(['--git-dir', gitDir, 'commit-tree', tree, '-p', main, '-m', message])
+          .run(['--git-dir', gitDir, 'commit-tree', tree, '-p', main, '-m', message], { signal })
           .then((out) => out.trim());
 
       if (main === base) {
-        const tree = (await git.run(['--git-dir', gitDir, 'rev-parse', `${head}^{tree}`])).trim();
+        const tree = (
+          await git.run(['--git-dir', gitDir, 'rev-parse', `${head}^{tree}`], { signal })
+        ).trim();
         return { kind: 'fast', tree, commitSha: await squash(tree) };
       }
 
       // Squash commits keep the attempt's base in main's ancestry, so the natural merge base is baseSha.
       const args = ['merge-tree', '--write-tree', '-z', '--name-only', '--no-messages', main, head];
-      const r = await git.raw(['--git-dir', gitDir, ...args]);
-      if (r.code !== 0 && r.code !== 1) throw new GitError(args, r);
+      const r = await git.raw(['--git-dir', gitDir, ...args], { signal });
+      if (r.code !== 0 && r.code !== 1) throw commandError(args, r);
       const [tree = '', ...rest] = r.stdout.split('\0');
       if (r.code === 1) {
         const paths = [...new Set(rest.filter((p) => p !== ''))].sort();
         return { kind: 'conflict', paths };
       }
       const commitSha = await squash(tree);
-      const runId = `${INTEGRATION_PREFIX}${commitSha}`;
-      await api.removeWorktree(join(worktreesDir, runId));
-      const wt = await api.addWorktree(productId, runId, commitSha, { detached: true });
+      // addWorktree discards a leftover integration worktree for the same commit.
+      const wt = await api.addWorktree(productId, `${INTEGRATION_PREFIX}${commitSha}`, commitSha, {
+        detached: true,
+        signal,
+      });
       return { kind: 'merged', commitSha, dir: wt.dir };
     },
 
-    async advanceMain(productId, commitSha, expectedOld) {
+    async advanceMain(productId, commitSha, expectedOld, opts = {}) {
+      const { signal } = opts;
       const gitDir = repoDir(productId);
-      const sha = await requireCommit(gitDir, commitSha);
+      const sha = await requireCommit(gitDir, commitSha, signal);
       assertRef(expectedOld);
       const args = ['update-ref', '-m', `advance main to ${sha}`, MAIN_REF, sha, expectedOld];
-      const r = await git.raw(['--git-dir', gitDir, ...args]);
+      const r = await git.raw(['--git-dir', gitDir, ...args], { signal });
       if (r.code === 0) return;
-      const actual = await resolveCommit(gitDir, MAIN_REF);
+      const actual = await resolveCommit(gitDir, MAIN_REF, signal);
       if (actual !== expectedOld) throw new MainMovedError(productId, expectedOld, actual);
-      throw new GitError(args, r);
+      throw commandError(args, r);
     },
   };
   return api;
