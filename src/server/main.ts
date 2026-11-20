@@ -3,7 +3,7 @@ import { serve, type ServerType } from '@hono/node-server';
 import type { Hono } from 'hono';
 import { ensureDataDir, parseConfig, type Config } from './config.ts';
 import { open } from './db/index.ts';
-import { createGit } from './git/index.ts';
+import { createGit, GIT_VERSION_REQUIRED_MESSAGE, gitVersionOk } from './git/index.ts';
 import { createApp } from './http/index.ts';
 import { inboxHook } from './notify/index.ts';
 import { createScheduler, type Runners } from './scheduler/index.ts';
@@ -57,6 +57,8 @@ export interface StartOptions {
   wrapRunOrchestrator?: (run: Runners['runOrchestrator']) => Runners['runOrchestrator'];
   /** docker CLI binary for the real runtime (tests point it at a missing one). */
   dockerCommand?: string;
+  /** Host git version check (tests fake it); defaults to the real `gitVersionOk`. */
+  gitVersionOk?: () => Promise<boolean>;
 }
 
 /** Composition root: config → data dir → DB → store → app → serve. */
@@ -65,6 +67,11 @@ export async function start(
   webRoot = DEFAULT_WEB_ROOT,
   options: StartOptions = {},
 ): Promise<Running> {
+  // git >= 2.38 is a hard host requirement (ARCHITECTURE §2): refuse before anything is opened,
+  // recovered, scheduled or bound.
+  if (!(await (options.gitVersionOk ?? gitVersionOk)())) {
+    throw new Error(GIT_VERSION_REQUIRED_MESSAGE);
+  }
   const clock = options.clock ?? systemClock;
   ensureDataDir(config.dataDir);
   const db = open(config.dbPath);
@@ -319,9 +326,38 @@ export function closeOnSignals(
   });
 }
 
-if (import.meta.main) {
-  const running = await start(parseConfig(process.env));
-  closeOnSignals(running);
+export interface MainDeps {
+  proc?: SignalTarget;
+  /** stderr (boot failures). */
+  error?: (line: string) => void;
+  /** stdout (the listening address). */
+  log?: (line: string) => void;
+  options?: StartOptions;
+}
+
+/**
+ * Process entrypoint: starts the server and wires graceful shutdown. When boot fails (host git
+ * too old, remote bind without a password, …) the reason goes to stderr and the process exits 1
+ * without listening; resolves to undefined in that case.
+ */
+export async function main(
+  env: NodeJS.ProcessEnv,
+  { proc = process, error = console.error, log = console.log, options = {} }: MainDeps = {},
+): Promise<Running | undefined> {
+  let running: Running;
+  try {
+    running = await start(parseConfig(env), DEFAULT_WEB_ROOT, options);
+  } catch (err) {
+    error(redactor.redact(err instanceof Error ? err.message : String(err)));
+    proc.exit(1);
+    return undefined;
+  }
+  closeOnSignals(running, proc, error);
   const { host, port } = running.address;
-  console.log(`Vibecode listening on http://${host}:${String(port)}`);
+  log(`Vibecode listening on http://${host}:${String(port)}`);
+  return running;
+}
+
+if (import.meta.main) {
+  await main(process.env);
 }
