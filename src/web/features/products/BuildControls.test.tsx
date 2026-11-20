@@ -1,10 +1,22 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { cleanup, render as rtlRender, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventSchema, type Event } from '../../../shared/events.ts';
 import { ProductIdSchema } from '../../../shared/ids.ts';
 import { emptyState, reduce, type ProductState } from '../../../shared/state.ts';
+import { AppStoreProvider } from '../../state/AppStoreProvider.tsx';
+import { createAppStore } from '../../state/store.ts';
+import { FakeEventSource } from '../agents/testing.ts';
 import { BuildControls } from './BuildControls.tsx';
+
+/** Renders inside a live (empty) app store, as the product page does. */
+const render = (ui: ReactElement) =>
+  rtlRender(ui, {
+    wrapper: ({ children }) => (
+      <AppStoreProvider store={createAppStore()}>{children}</AppStoreProvider>
+    ),
+  });
 
 const P = ProductIdSchema.parse('p1');
 
@@ -57,11 +69,15 @@ beforeEach(() => {
   posts = [];
   deletes = [];
   respond = () => Response.json({ ok: true });
+  FakeEventSource.reset();
+  vi.stubGlobal('EventSource', FakeEventSource);
   vi.stubGlobal(
     'fetch',
     vi.fn((url: string, init?: RequestInit) => {
       if (init?.method === 'POST') posts.push(url);
       if (init?.method === 'DELETE') deletes.push(url);
+      if (url === '/api/state')
+        return Promise.resolve(Response.json({ state: emptyState, lastSeq: 0 }));
       return Promise.resolve(respond(url, init?.method ?? 'GET'));
     }),
   );
@@ -137,7 +153,7 @@ describe('BuildControls preview', () => {
 
     const button = screen.getByRole('button', { name: 'Preview' });
     expect(button).toHaveAttribute('aria-disabled', 'true');
-    expect(button).toHaveAccessibleDescription(/no preview configured/i);
+    expect(button).toHaveAccessibleDescription(/preview isn't set up yet/i);
     await user.click(button);
     expect(posts).toEqual([]);
   });
