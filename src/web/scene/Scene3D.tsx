@@ -1,12 +1,20 @@
 import { ContactShadows } from '@react-three/drei';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber';
+import {
+  Component,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import type { InstancedMesh } from 'three';
 import {
   AnimationMixer,
   BoxGeometry,
   Matrix4,
-  MeshStandardMaterial,
   Object3D,
   Quaternion,
   Vector3,
@@ -14,11 +22,12 @@ import {
   type Group,
 } from 'three';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import type { PieceType, ScenePiece, SceneState } from '../../shared/scene.ts';
+import type { Figure, PieceType, ScenePiece, SceneState } from '../../shared/scene.ts';
 import {
   BENCH_POS,
   DESK_POS,
   debrisPlacements,
+  pieceFacing,
   PIECE_TYPES,
   piecesByType,
   SITE_GATE,
@@ -28,17 +37,26 @@ import {
   type WorkerPlacement,
 } from './scene-model.ts';
 import {
-  CLIPS,
-  figureTemplate,
-  PIECE_COLORS,
-  pieceGeometry,
+  BUILDING_LOADER,
+  CHARACTER_LOADER,
+  CHARACTER_URLS,
+  figureFromGltf,
+  PIECE_URLS,
+  piecePartsFromGltf,
+  primitiveFigure,
+  primitivePieceParts,
   questionBubbleMaterial,
   type ClipName,
+  type FigureModel,
+  type ModelPieceType,
+  type PiecePart,
 } from './figures.ts';
 
 // The WebGL construction site (ADR 8). Loaded lazily by ScenePanel and rendering state only:
-// one InstancedMesh per piece type, one cloned figure + AnimationMixer per worker, debris
-// piles, a bench and a desk. DPR ≤ 1.5, one ContactShadows, no postprocessing.
+// one InstancedMesh per piece type and material, one cloned figure + AnimationMixer per worker,
+// debris piles, a bench and a desk. DPR ≤ 1.5, one ContactShadows, no postprocessing.
+// Building and workers use the Kenney GLBs (figures.ts); until they load, or if they fail,
+// the same components draw the primitive stand-ins.
 
 const PLACE_SECONDS = 0.6;
 const WALK_SPEED = 2.2; // units per second
@@ -91,10 +109,14 @@ export default function Scene3D({ scene, frameloop, reducedMotion }: Scene3DProp
       <hemisphereLight args={['#ffffff', '#b8b0a0', 1.6]} />
       <directionalLight position={[6, 10, 4]} intensity={1.6} />
       <Ground />
-      <Building scene={scene} animate={animate} />
+      <WithModels fallback={<Building scene={scene} animate={animate} partsFor={primitiveParts} />}>
+        <ModelBuilding scene={scene} animate={animate} />
+      </WithModels>
       <DebrisPiles scene={scene} />
       <SiteProps />
-      <Workers scene={scene} animate={animate} />
+      <WithModels fallback={<Workers scene={scene} animate={animate} modelFor={primitiveFigure} />}>
+        <ModelWorkers scene={scene} animate={animate} />
+      </WithModels>
       <ContactShadows
         position={[0, 0.005, 0]}
         scale={26}
@@ -138,6 +160,28 @@ function StatsProbe({ scene }: { scene: SceneState }) {
   return null;
 }
 
+/** Shows `fallback` while the GLBs in `children` load, and for good if loading fails. */
+function WithModels({ fallback, children }: { fallback: ReactNode; children: ReactNode }) {
+  return (
+    <ModelErrorBoundary fallback={fallback}>
+      <Suspense fallback={fallback}>{children}</Suspense>
+    </ModelErrorBoundary>
+  );
+}
+
+class ModelErrorBoundary extends Component<
+  { fallback: ReactNode; children: ReactNode },
+  { failed: boolean }
+> {
+  override state = { failed: false };
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+  override render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
 function Ground() {
   return (
     <mesh rotation-x={-Math.PI / 2}>
@@ -162,7 +206,37 @@ function footprintHalf(pieces: readonly ScenePiece[]): number {
 
 const capacityFor = (n: number) => Math.max(16, 2 ** Math.ceil(Math.log2(Math.max(n, 1))));
 
-function Building({ scene, animate }: { scene: SceneState; animate: boolean }) {
+type PartsFor = (type: PieceType) => PiecePart[];
+
+const primitiveParts: PartsFor = primitivePieceParts;
+
+const MODEL_PIECE_TYPES = Object.keys(PIECE_URLS) as ModelPieceType[];
+const MODEL_PIECE_URLS = MODEL_PIECE_TYPES.map((t) => PIECE_URLS[t]);
+const isModelPiece = (t: PieceType): t is ModelPieceType => t in PIECE_URLS;
+
+/** The building from City Kit Industrial pieces (floors stay primitive slabs). Suspends. */
+function ModelBuilding({ scene, animate }: { scene: SceneState; animate: boolean }) {
+  const gltfs = useLoader(BUILDING_LOADER, MODEL_PIECE_URLS);
+  const partsFor = useMemo<PartsFor>(() => {
+    const byType = new Map<PieceType, PiecePart[]>();
+    MODEL_PIECE_TYPES.forEach((t, i) => {
+      const gltf = gltfs[i];
+      if (gltf !== undefined) byType.set(t, piecePartsFromGltf(t, gltf));
+    });
+    return (t) => (isModelPiece(t) ? byType.get(t) : undefined) ?? primitivePieceParts(t);
+  }, [gltfs]);
+  return <Building scene={scene} animate={animate} partsFor={partsFor} />;
+}
+
+function Building({
+  scene,
+  animate,
+  partsFor,
+}: {
+  scene: SceneState;
+  animate: boolean;
+  partsFor: PartsFor;
+}) {
   const groups = useMemo(() => piecesByType(scene), [scene]);
   const half = footprintHalf(scene.pieces);
   // Pieces up to this mergedOrder were already on screen; newer ones get the drop animation.
@@ -184,7 +258,7 @@ function Building({ scene, animate }: { scene: SceneState; animate: boolean }) {
       {PIECE_TYPES.map((type) => (
         <PieceInstances
           key={`${type}-${String(capacityFor(groups[type].length))}`}
-          type={type}
+          parts={partsFor(type)}
           pieces={groups[type]}
           half={half}
           since={since}
@@ -203,7 +277,7 @@ function pieceMatrix(p: ScenePiece, half: number, t: number, out: Matrix4): Matr
   const ease = 1 - (1 - t) ** 3;
   const drop = (1 - ease) * 1.5;
   tmp.position.set(p.pos[0], p.pos[1] + drop, p.pos[2]);
-  tmp.quaternion.setFromAxisAngle(UP, p.rotY);
+  tmp.quaternion.setFromAxisAngle(UP, pieceFacing(p));
   const span = 2 * half;
   const s = 0.4 + 0.6 * ease;
   if (p.type === 'floor') tmp.scale.set(span * s, 1, span * s);
@@ -213,60 +287,74 @@ function pieceMatrix(p: ScenePiece, half: number, t: number, out: Matrix4): Matr
   return out.copy(tmp.matrix);
 }
 
+function markMatricesChanged(meshes: readonly (InstancedMesh | null)[]): void {
+  for (const m of meshes) if (m !== null) m.instanceMatrix.needsUpdate = true;
+}
+
+/**
+ * One piece type: an InstancedMesh per part (material), all with the same matrices. The
+ * parts are shared caches (figures.ts) and are not disposed here.
+ */
 function PieceInstances({
-  type,
+  parts,
   pieces,
   half,
   since,
   animate,
 }: {
-  type: PieceType;
+  parts: PiecePart[];
   pieces: ScenePiece[];
   half: number;
   since: Map<string, number>;
   animate: boolean;
 }) {
-  const mesh = useRef<InstancedMesh>(null);
+  const meshes = useRef<(InstancedMesh | null)[]>([]);
   const capacity = capacityFor(pieces.length);
-  const geometry = useMemo(() => pieceGeometry(type), [type]);
-  const material = useMemo(
-    () => new MeshStandardMaterial({ color: PIECE_COLORS[type], roughness: 0.85 }),
-    [type],
-  );
   const matrix = useMemo(() => new Matrix4(), []);
   const invalidate = useThree((s) => s.invalidate);
 
   useLayoutEffect(() => {
-    const m = mesh.current;
-    if (m === null) return;
-    pieces.forEach((p, i) =>
-      m.setMatrixAt(i, pieceMatrix(p, half, since.has(p.issueId) ? 0 : 1, matrix)),
-    );
-    m.count = pieces.length;
-    m.instanceMatrix.needsUpdate = true;
-    m.computeBoundingSphere();
+    for (const m of meshes.current) {
+      if (m === null) continue;
+      pieces.forEach((p, i) =>
+        m.setMatrixAt(i, pieceMatrix(p, half, since.has(p.issueId) ? 0 : 1, matrix)),
+      );
+      m.count = pieces.length;
+      m.instanceMatrix.needsUpdate = true;
+      m.computeBoundingSphere();
+    }
     invalidate();
-  }, [pieces, half, since, matrix, invalidate]);
+  }, [pieces, half, since, matrix, invalidate, parts]);
 
   useFrame(({ clock }) => {
-    const m = mesh.current;
-    if (m === null || since.size === 0 || !animate) return;
+    if (since.size === 0 || !animate) return;
     let changed = false;
     pieces.forEach((p, i) => {
       const start = since.get(p.issueId);
       if (start === undefined) return;
       const t = Math.min(1, (clock.elapsedTime - start) / PLACE_SECONDS);
-      m.setMatrixAt(i, pieceMatrix(p, half, t, matrix));
+      pieceMatrix(p, half, t, matrix);
+      for (const m of meshes.current) m?.setMatrixAt(i, matrix);
       if (t >= 1) since.delete(p.issueId);
       changed = true;
     });
-    if (changed) m.instanceMatrix.needsUpdate = true;
+    if (changed) markMatricesChanged(meshes.current);
   });
 
-  useEffect(() => () => geometry.dispose(), [geometry]);
-  useEffect(() => () => material.dispose(), [material]);
-
-  return <instancedMesh ref={mesh} args={[geometry, material, capacity]} frustumCulled={false} />;
+  return (
+    <>
+      {parts.map((part, i) => (
+        <instancedMesh
+          key={i}
+          ref={(m) => {
+            meshes.current[i] = m;
+          }}
+          args={[part.geometry, part.material, capacity]}
+          frustumCulled={false}
+        />
+      ))}
+    </>
+  );
 }
 
 // ---- debris, bench, desk --------------------------------------------------------------------
@@ -335,8 +423,35 @@ interface ShownWorker {
   leaving: boolean;
 }
 
+type ModelFor = (figure: Figure) => FigureModel;
+
+const FIGURES = Object.keys(CHARACTER_URLS) as Figure[];
+const FIGURE_URLS = FIGURES.map((f) => CHARACTER_URLS[f]);
+
+/** Workers drawn as Kenney Mini Characters, one model per role. Suspends while loading. */
+function ModelWorkers({ scene, animate }: { scene: SceneState; animate: boolean }) {
+  const gltfs = useLoader(CHARACTER_LOADER, FIGURE_URLS);
+  const modelFor = useMemo<ModelFor>(() => {
+    const byFigure = new Map<Figure, FigureModel>();
+    FIGURES.forEach((f, i) => {
+      const gltf = gltfs[i];
+      if (gltf !== undefined) byFigure.set(f, figureFromGltf(gltf));
+    });
+    return (f) => byFigure.get(f) ?? primitiveFigure(f);
+  }, [gltfs]);
+  return <Workers scene={scene} animate={animate} modelFor={modelFor} />;
+}
+
 /** Departed workers walk back to the gate before they disappear (immediately with reduced motion). */
-function Workers({ scene, animate }: { scene: SceneState; animate: boolean }) {
+function Workers({
+  scene,
+  animate,
+  modelFor,
+}: {
+  scene: SceneState;
+  animate: boolean;
+  modelFor: ModelFor;
+}) {
   const placements = useMemo(() => workerPlacements(scene), [scene]);
   const [prev, setPrev] = useState(placements);
   const [leaving, setLeaving] = useState<WorkerPlacement[]>([]);
@@ -361,6 +476,7 @@ function Workers({ scene, animate }: { scene: SceneState; animate: boolean }) {
       {shown.map(({ placement, leaving: isLeaving }) => (
         <WorkerFigure
           key={placement.worker.agentId}
+          model={modelFor(placement.worker.figure)}
           placement={placement}
           leaving={isLeaving}
           animate={animate}
@@ -379,19 +495,21 @@ function clipFor(placement: WorkerPlacement, moving: boolean): ClipName {
 }
 
 function WorkerFigure({
+  model,
   placement,
   leaving,
   animate,
 }: {
+  model: FigureModel;
   placement: WorkerPlacement;
   leaving: boolean;
   animate: boolean;
 }) {
-  const figure = placement.worker.figure;
-  const rig = useMemo(() => cloneSkinned(figureTemplate(figure)), [figure]);
+  const rig = useMemo(() => cloneSkinned(model.object), [model]);
   const mixer = useMemo(() => new AnimationMixer(rig), [rig]);
   const root = useRef<Group>(null);
   const current = useRef<{ name: ClipName; action: AnimationAction } | null>(null);
+  const invalidate = useThree((s) => s.invalidate);
   const target = leaving ? SITE_GATE : placement.target;
   const facing = placement.facing;
 
@@ -410,11 +528,21 @@ function WorkerFigure({
     if (g === null || animate) return;
     g.position.set(...target);
     g.rotation.set(0, facing, 0);
+    // A still pose (first frame of the activity's clip) instead of the rig's bind pose.
     mixer.stopAllAction();
+    mixer.clipAction(model.clips[clipFor(placement, false)]).play();
+    mixer.update(0);
     current.current = null;
-  }, [animate, target, facing, mixer]);
+    invalidate();
+  }, [animate, target, facing, mixer, model, placement, invalidate]);
 
-  useEffect(() => () => void mixer.stopAllAction(), [mixer]);
+  useEffect(
+    () => () => {
+      mixer.stopAllAction();
+      current.current = null;
+    },
+    [mixer],
+  );
 
   useFrame((_, delta) => {
     const g = root.current;
@@ -434,7 +562,8 @@ function WorkerFigure({
     g.quaternion.slerp(ROT, Math.min(1, dt * 8));
     const name = clipFor(placement, moving);
     if (current.current?.name !== name) {
-      const action = mixer.clipAction(CLIPS[name]).reset().fadeIn(0.2).play();
+      if (current.current === null) mixer.stopAllAction(); // drop the reduced-motion still pose
+      const action = mixer.clipAction(model.clips[name]).reset().fadeIn(0.2).play();
       current.current?.action.fadeOut(0.2);
       current.current = { name, action };
     }
