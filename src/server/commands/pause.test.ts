@@ -157,6 +157,8 @@ describe('pause/resume with the scheduler', () => {
           summary: 's',
         },
         t.store.snapshot().lastSeq,
+        // The first plan writes project.json; attempts need its check command.
+        { project: { check: ['npm', 'test'], imageInputs: [] } },
       );
       if (!r.ok) throw new Error(r.reason);
     };

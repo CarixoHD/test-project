@@ -253,6 +253,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     }
 
     if (liveCount >= max) return;
+    // No check command yet: the first orchestrator run writes `.vibecode/project.json`; an
+    // attempt started before that could only end in an error and a 60 s backoff.
+    if (p.project === null) return;
     if (isBackendBlocked(p.id, 'implementer')) return;
     const busy = new Set(mine.flatMap((r) => (r.issueId === undefined ? [] : [r.issueId])));
     const now = clock.now();

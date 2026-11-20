@@ -107,6 +107,8 @@ function setup(opts: { blocked?: (role: Role) => boolean } = {}) {
       P,
       { issueOps: ops, questions: [], summary: 's' },
       store.snapshot().lastSeq,
+      // The first plan writes project.json; attempts need its check command.
+      { project: { check: ['npm', 'test'], imageInputs: [] } },
     );
     if (!r.ok) throw new Error(r.reason);
     return r.createdIds;
