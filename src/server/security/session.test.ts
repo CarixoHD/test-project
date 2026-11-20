@@ -51,3 +51,56 @@ describe('sessions (HMAC-SHA256 signed tokens)', () => {
     expect(sessions.verify(sessions.issue())).toBe(true);
   });
 });
+
+describe('session revocation (logout)', () => {
+  function revocable() {
+    const key = newSessionKey();
+    const clock = new FakeClock();
+    let stored: string | undefined;
+    const revoked = { get: () => stored, set: (v: string) => (stored = v) };
+    const make = () => createSessions({ key: () => key, clock, revoked });
+    return { clock, make, stored: () => stored };
+  }
+
+  it('rejects a revoked token and keeps other tokens valid', () => {
+    const { make } = revocable();
+    const sessions = make();
+    const a = sessions.issue();
+    const b = sessions.issue();
+    sessions.revoke(a);
+    expect(sessions.verify(a)).toBe(false);
+    expect(sessions.verify(b)).toBe(true);
+  });
+
+  it('keeps revocations in the given storage (they survive a restart)', () => {
+    const { make } = revocable();
+    const token = make().issue();
+    make().revoke(token);
+    expect(make().verify(token)).toBe(false);
+  });
+
+  it('ignores tokens that do not verify and drops revocations once they expire', () => {
+    const { clock, make, stored } = revocable();
+    const sessions = make();
+    sessions.revoke('a.b.c');
+    expect(stored()).toBeUndefined();
+
+    const old = sessions.issue();
+    sessions.revoke(old);
+    const oldNonce = old.split('.')[1] ?? '';
+    expect(stored()).toContain(oldNonce);
+
+    clock.advance(SESSION_TTL_MS);
+    const fresh = sessions.issue();
+    sessions.revoke(fresh);
+    expect(stored()).not.toContain(oldNonce);
+    expect(sessions.verify(fresh)).toBe(false);
+  });
+
+  it('works without storage (in memory)', () => {
+    const { sessions } = setup();
+    const token = sessions.issue();
+    sessions.revoke(token);
+    expect(sessions.verify(token)).toBe(false);
+  });
+});
