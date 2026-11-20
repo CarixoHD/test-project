@@ -67,6 +67,18 @@ Copy the commands from Settings rather than typing them: the server fills in the
 - Claude containers need internet access to reach Anthropic, so they always join the egress network, including reviewers, which keep their read-only mount.
 - Stopping a run sends SIGINT to the CLI inside the container so it can end its turn, and SIGKILL after 5 seconds.
 
+### Recording real stream fixtures
+
+The Claude Code backend's parser is tested against NDJSON fixtures in `src/server/agents/fixtures/`. To capture a real stream from your own login (after the one-time setup above):
+
+```sh
+npm run -s claude:record -- --help   # options
+npm run -s claude:record             # writes src/server/agents/fixtures/real-success.ndjson
+npm run -s claude:record -- --out /tmp/run.ndjson --model opus
+```
+
+It prints the CLI version, then runs `claude` once in the current `vibecode/claude-code:<hash>` image (the tag `npm run -s docker:images` prints; `--pull never`) as your uid:gid, with the `vibecode-claude-config` volume mounted at `/home/agent/.claude`. It uses exactly the backend's argv (`--output-format stream-json`, `--json-schema`, the read-only tool set) for a tiny task that replies `{"ok":true}`. The raw stdout goes through the secret redactor (values of environment variables whose names contain `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIAL`) and is written to the fixture file. The exit code is non-zero if the CLI fails; whatever it printed is still written, so error runs can be recorded too. The script never reads the volume itself; only the CLI inside the container does. Review the file before you commit it.
+
 ### Status, rate limits and logging in again
 
 Settings → Claude Code shows the current status: **OK**, **Needs login**, or **Rate limited until …**. While Claude Code is rate limited or needs a login, Vibecode does not start runs on it. When the CLI reports that the login expired, run the login command again and press **I've logged in**.
