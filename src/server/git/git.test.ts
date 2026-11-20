@@ -51,7 +51,13 @@ describe('safety flags', () => {
     await writeFile(join(wt.dir, 'a.txt'), 'a\n');
     await git.commitAll(wt.dir, 'add a');
     await git.cleanWorktree(wt.dir);
+    if (wt.branch === null) throw new Error('expected a branch');
+    const fast = await git.integrate('p1', wt.branch, wt.baseSha, '#1 A');
     await git.commitFilesOnMain('p1', { 'docs/PRD.md': '# PRD\n' }, 'prd');
+    const merged = await git.integrate('p1', wt.branch, wt.baseSha, '#1 A');
+    if (merged.kind === 'merged') await git.removeWorktree(merged.dir);
+    if (fast.kind !== 'fast') throw new Error('expected fast');
+    await expect(git.advanceMain('p1', fast.commitSha, wt.baseSha)).rejects.toThrow(MainMovedError);
     await git.readFileAtMain('p1', 'README.md');
     await git.readFileAtMain('p1', 'missing.md');
     await git.mainSha('p1');
@@ -312,7 +318,9 @@ describe('integrate and advanceMain', () => {
 
     expect(r.kind).toBe('fast');
     if (r.kind !== 'fast') return;
-    expect(r.tree).toBe(await rawGit(['--git-dir', repoOf('p1'), 'rev-parse', `${a.branch}^{tree}`]));
+    expect(r.tree).toBe(
+      await rawGit(['--git-dir', repoOf('p1'), 'rev-parse', `${a.branch}^{tree}`]),
+    );
     expect(await rawGit(['--git-dir', repoOf('p1'), 'rev-parse', `${r.commitSha}^{tree}`])).toBe(
       r.tree,
     );
