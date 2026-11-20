@@ -24,7 +24,7 @@ All git operations run on the host with hooks and fsmonitor disabled. Networks:
 - implementer and orchestrator: `vibecode-egress` bridge with ICC off (so they can install packages)
 - checks, merge re-checks and API-backed reviewers: `none`
 - previews: `vibecode-preview`, with the port published on 127.0.0.1 only
-Product images are built from the repo's Dockerfile and tagged by sha256 of the Dockerfile plus `.vibecode/project.json` imageInputs (lockfiles). Dependencies install outside /workspace (/node_modules, /opt/venv), so a bind-mounted worktree still resolves them. The fallback image is vibecode/base (Debian, git, node, python). On boot, recovery removes every vibecode.managed container and all worktrees.
+Product images are built from the repo's Dockerfile and tagged by sha256 of the Dockerfile plus `.vibecode/project.json` imageInputs (lockfiles). Dependencies install outside /workspace (/node_modules, /opt/venv), so a bind-mounted worktree still resolves them. The fallback image is `vibecode/base:<sha256 of base.Dockerfile and the files it COPYs, first 12 hex>` (Debian, git, node, python), so editing base.Dockerfile rebuilds it. On boot, recovery removes every vibecode.managed container and all worktrees.
 
 ## Rationale
 

@@ -122,10 +122,7 @@ function spec(over: Partial<SandboxSpec> = {}): SandboxSpec {
   };
 }
 
-function runtime(
-  stub = stubDocker(),
-  over: { docker?: string; baseImageDir?: string } = {},
-) {
+function runtime(stub = stubDocker(), over: { docker?: string; baseImageDir?: string } = {}) {
   return new DockerCliRuntime({
     dataDir,
     uid: 1000,
@@ -221,16 +218,7 @@ describe('ensureImage', () => {
     expect(tag).toBe(await baseImageTag(dir));
     expect(stub.argvs()).toEqual([
       ['image', 'inspect', '--format', '{{.Id}}', tag],
-      [
-        'buildx',
-        'build',
-        '--load',
-        '--tag',
-        tag,
-        '--file',
-        path.join(dir, 'base.Dockerfile'),
-        dir,
-      ],
+      ['buildx', 'build', '--load', '--tag', tag, '--file', path.join(dir, 'base.Dockerfile'), dir],
     ]);
   });
 

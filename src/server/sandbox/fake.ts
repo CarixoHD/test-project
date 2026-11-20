@@ -255,7 +255,8 @@ async function productImage(p: EnsureImageParams, imageDir: string): Promise<str
   try {
     dockerfile = await readFile(path.join(p.contextDir, 'Dockerfile'));
   } catch (err) {
-    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return baseImageTag(imageDir);
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT')
+      return baseImageTag(imageDir);
     throw err;
   }
   const hash = createHash('sha256').update(dockerfile).digest('hex').slice(0, 12);

@@ -39,11 +39,12 @@ Vibecode can run agents on your Claude Pro or Max subscription instead of an API
 You need Docker. Run these on the machine that runs Vibecode. Settings → Claude Code shows them with copy buttons, filled in for your host:
 
 ```sh
-# 1. Build the login image (Vibecode also builds it on first use). <hash> is a content hash of
-#    docker/claude-code.Dockerfile and docker/base.Dockerfile.
-docker buildx build --load --tag vibecode/base --file docker/base.Dockerfile docker && \
-  docker buildx build --load --tag vibecode/claude-code:<hash> --build-arg BASE_IMAGE=vibecode/base \
-  --file docker/claude-code.Dockerfile docker
+# 1. Build the login image (Vibecode also builds it on first use). <base-hash> is a content hash
+#    of docker/base.Dockerfile, <hash> one of the base tag and docker/claude-code.Dockerfile.
+#    `npm run -s docker:images` prints this command with the current tags filled in.
+docker buildx build --load --tag vibecode/base:<base-hash> --file docker/base.Dockerfile docker && \
+  docker buildx build --load --tag vibecode/claude-code:<hash> \
+  --build-arg BASE_IMAGE=vibecode/base:<base-hash> --file docker/claude-code.Dockerfile docker
 # 2. Create the volume that holds the login.
 docker volume create vibecode-claude-config
 # 3. Log in, as your own uid:gid (the identity agent containers run as).
@@ -53,7 +54,9 @@ docker run -it --rm --pull never --user "$(id -u):$(id -g)" \
 
 The login stores its state in the `vibecode-claude-config` Docker volume. Then choose the **Claude Code** provider for one or more roles under Settings → Models (or per product).
 
-Copy the commands from Settings rather than typing them: the server fills in the current `<hash>` and your uid and gid. The image tag changes whenever the pinned CLI version (`CLAUDE_CODE_VERSION`) changes, and Vibecode then rebuilds the image. The volume stays the same, so an existing login keeps working. `--pull never` makes sure Docker never fetches a look-alike image from a registry.
+Copy the commands from Settings rather than typing them: the server fills in the current `<hash>` and your uid and gid. The image tags change whenever the pinned CLI version (`CLAUDE_CODE_VERSION`) or `docker/base.Dockerfile` changes, and Vibecode then rebuilds the images. The volume stays the same, so an existing login keeps working. `--pull never` makes sure Docker never fetches a look-alike image from a registry.
+
+**Volume from an older image.** Docker copies the image's owner and mode into a named volume only when the volume is first mounted. A `vibecode-claude-config` volume created by an older Vibecode image therefore keeps owner 1000:1000 and mode 0700. If your host uid is not 1000, the login (which now runs as your uid:gid) cannot write to it: remove it with `docker volume rm vibecode-claude-config`, then run steps 2 and 3 again to log in.
 
 ### How it runs
 
