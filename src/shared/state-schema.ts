@@ -183,6 +183,8 @@ export const ClientStateSchema = z.object({
   /** Keyed by backend name (e.g. 'claude-code'); cleared limits are removed. */
   backendLimits: z.record(z.string(), BackendLimitSchema),
   previews: z.record(ProductIdSchema, PreviewStateSchema),
+  /** `ts` of the last `settings.changed` (refetch GET /api/settings when it moves); null before. */
+  settingsChangedAt: EpochMs.nullable(),
   lastSeq: Count,
 });
 

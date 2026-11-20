@@ -105,9 +105,14 @@ const emptyState: ClientState;
 // ClientState: id-keyed records {products, prdDrafts, prdVersions (metadata only), sparMessages,
 //   issues, attempts, agents (lastActivity = last line only), questions, inbox (read flag),
 //   usage {byProduct, byIssue}: {apiUsd, apiUnpriced, subscriptionTokens, subscriptionCalls},
-//   backendLimits (by backend), previews}, lastSeq. prd.applied also rebases the draft.
+//   backendLimits (by backend), previews, settingsChangedAt (ts of the last settings.changed)}, lastSeq. prd.applied also rebases the draft.
 // dto.ts
 const StateResponseSchema;                                 // GET /api/state → {state: ClientState, lastSeq}
+// SettingsResponseSchema / SettingsUpdateRequestSchema / SettingsUpdateResponseSchema (GET|PUT /api/settings)
+// models.ts
+function resolveModel(role, productModels: RoleModels, {roleDefaults, defaultModel}): ModelRef | undefined;
+//   product.models[role] → roleDefaults[role] → defaultModel → undefined (caller: demo fake or 'Choose a model in Settings')
+// KEYED_PROVIDER_IDS, ProviderConfigSchema (re-exported by server/llm)
 // issues.ts
 type IssueStatus = 'open'|'in_progress'|'in_review'|'completed'|'failed'|'cancelled';
 function transition(issue: IssueView, ev: IssueTransitionEvent, cfg: {maxAttempts:number}):
@@ -213,6 +218,12 @@ GET|PUT /api/settings                   providers, keys (write-only, masked on r
 POST /api/settings/password             {current?, next}
 POST /api/login {password} · POST /api/logout · GET /api/session
 ```
+
+**Settings** (DTOs in `shared/dto.ts`; `commands/settings.ts`, `createAccountSettings({store, db, secrets})` → `{read, view, update, modelDeps}`; mounted when `AppDeps.settings` is given):
+- `GET /api/settings` → `{providers: [{id, name, enabled, needsKey, baseURL|null}], providerConfig, keys: [{provider, last4|null}], roleDefaults, defaultModel|null, priceOverrides}`. Keys never appear in full; `last4` is null for keys shorter than 16 chars.
+- `PUT /api/settings` `{providerConfig?: ProviderConfig, keys?: {<provider>: string|null}, roleDefaults?, defaultModel?: ModelRef|null, priceOverrides?}` (strict; at least one field). Sections present replace the stored value; `keys` set (≥ 8 chars, no whitespace) or clear one provider's key under `API_KEY_SECRETS`; `defaultModel: null` deletes it. Invalid → 400. One commit writes the rows and emits `settings.changed{sections, keys:[{provider, set}]}` (never values). Responds `{ok:true, ...view}`.
+- `settings` rows: `providerConfig`, `roleDefaults`, `defaultModel`, `priceOverrides` (`SETTING_KEYS`; `settings.read()` supplies the account defaults to the shared `resolveModel` and the overrides to `price`), plus `settingsChangedAt` (projection of `settings.changed`).
+- `modelDeps()` → `ModelDeps` with `getSecret = secrets.get` and a `providerConfig` getter over the stored config: both are read when `model()` runs.
 
 ### 4.4 server/scheduler
 ```ts
@@ -401,7 +412,10 @@ Main history has **one commit per merged issue**: `commit-tree <merged tree> -p 
 
 ### 4.10 server/security
 ```ts
-secrets.get(key) / secrets.set(key, value) / secrets.list(): {key; last4}[]   // SQLite `secrets` table; DB file 0600, data dir 0700
+createSecrets({db, clock, redactor}): Secrets           // boot: registers every stored value with redactor
+secrets.get(key) / secrets.set(key, value) / secrets.delete(key) / secrets.list(): {key; last4|null}[]
+                                                           // SQLite `secrets` table; DB file 0600, data dir 0700; set registers the value;
+                                                           // delete keeps it registered; last4 null under 16 chars
 redactor.register(value); redactor.redact(text)            // all secret values ≥ 8 chars; applied in store.commit, log writer, errors
                                                            // literal, longest first; ≥16 chars → `***`+last4, 8–15 chars → `[REDACTED]`
 redactor.safeBoundary(text)                                // where continued/cut text may be split without splitting a secret
@@ -513,6 +527,7 @@ Event types (each has a zod schema in `shared/events.ts`, with `v:1`):
 - `question.asked|answered`
 - `inbox.created|read`
 - `backend.limited|cleared`
+- `settings.changed` (global; `{sections, keys: [{provider, set}]}`, never values; reduced to `ClientState.settingsChangedAt`)
 - `preview.started|stopped`
 
 `agent.activity` is batched and not reduced into the snapshot, apart from the last line. Events older than 7 days are pruned.

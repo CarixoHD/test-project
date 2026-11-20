@@ -65,6 +65,7 @@ const ARCHITECTURE_EVENT_TYPES = [
   'inbox.read',
   'backend.limited',
   'backend.cleared',
+  'settings.changed',
   'preview.started',
   'preview.stopped',
 ];
@@ -433,6 +434,16 @@ const SAMPLES: { [K in EventType]: Sample<K> } = {
       data: { backend: 'claude-code' },
     },
     invalidData: { backend: '' },
+  },
+  'settings.changed': {
+    valid: {
+      type: 'settings.changed',
+      productId: null,
+      entityId: null,
+      v: 1,
+      data: { sections: ['keys', 'roleDefaults'], keys: [{ provider: 'anthropic', set: true }] },
+    },
+    invalidData: { sections: [], keys: [] },
   },
   'preview.started': {
     valid: {

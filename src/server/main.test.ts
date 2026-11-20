@@ -34,6 +34,26 @@ describe('start (composition root)', () => {
     expect(StateResponseSchema.parse(await res.json()).lastSeq).toBe(0);
   });
 
+  it('serves /api/settings and keeps a stored key masked across a restart', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const config = { ...parseConfig({ VIBECODE_DATA_DIR: join(root, 'data') }), port: 0 };
+    const key = 'sk-ant-api03-boot-test-secret-5678';
+    running = await start(config, join(root, 'no-web'));
+    const url = () => `http://127.0.0.1:${String(running?.address.port)}/api/settings`;
+    const put = await fetch(url(), {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keys: { anthropic: key } }),
+    });
+    expect(put.status).toBe(200);
+    await running.close();
+
+    running = await start(config, join(root, 'no-web'));
+    const text = await (await fetch(url())).text();
+    expect(text).not.toContain(key);
+    expect(JSON.parse(text)).toMatchObject({ keys: [{ provider: 'anthropic', last4: '5678' }] });
+  });
+
   it('runs the inbox hook: a limiting event yields an inbox item in snapshot, SSE and mark-read', async () => {
     root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
     const config = { ...parseConfig({ VIBECODE_DATA_DIR: join(root, 'data') }), port: 0 };

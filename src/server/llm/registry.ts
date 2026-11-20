@@ -4,10 +4,16 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenAICompatible, type MetadataExtractor } from '@ai-sdk/openai-compatible';
 import type { LanguageModel } from 'ai';
 import { z } from 'zod';
-import type { ModelRef, ProviderId } from '../../shared/models.ts';
+import {
+  ProviderConfigSchema,
+  type KeyedProviderId,
+  type ModelRef,
+  type ProviderConfig,
+  type ProviderId,
+} from '../../shared/models.ts';
 import { fakeModel, type FakeModelOptions, type FakeScript } from './fake.ts';
 
-type KeyedProvider = Exclude<ProviderId, 'fake' | 'claude-code'>;
+type KeyedProvider = KeyedProviderId;
 
 /** `secrets` table keys of the provider API keys (written by Settings). */
 export const API_KEY_SECRETS = {
@@ -27,12 +33,8 @@ const KEY_LABELS: Record<Exclude<KeyedProvider, 'openai-compatible'>, string> = 
 
 export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
-/** Non-secret provider settings (stored in `settings`). */
-export const ProviderConfigSchema = z.strictObject({
-  openaiCompatible: z.strictObject({ baseURL: z.url() }).optional(),
-  openrouter: z.strictObject({ baseURL: z.url() }).optional(),
-});
-export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
+/** Non-secret provider settings (stored in `settings`); defined in shared for the settings DTOs. */
+export { ProviderConfigSchema, type ProviderConfig };
 
 export type ModelDeps = {
   /** Reads a secret at call time; the registry never stores or logs it. */

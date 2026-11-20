@@ -895,6 +895,24 @@ const ACCOUNT_CASES: Case[] = [
       }),
     then: (s) => expect(Object.keys(s.backendLimits)).toEqual(['anthropic']),
   },
+  {
+    name: 'settings.changed records when account settings changed, and nothing else',
+    when: () =>
+      ev(
+        {
+          type: 'settings.changed',
+          productId: null,
+          entityId: null,
+          v: 1,
+          data: { sections: ['keys'], keys: [{ provider: 'openai', set: true }] },
+        },
+        T0 + 500,
+      ),
+    then: (s, before) => {
+      expect(s.settingsChangedAt).toBe(T0 + 500);
+      expect({ ...s, settingsChangedAt: null, lastSeq: before.lastSeq }).toEqual(before);
+    },
+  },
 ];
 
 const ALL_CASES: Case[] = [

@@ -23,6 +23,13 @@ export {
   type IssueCommandFailure,
 } from './issues.ts';
 export {
+  createAccountSettings,
+  SETTING_KEYS,
+  type AccountSettings,
+  type AccountSettingsDeps,
+  type StoredSettings,
+} from './settings.ts';
+export {
   createSparring,
   nextSparMessageId,
   savePrdDraft,
