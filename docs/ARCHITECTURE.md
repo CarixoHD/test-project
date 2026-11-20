@@ -313,13 +313,13 @@ integrate(productId, branch, baseSha, message): Promise<
   | {kind:'fast'; tree; commitSha}                         // main == baseSha
   | {kind:'merged'; commitSha; dir}                        // merge-tree clean; dir = integration worktree to re-check
   | {kind:'conflict'; paths:string[]}>
-advanceMain(productId, commitSha, expectedOld): Promise<void>     // update-ref with old-value guard
+advanceMain(productId, commitSha, expectedOld): Promise<void>     // update-ref with old-value guard; throws MainMovedError if main != expectedOld
 commitFilesOnMain(productId, files: Record<string,string>, msg): Promise<string>  // PRD.md on handoff/apply; plumbing with a temp index, one commit, update-ref with old-value guard
 push(productId, remote): Promise<void>                    // token via GIT_ASKPASS env; redacted
 removeWorktree(dir): Promise<void>                        // only under data/worktrees; also deletes its vibecode/* branch; no-op if dir is gone
 pruneWorktrees(productId): Promise<void>
 ```
-Main history has **one commit per merged issue**: `commit-tree <merged tree> -p main -m "#<n> <title>"`.
+Main history has **one commit per merged issue**: `commit-tree <merged tree> -p main -m "#<n> <title>"`. `integrate` never moves main; the caller advances it under the merge lock. The `merged` integration worktree is detached at `data/worktrees/integrate-<commitSha>`; the caller removes it with `removeWorktree`. Conflict paths are sorted and de-duplicated (`merge-tree -z --name-only`).
 
 ### 4.10 server/security
 ```ts
