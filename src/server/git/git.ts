@@ -292,6 +292,9 @@ export function createGit(o: GitOptions): Git {
   const log = o.log ?? ((line: string) => console.warn(line));
   const reposDir = resolve(o.dataDir, 'repos');
   const worktreesDir = resolve(o.dataDir, 'worktrees');
+  // Scratch space for executables (the askpass helper): under the data dir, because hosts may
+  // mount os.tmpdir() noexec.
+  const scratchDir = resolve(o.dataDir, 'tmp');
   const repoDir = (productId: string): string => {
     assertSafeId('product id', productId);
     return join(reposDir, `${productId}.git`);
@@ -606,7 +609,8 @@ export function createGit(o: GitOptions): Git {
       }
       if (remote.token !== null) redactor.register(remote.token);
       throwIfAborted(signal);
-      const tmp = await mkdtemp(join(tmpdir(), 'vibecode-askpass-'));
+      await mkdir(scratchDir, { recursive: true, mode: 0o700 });
+      const tmp = await mkdtemp(join(scratchDir, 'askpass-')); // mkdtemp creates it 0o700
       try {
         const askpass = join(tmp, 'askpass.sh');
         await writeFile(askpass, ASKPASS_SCRIPT, { mode: 0o700 });
