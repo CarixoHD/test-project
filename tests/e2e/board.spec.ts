@@ -94,7 +94,10 @@ test('create a product, spar, hand off and watch the board complete without relo
   await page.getByLabel('Idea').fill('Track daily habits and show streaks.');
   await page.getByRole('button', { name: 'Create product' }).click();
   await expect(page.getByRole('heading', { level: 1, name })).toBeVisible();
-  const productId = page.url().split('/products/')[1] ?? '';
+  // A new product opens on the Spec tab, where sparring happens.
+  await expect(page).toHaveURL(/\/products\/[^/]+\/spec$/);
+  await expect(page.getByRole('tab', { name: 'Spec' })).toHaveAttribute('aria-selected', 'true');
+  const productId = page.url().split('/products/')[1]?.split('/')[0] ?? '';
   expect(productId).not.toBe('');
   product.id = productId;
   product.name = name;

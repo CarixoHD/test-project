@@ -29,7 +29,7 @@ function validate(name: string, idea: string): FieldErrors {
   return errors;
 }
 
-/** The "New product" form: validates, POSTs /api/products and opens the new product. */
+/** The "New product" form: validates, POSTs /api/products and opens the new product's Spec tab. */
 export function NewProductForm() {
   const navigate = useNavigate();
   const [name, setName] = useState('');
@@ -53,7 +53,8 @@ export function NewProductForm() {
     try {
       const { id } = await createProduct({ name, idea });
       const state: CreatedLocationState = { created: true };
-      await navigate(`/products/${id}`, { state });
+      // Story 2: a new product starts with sparring, which lives on the Spec tab.
+      await navigate(`/products/${id}/spec`, { state });
     } catch (err) {
       setServerError(err instanceof ApiError ? err.message : 'Could not create the product.');
       setSubmitting(false);
