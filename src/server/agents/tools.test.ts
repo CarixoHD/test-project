@@ -377,7 +377,8 @@ describe('sandbox output truncation notice', () => {
     );
     expect(out).toMatch(/^Error:/);
     expect(out).toContain('truncated');
-    expect(out).toMatch(/write_file|run/);
+    expect(out).toMatch(/\bwrite_file\b/);
+    expect(out).toContain('Use `run`');
     expect(writes).toEqual([]);
     expect(await file('big.txt')).toBe(original);
   });

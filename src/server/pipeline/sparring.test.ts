@@ -109,6 +109,30 @@ describe('sparTurn', () => {
     expectSnapshotMatchesReplay(store);
   });
 
+  it('keeps the existing draft when prdMarkdown is blank, but still records the reply', async () => {
+    const { store, deps, events } = setup([
+      finish({ reply: 'No changes yet.', prdMarkdown: '   ' }),
+    ]);
+    store.commit(() => [
+      {
+        type: 'prd.draft_saved',
+        productId: P,
+        entityId: null,
+        v: 1,
+        data: { markdown: PRD, baseVersion: 0 },
+      },
+    ]);
+
+    await sparTurn(deps, P, 'Hmm, let me think');
+
+    expect(ofType(events, 'spar.message').map((e) => e.data)).toEqual([
+      { role: 'agent', text: 'No changes yet.' },
+    ]);
+    expect(ofType(events, 'prd.draft_saved')).toHaveLength(1);
+    expect(store.q.prdDraft(P)?.markdown).toBe(PRD);
+    expectSnapshotMatchesReplay(store);
+  });
+
   it('bases the draft on the applied PRD version in the building phase', async () => {
     const { store, deps, events } = setup([finish({ reply: 'Updated.', prdMarkdown: PRD })]);
     store.commit(() => [
