@@ -1,6 +1,7 @@
 import type { Hono } from 'hono';
 import type { AppDeps } from '../deps.ts';
 import { registerAgentRoutes } from './agents.ts';
+import { registerBackendRoutes } from './backends.ts';
 import { registerEventRoutes } from './events.ts';
 import { registerHealthRoutes } from './health.ts';
 import { registerPreviewRoutes } from './preview.ts';
@@ -20,6 +21,7 @@ export function registerRoutes(app: Hono, deps: AppDeps): void {
   registerProductRoutes(app, deps);
   registerProductSettingsRoutes(app, deps);
   registerIssueRoutes(app, deps);
+  registerBackendRoutes(app, deps);
   if (deps.settings !== undefined) registerSettingsRoutes(app, deps.settings);
   if (deps.previews !== undefined) registerPreviewRoutes(app, deps.previews);
   if (deps.logsDir !== undefined) registerAgentRoutes(app, deps, deps.logsDir);

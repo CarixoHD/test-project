@@ -750,6 +750,45 @@ a {
   color: var(--ink-muted);
 }
 
+.spec-apply {
+  display: grid;
+  gap: var(--space-3);
+  grid-column: 1 / -1;
+}
+
+.spec-apply__status {
+  margin: 0 0 var(--space-1);
+}
+
+.spec-apply__heading {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.spec-apply__versions {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.spec-apply__versions > li {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+
+.spec-apply__version {
+  font-weight: 600;
+}
+
+.spec-apply__summary {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-muted);
+}
+
 .product-header {
   display: flex;
   flex-wrap: wrap;
@@ -943,4 +982,33 @@ a {
 .agent-log__note {
   margin: 0;
   color: var(--ink-muted);
+}
+
+.settings-claude__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settings-claude__steps {
+  padding-left: var(--space-6);
+}
+
+.settings-claude__steps li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.settings-claude__command {
+  flex: 1 1 24rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  font-family: ui-monospace, monospace;
+  overflow-wrap: anywhere;
 }

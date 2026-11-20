@@ -173,6 +173,8 @@ export interface Queries {
   sparMessages(productId: ProductId): SparMessage[];
   /** The current PRD draft, null before the first save. */
   prdDraft(productId: ProductId): PrdDraft | null;
+  /** Markdown of an applied PRD version, null when that version does not exist. */
+  prdVersionMarkdown(productId: ProductId, version: number): string | null;
   /** Raw JSON value of a `settings` row (unvalidated; callers parse it), undefined when unset. */
   setting(key: string): unknown;
 }
@@ -243,6 +245,14 @@ export function createQueries(db: Db): Queries {
       if (r === undefined) return null;
       const { productId: _p, ...draft } = r;
       return PrdDraftSchema.parse(draft);
+    },
+    prdVersionMarkdown(productId, version) {
+      const r = db
+        .select({ markdown: s.prdVersions.markdown })
+        .from(s.prdVersions)
+        .where(and(eq(s.prdVersions.productId, productId), eq(s.prdVersions.version, version)))
+        .get();
+      return r?.markdown ?? null;
     },
     setting(key) {
       return db.select().from(s.settings).where(eq(s.settings.key, key)).get()?.value;

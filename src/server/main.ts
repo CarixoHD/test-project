@@ -92,6 +92,10 @@ export async function start(
     if (fakeScript !== undefined) return { ...deps, fake: { script: fakeScript } };
     return demo === undefined ? deps : { ...deps, fake: demo };
   };
+  const runtime = selectRuntime(config, {
+    ...(config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {}),
+    ...(options.dockerCommand === undefined ? {} : { docker: options.dockerCommand }),
+  });
   const sparring = createSparring({
     store,
     ids,
@@ -106,6 +110,9 @@ export async function start(
           afterUsage,
           modelDeps: modelDeps(),
           demo: config.demo,
+          // Claude Code sparring runs in a container on a scratch worktree.
+          runtime,
+          dataDir: config.dataDir,
         },
         productId,
         message,
@@ -114,10 +121,6 @@ export async function start(
     onError: (err) => {
       console.error(redactor.redact(`sparring turn failed: ${String(err)}`));
     },
-  });
-  const runtime = selectRuntime(config, {
-    ...(config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {}),
-    ...(options.dockerCommand === undefined ? {} : { docker: options.dockerCommand }),
   });
   // Restart recovery (§4.11): nothing of the previous process is live; reconcile it before the
   // scheduler can start new runs.
@@ -150,6 +153,9 @@ export async function start(
     sparring,
     previews,
     logsDir,
+    // apply-prd commits docs/PRD.md under the merge lock; `scheduler` is created below and read
+    // only when a request arrives.
+    withMergeLock: (productId, fn) => scheduler.withMergeLock(productId, fn),
   });
   // The orchestrator merges under the scheduler's lock and the scheduler runs the orchestrator:
   // the lock closure reads `scheduler` only during a run, after it has been created below.

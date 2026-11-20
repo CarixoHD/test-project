@@ -21,6 +21,13 @@ export type SandboxSpec = {
   publishPort?: number;
 };
 
+export type EnsureImageParams = {
+  productId: string;
+  contextDir: string;
+  /** Layer the pinned Claude Code CLI on top of the product image (docker/claude-code.Dockerfile). */
+  claude?: boolean | undefined;
+};
+
 export type HostIdentity = { uid: number; gid: number; dataDir: string };
 
 export type OutputStream = 'stdout' | 'stderr';
@@ -59,8 +66,12 @@ export type ManagedContainer = { name: string; labels: Record<string, string> };
 
 export interface ContainerRuntime {
   available(): Promise<boolean>;
-  /** Tag `vibecode/p-<id>:<sha256(Dockerfile+imageInputs)>`, or `vibecode/base` without a Dockerfile. */
-  ensureImage(p: { productId: string; contextDir: string }): Promise<string>;
+  /**
+   * Tag `vibecode/p-<id>:<sha256(Dockerfile+imageInputs)>`, or `vibecode/base` without a
+   * Dockerfile. With `claude`, the derived Claude Code image FROM that product image:
+   * `vibecode/claude-code` over vibecode/base, else `vibecode/p-<id>-claude:<hash>` (ADR 4).
+   */
+  ensureImage(p: EnsureImageParams): Promise<string>;
   /** Starts a warm container (`sleep infinity`); every tool call is an exec in it. */
   open(spec: SandboxSpec): Promise<Sandbox>;
   /** One-shot container for checks. */

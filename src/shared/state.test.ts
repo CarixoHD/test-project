@@ -303,6 +303,38 @@ const PRODUCT_CASES: Case[] = [
     },
   },
   {
+    name: 'prd.summarized sets the summary of that version only',
+    given: () =>
+      [1, 2].reduce(
+        (s, version) =>
+          apply(
+            s,
+            ev({
+              type: 'prd.applied',
+              productId: P,
+              entityId: null,
+              v: 1,
+              data: { version, markdown: `# v${String(version)}`, summary: null },
+            }),
+          ),
+        withProduct(),
+      ),
+    when: () =>
+      ev({
+        type: 'prd.summarized',
+        productId: P,
+        entityId: null,
+        v: 1,
+        data: { version: 2, summary: 'Added a dark mode issue.' },
+      }),
+    then: (s) => {
+      expect(s.prdVersions[P]?.map((v) => [v.version, v.summary])).toEqual([
+        [1, null],
+        [2, 'Added a dark mode issue.'],
+      ]);
+    },
+  },
+  {
     name: 'orchestrator.cursor_advanced moves the cursor',
     when: () =>
       ev({
