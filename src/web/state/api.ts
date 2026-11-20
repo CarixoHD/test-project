@@ -4,6 +4,7 @@ import {
   CreateProductResponseSchema,
   EditIssueResponseSchema,
   OkResponseSchema,
+  SessionResponseSchema,
   SettingsResponseSchema,
   SettingsUpdateResponseSchema,
   StartPreviewResponseSchema,
@@ -15,7 +16,9 @@ import {
   type EditIssueRequest,
   type EditIssueResponse,
   type OkResponse,
+  type PasswordChangeRequest,
   type ProductSettingsUpdateRequest,
+  type SessionResponse,
   type SettingsResponse,
   type SettingsUpdateRequest,
   type SettingsUpdateResponse,
@@ -56,6 +59,26 @@ export interface RequestOptions<T> {
   schema: z.ZodType<T>;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** A 401 here is an expected answer (wrong password), not a lost session. */
+  expectUnauthorized?: boolean;
+}
+
+// ---- lost sessions ------------------------------------------------------------------------
+// With an owner password set, any API call can answer 401 once the session expired or was
+// ended elsewhere; listeners (the auth gate) then show the Login page.
+
+const unauthorizedListeners = new Set<() => void>();
+
+/** Calls `listener` whenever the server says the session is missing; returns the unsubscribe. */
+export function onUnauthorized(listener: () => void): () => void {
+  unauthorizedListeners.add(listener);
+  return () => {
+    unauthorizedListeners.delete(listener);
+  };
+}
+
+function notifyUnauthorized(): void {
+  for (const listener of [...unauthorizedListeners]) listener();
 }
 
 export async function request<T>(path: string, opts: RequestOptions<T>): Promise<T> {
@@ -82,7 +105,10 @@ export async function request<T>(path: string, opts: RequestOptions<T>): Promise
   }
 
   const body = await readJson(res);
-  if (!res.ok) throw errorFromResponse(res, body);
+  if (!res.ok) {
+    if (res.status === 401 && opts.expectUnauthorized !== true) notifyUnauthorized();
+    throw errorFromResponse(res, body);
+  }
   const parsed = opts.schema.safeParse(body);
   if (!parsed.success) {
     throw new ApiError('bad_response', `Unexpected response from ${path}`, res.status, {
@@ -301,4 +327,63 @@ export function cancelIssue(issueId: string, signal?: AbortSignal): Promise<OkRe
     schema: OkResponseSchema,
     ...(signal ? { signal } : {}),
   });
+}
+
+// ---- session --------------------------------------------------------------------------------
+
+/** Whether a password is set and whether this browser holds a valid session. */
+export function getSession(signal?: AbortSignal): Promise<SessionResponse> {
+  return request('/api/session', { schema: SessionResponseSchema, ...(signal ? { signal } : {}) });
+}
+
+/** Logs in; a wrong password is an ApiError with status 401, too many tries status 429. */
+export function login(password: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request('/api/login', {
+    method: 'POST',
+    body: { password },
+    schema: OkResponseSchema,
+    expectUnauthorized: true,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+export function logout(signal?: AbortSignal): Promise<OkResponse> {
+  return request('/api/logout', {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Sets the first password or changes it (then `current` is required); ends other sessions. */
+export function changePassword(
+  body: PasswordChangeRequest,
+  signal?: AbortSignal,
+): Promise<OkResponse> {
+  return request('/api/settings/password', {
+    method: 'POST',
+    body,
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+export type SessionCheck = 'authenticated' | 'unauthenticated' | 'unknown';
+
+/**
+ * For EventSource failures, which cannot see the HTTP status: asks GET /api/session and tells
+ * the onUnauthorized listeners when the session is gone. `unknown` when the server is unreachable.
+ */
+export async function recheckSession(): Promise<SessionCheck> {
+  let session: SessionResponse;
+  try {
+    session = await getSession();
+  } catch {
+    return 'unknown';
+  }
+  if (session.passwordSet && !session.authenticated) {
+    notifyUnauthorized();
+    return 'unauthenticated';
+  }
+  return 'authenticated';
 }

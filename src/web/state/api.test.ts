@@ -6,9 +6,15 @@ import {
   applyPrdChanges,
   ApiError,
   cancelIssue,
+  changePassword,
   editIssue,
+  getSession,
   getState,
   handoffProduct,
+  login,
+  logout,
+  onUnauthorized,
+  recheckSession,
   request,
   savePrdDraft,
   sendSparMessage,
@@ -155,5 +161,69 @@ describe('api', () => {
     const [url, init] = fetchFn.mock.calls[0] as FetchArgs;
     expect(url).toBe('/api/issues/i1/cancel');
     expect(init.method).toBe('POST');
+  });
+});
+
+describe('session and 401 handling', () => {
+  it('tells onUnauthorized listeners about a 401 from any API call', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(json({ error: { code: 'unauthorized', message: 'Log in first' } }, 401)),
+      ),
+    );
+    const listener = vi.fn();
+    const off = onUnauthorized(listener);
+    await expect(getState()).rejects.toMatchObject({ status: 401, code: 'unauthorized' });
+    expect(listener).toHaveBeenCalledTimes(1);
+    off();
+    await expect(getState()).rejects.toBeInstanceOf(ApiError);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat a wrong password at login as a lost session', async () => {
+    const fetchFn = stubFetch(
+      json({ error: { code: 'unauthorized', message: 'Wrong password' } }, 401),
+    );
+    const listener = vi.fn();
+    const off = onUnauthorized(listener);
+    await expect(login('nope')).rejects.toMatchObject({ status: 401, message: 'Wrong password' });
+    off();
+    expect(listener).not.toHaveBeenCalled();
+    const [url, init] = fetchFn.mock.calls[0] as FetchArgs;
+    expect(url).toBe('/api/login');
+    expect(init.body).toBe(JSON.stringify({ password: 'nope' }));
+  });
+
+  it('getSession, logout and changePassword call their endpoints', async () => {
+    const fetchFn = stubFetch(json({ passwordSet: true, authenticated: false }));
+    await expect(getSession()).resolves.toEqual({ passwordSet: true, authenticated: false });
+    fetchFn.mockImplementation(() => Promise.resolve(json({ ok: true })));
+    await logout();
+    await changePassword({ current: 'old password!', next: 'new password!!' });
+    const calls = fetchFn.mock.calls as FetchArgs[];
+    expect(calls.map(([u, i]) => `${i.method} ${u}`)).toEqual([
+      'GET /api/session',
+      'POST /api/logout',
+      'POST /api/settings/password',
+    ]);
+    expect(calls[2]?.[1].body).toBe(
+      JSON.stringify({ current: 'old password!', next: 'new password!!' }),
+    );
+  });
+
+  it('recheckSession reports a missing session to the listeners', async () => {
+    stubFetch(json({ passwordSet: true, authenticated: false }));
+    const listener = vi.fn();
+    const off = onUnauthorized(listener);
+    await expect(recheckSession()).resolves.toBe('unauthenticated');
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    stubFetch(json({ passwordSet: true, authenticated: true }));
+    await expect(recheckSession()).resolves.toBe('authenticated');
+    stubFetch(new TypeError('Failed to fetch'));
+    await expect(recheckSession()).resolves.toBe('unknown');
+    off();
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 });
