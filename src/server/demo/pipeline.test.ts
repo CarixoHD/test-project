@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -137,5 +138,49 @@ describe('demo mode: create → spar → handoff → plan → build → merge', 
     ]);
 
     expectSnapshotMatchesReplay(r.store);
+  }, 60_000);
+
+  it('attempts use the settings saved after start (keys and provider config, no restart)', async () => {
+    // A local OpenAI-compatible endpoint that records requests and refuses them.
+    const seen: IncomingHttpHeaders[] = [];
+    const provider = createServer((req, res) => {
+      seen.push(req.headers);
+      req.resume();
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'stub provider' } }));
+    });
+    await new Promise<void>((done) => provider.listen(0, '127.0.0.1', done));
+    try {
+      const address = provider.address();
+      if (address === null || typeof address === 'string') throw new Error('no port');
+      const r = await startDemo();
+      const key = 'sk-local-implementer-0042';
+      const put = await r.app.request('/api/settings', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          providerConfig: {
+            openaiCompatible: { baseURL: `http://127.0.0.1:${String(address.port)}/v1` },
+          },
+          keys: { 'openai-compatible': key },
+          roleDefaults: { implementer: { provider: 'openai-compatible', model: 'local' } },
+        }),
+      });
+      expect(put.status).toBe(200);
+
+      const created = await r.app.request('/api/products', post({ name: 'Todo', idea: 'todos' }));
+      const id = ProductIdSchema.parse(CreateProductResponseSchema.parse(await created.json()).id);
+      await spar(r, id, 'a');
+      await spar(r, id, 'b');
+      await spar(r, id, 'c');
+      expect((await r.app.request(`/api/products/${id}/handoff`, post())).status).toBe(200);
+
+      await waitFor(() => seen.length > 0, 'the implementer calling the local provider');
+      expect(seen[0]?.authorization).toBe(`Bearer ${key}`);
+    } finally {
+      await running?.close();
+      running = undefined;
+      await new Promise((done) => provider.close(done));
+    }
   }, 60_000);
 });
