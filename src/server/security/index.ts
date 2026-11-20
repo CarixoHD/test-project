@@ -21,8 +21,10 @@ export {
   newSessionKey,
   SESSION_COOKIE,
   SESSION_KEY_SECRET,
+  SESSION_REVOKED_SECRET,
   SESSION_TTL_MS,
   sessionCookieOptions,
+  type RevocationStorage,
   type Sessions,
   type SessionsDeps,
 } from './session.ts';

@@ -118,6 +118,25 @@ describe('access (owner password and sessions)', () => {
     expect(access.sessions.verify(access.sessions.issue())).toBe(true);
   });
 
+  it('keeps logged-out sessions revoked in secrets, across a restart', () => {
+    const base = setupStore();
+    const start = () =>
+      createAccess({
+        store: base.store,
+        secrets: createSecrets(base),
+        clock: base.clock,
+        passwords: fastPasswordHasher,
+      });
+    const first = start();
+    const loggedOut = first.sessions.issue();
+    const kept = first.sessions.issue();
+    first.sessions.revoke(loggedOut);
+
+    const restarted = start();
+    expect(restarted.sessions.verify(loggedOut)).toBe(false);
+    expect(restarted.sessions.verify(kept)).toBe(true);
+  });
+
   it('records settings.changed{password} without the hash, and snapshot ≡ replay', async () => {
     const { access, store } = setup();
     await access.changePassword({ next: PW }, 'c');
