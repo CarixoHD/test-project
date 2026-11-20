@@ -179,7 +179,7 @@ describe('runAttempt: errors', () => {
     expectSnapshotMatchesReplay(h.store);
   });
 
-  it('a failing check ends the attempt as error without touching main', async () => {
+  it('a failing check ends the attempt as a counted check_failed without touching main', async () => {
     const h = await setup();
     h.deps.runtime = new FakeContainerRuntime({
       dataDir,
@@ -191,7 +191,7 @@ describe('runAttempt: errors', () => {
     await h.run(id);
 
     const [attempt] = attemptsOf(h.store, id);
-    expect(attempt).toMatchObject({ status: 'error', checkExit: 1 });
+    expect(attempt).toMatchObject({ status: 'check_failed', counted: true, checkExit: 1 });
     expect(attempt?.feedback).toContain('1 test failed');
     expect(h.store.q.issue(id)?.status).toBe('open');
     expect(await h.mainLog()).toEqual(before);

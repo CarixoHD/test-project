@@ -156,7 +156,8 @@ export async function setupAttempt(dataDir: string, o: HarnessOptions = {}): Pro
         const agent = spawnedAgent(store);
         return {
           script: o.script?.(agent) ?? defaultScript(agent),
-          onCall: (prompt: unknown) => modelCalls.push({ ...agent, prompt: JSON.stringify(prompt) }),
+          onCall: (prompt: unknown) =>
+            modelCalls.push({ ...agent, prompt: JSON.stringify(prompt) }),
         };
       },
     },

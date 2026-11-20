@@ -18,11 +18,13 @@ import type { RunHandle } from '../scheduler/index.ts';
 import {
   completeAttempt,
   endWithError,
+  failAttempt,
   moveIssue,
   recordStep,
   startAttempt,
   type AttemptOutcome,
   type AttemptRef,
+  type CountedStatus,
 } from './attempt-events.ts';
 import { implementerPrompt, reviewerPrompt, tailLines } from './attempt-prompt.ts';
 import { resolveModel } from './resolve-model.ts';
@@ -30,8 +32,9 @@ import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
 
 // One attempt at an issue (ARCHITECTURE §6 flow 4, ADR 6/7): worktree → implementer in a warm
 // sandbox (egress, rw) → host commit → check (network none) → fresh reviewer (read-only, network
-// none) → squash merge to main under the merge lock. Any other outcome is recorded as
-// attempt.ended{error}, uncounted, and the issue goes back to open (counted failures: follow-up).
+// none) → squash merge to main under the merge lock. Counted failures (check_failed, rejected,
+// conflict, empty diff, agent error) store their feedback for the next attempt and count against
+// maxAttempts; any other outcome is an uncounted error and the issue goes back to open later.
 
 export const DEFAULT_ATTEMPT_LIMITS: Record<'implementer' | 'reviewer', AgentLimits> = {
   implementer: { maxSteps: 150, wallClockMs: 60 * 60_000 },
@@ -41,6 +44,9 @@ export const CHECK_TIMEOUT_MS = 30 * 60_000;
 /** An errored attempt's issue waits this long before the scheduler starts it again. */
 export const ERROR_RETRY_DELAY_MS = 60_000;
 export const NO_CHECK_REASON = 'No check command configured (.vibecode/project.json)';
+export const NO_CHANGES_FEEDBACK = 'no changes: the implementer finished without changing any file';
+/** Check output lines kept as feedback for the next attempt. */
+const CHECK_FEEDBACK_LINES = 200;
 
 export interface AttemptDeps extends RecordedRunContext {
   git: Git;
@@ -66,8 +72,13 @@ type Ctx = AttemptRef & {
   sandboxes: Set<Sandbox>;
 };
 
-/** What the attempt ends with; `ended` fields go into attempt.ended. */
-type Ended = AttemptOutcome & ({ kind: 'merged' } | { kind: 'error'; reason: string });
+/** What the attempt ends with; the outcome fields go into attempt.ended. */
+type Ended = AttemptOutcome &
+  (
+    | { kind: 'merged' }
+    | { kind: 'failed'; status: CountedStatus; feedback: string }
+    | { kind: 'error'; reason: string }
+  );
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -107,7 +118,10 @@ export async function runAttempt(deps: AttemptDeps, issueId: IssueId, run: RunHa
         checkExit: null,
       };
     }
-    if (ended.kind === 'error') {
+    if (ended.kind === 'failed') {
+      const { kind: _kind, status, feedback, ...outcome } = ended;
+      failAttempt(ctx, status, deps.redactor.redact(feedback), outcome);
+    } else if (ended.kind === 'error') {
       const { kind: _kind, reason, ...outcome } = ended;
       const runAfter = deps.clock.now() + ERROR_RETRY_DELAY_MS;
       endWithError(ctx, deps.redactor.redact(reason), outcome, runAfter);
@@ -121,14 +135,44 @@ export async function runAttempt(deps: AttemptDeps, issueId: IssueId, run: RunHa
   }
 }
 
+const outcomeOf = (p: Partial<AttemptOutcome>): AttemptOutcome => ({
+  headSha: p.headSha ?? null,
+  review: p.review ?? null,
+  checkExit: p.checkExit ?? null,
+});
+
+/** An uncounted error: the issue goes back to open after ERROR_RETRY_DELAY_MS. */
+const fail = (reason: string, p: Partial<AttemptOutcome> = {}): Ended => ({
+  kind: 'error',
+  reason,
+  ...outcomeOf(p),
+});
+
+/** A counted failure whose feedback goes to the next attempt. */
+const counted = (
+  status: CountedStatus,
+  feedback: string,
+  p: Partial<AttemptOutcome> = {},
+): Ended => ({ kind: 'failed', status, feedback, ...outcomeOf(p) });
+
+/** A failed agent run: agent errors count, everything else (stop, rate limit, …) does not. */
+const agentFailed = (r: Failed, p: Partial<AttemptOutcome> = {}): Ended =>
+  r.counted === true ? counted('error', r.reason, p) : fail(r.reason, p);
+
+function checkFailedFeedback(what: string, check: CheckRun): string {
+  const output = tailLines(check.output, CHECK_FEEDBACK_LINES);
+  return (
+    `${what} failed (exit ${check.code ?? 'none'}). Last ${String(CHECK_FEEDBACK_LINES)} ` +
+    `lines of its output:\n${output === '' ? '(no output)' : output}`
+  );
+}
+
+function rejectedFeedback(review: ReviewResult): string {
+  const findings = review.findings.map((f) => `- ${f}`).join('\n');
+  return `The reviewer rejected the change:\n${findings === '' ? '(no findings given)' : findings}`;
+}
+
 async function attempt(ctx: Ctx): Promise<Ended> {
-  const fail = (reason: string, p: Partial<AttemptOutcome> = {}): Ended => ({
-    kind: 'error',
-    reason,
-    headSha: p.headSha ?? null,
-    review: p.review ?? null,
-    checkExit: p.checkExit ?? null,
-  });
   const product = ctx.deps.store.q.product(ctx.productId);
   const issue = ctx.deps.store.q.issue(ctx.issueId);
   if (product === null || issue === null) return fail('product or issue disappeared');
@@ -137,10 +181,10 @@ async function attempt(ctx: Ctx): Promise<Ended> {
 
   recordStep(ctx, 'implement');
   const impl = await implement(ctx, issue, product.name, project);
-  if (!impl.ok) return fail(impl.reason);
+  if (!impl.ok) return agentFailed(impl);
 
   const commit = await ctx.deps.git.commitAll(ctx.wt.dir, mergeMessage(issue));
-  if (commit.sha === null) return fail('no changes');
+  if (commit.sha === null) return counted('error', NO_CHANGES_FEEDBACK);
   const headSha = commit.sha;
   await mkdir(ctx.artifacts, { recursive: true });
   await writeFile(path.join(ctx.artifacts, 'diff.patch'), commit.diff, { mode: 0o600 });
@@ -149,7 +193,8 @@ async function attempt(ctx: Ctx): Promise<Ended> {
   const check = await runCheck(ctx, project, ctx.wt.dir, 'check.log');
   await ctx.deps.git.cleanWorktree(ctx.wt.dir);
   if (check.code !== 0) {
-    return fail(`check failed (exit ${check.code ?? 'none'}):\n${tailLines(check.output)}`, {
+    const what = `The check \`${project.check.join(' ')}\``;
+    return counted('check_failed', checkFailedFeedback(what, check), {
       headSha,
       checkExit: check.code,
     });
@@ -160,12 +205,9 @@ async function attempt(ctx: Ctx): Promise<Ended> {
   }
   const review = await reviewChange(ctx, issue, product.name, project, check.output, commit.diff);
   const done = { headSha, checkExit: check.code };
-  if (!review.ok) return fail(review.reason, done);
+  if (!review.ok) return agentFailed(review, done);
   if (!review.value.approve) {
-    return fail(`rejected:\n${review.value.findings.join('\n')}`, {
-      ...done,
-      review: review.value,
-    });
+    return counted('rejected', rejectedFeedback(review.value), { ...done, review: review.value });
   }
 
   recordStep(ctx, 'merge');
@@ -174,7 +216,9 @@ async function attempt(ctx: Ctx): Promise<Ended> {
   );
 }
 
-type Check<T> = { ok: true; value: T } | { ok: false; reason: string };
+/** A failed step; `counted` marks agent errors (ADR 7), which count against maxAttempts. */
+type Failed = { ok: false; reason: string; counted?: boolean };
+type Check<T> = { ok: true; value: T } | Failed;
 
 async function implement(
   ctx: Ctx,
@@ -278,9 +322,12 @@ async function runAgentIn<T>(
       // Not spread: the registry reads the provider settings when the model is created.
       modelDeps: deps.modelDeps,
     });
-    return result.kind === 'ok'
-      ? { ok: true, value: result.result }
-      : { ok: false, reason: `${role}: ${agentFailure(result)}` };
+    if (result.kind === 'ok') return { ok: true, value: result.result };
+    return {
+      ok: false,
+      reason: `${role}: ${agentFailure(result)}`,
+      counted: result.kind === 'error',
+    };
   } finally {
     ctx.sandboxes.delete(sandbox);
     await sandbox.close();
@@ -355,27 +402,32 @@ async function merge(
   project: ProjectConfig,
   done: AttemptOutcome,
 ): Promise<Ended> {
-  const fail = (reason: string): Ended => ({ kind: 'error', reason, ...done });
   const { git, store } = ctx.deps;
   const now = store.q.issue(ctx.issueId);
   if (now?.status !== 'in_review' || now.rev !== ctx.issueRev) {
-    return fail('the issue changed or was cancelled before the merge');
+    return fail('the issue changed or was cancelled before the merge', done);
   }
   const main = await git.mainSha(ctx.productId);
   const r = await git.integrate(ctx.productId, ctx.wt.branch, ctx.wt.baseSha, mergeMessage(issue));
   switch (r.kind) {
     case 'conflict':
-      return fail(`conflicts with main in ${r.paths.join(', ')}`);
+      return counted(
+        'conflict',
+        `Merging into main conflicted in: ${r.paths.join(', ')}. Main changed since this ` +
+          'attempt started; build on its current version of these files.',
+        done,
+      );
     case 'fast':
       break;
     case 'merged':
       try {
         const recheck = await runCheck(ctx, project, r.dir, 'integration-check.log');
         if (recheck.code !== 0) {
-          return fail(
-            `check failed on the merge with main (exit ${recheck.code ?? 'none'}):\n` +
-              tailLines(recheck.output),
-          );
+          const what = `The check \`${project.check.join(' ')}\` on the merge with main`;
+          return counted('check_failed', checkFailedFeedback(what, recheck), {
+            ...done,
+            checkExit: recheck.code,
+          });
         }
       } finally {
         await git.removeWorktree(r.dir);
