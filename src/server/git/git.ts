@@ -55,6 +55,8 @@ export interface Git {
     o?: AddWorktreeOptions,
   ): Promise<Worktree>;
   commitAll(dir: string, message: string): Promise<CommitResult>;
+  /** Paths changed between `fromRef` and HEAD of the worktree (renames as delete + add), sorted. */
+  changedPaths(dir: string, fromRef: string): Promise<string[]>;
   cleanWorktree(dir: string): Promise<void>;
   removeWorktree(dir: string): Promise<void>;
   pruneWorktrees(productId: string): Promise<void>;
@@ -287,6 +289,15 @@ export function createGit(o: GitOptions): Git {
       });
       const sha = (await git.run(['rev-parse', '--verify', 'HEAD'], { cwd: dir })).trim();
       return { sha, diff };
+    },
+
+    async changedPaths(dir, fromRef) {
+      assertRef(fromRef);
+      const out = await git.run(
+        ['diff', '--name-only', '-z', '--no-renames', '--no-ext-diff', fromRef, 'HEAD', '--'],
+        { cwd: dir },
+      );
+      return [...new Set(out.split('\0').filter((p) => p !== ''))].sort();
     },
 
     async cleanWorktree(dir) {

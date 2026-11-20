@@ -409,3 +409,64 @@ describe('applyPlan: invalid plans commit nothing', () => {
     expectSnapshotMatchesReplay(store);
   });
 });
+
+describe('applyPlan options: project config and replan summary', () => {
+  const PROJECT = { check: ['npm', 'test'], imageInputs: ['package-lock.json'] };
+
+  it('stores the project config and posts the replan inbox item in the same commit', () => {
+    const { store, deps } = setup();
+    const before = store.snapshot().lastSeq;
+
+    const r = applyPlan(deps, P, plan([create('x')]), 3, {
+      project: PROJECT,
+      replanSummary: 'Added dark mode issues',
+    });
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.events.map((e) => e.type)).toEqual([
+      'issue.created',
+      'product.settings_changed',
+      'inbox.created',
+      'orchestrator.cursor_advanced',
+    ]);
+    expect(r.events.map((e) => e.seq)).toEqual([1, 2, 3, 4].map((n) => before + n));
+    const { state } = store.snapshot();
+    expect(state.products[P]?.project).toEqual(PROJECT);
+    expect(Object.values(state.inbox)).toMatchObject([
+      { productId: P, kind: 'replan', body: 'Added dark mode issues', link: `/products/${P}` },
+    ]);
+    expectSnapshotMatchesReplay(store);
+  });
+
+  it('without options emits neither settings nor inbox events', () => {
+    const { deps } = setup();
+    const r = applyPlan(deps, P, plan([create('x')]), 3, {});
+    expect(r.ok && r.events.map((e) => e.type)).toEqual([
+      'issue.created',
+      'orchestrator.cursor_advanced',
+    ]);
+  });
+
+  it('a failing plan commits neither the project config nor the replan item', () => {
+    const { store, deps } = setup();
+    expectNothingCommitted(deps, () =>
+      applyPlan(deps, P, plan([create('x', ['missing'])]), 3, {
+        project: PROJECT,
+        replanSummary: 'summary',
+      }),
+    );
+    const { state } = store.snapshot();
+    expect(state.products[P]?.project).toBeNull();
+    expect(Object.values(state.inbox)).toEqual([]);
+  });
+
+  it('refuses an invalid project config', () => {
+    const { deps } = setup();
+    expectNothingCommitted(deps, () =>
+      applyPlan(deps, P, plan([create('x')]), 3, {
+        project: { check: [], imageInputs: ['../etc/passwd'] },
+      }),
+    );
+  });
+});

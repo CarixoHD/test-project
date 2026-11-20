@@ -1,4 +1,9 @@
-export { applyPlan, type ApplyPlanResult, type CommandDeps } from './apply-plan.ts';
+export {
+  applyPlan,
+  type ApplyPlanOptions,
+  type ApplyPlanResult,
+  type CommandDeps,
+} from './apply-plan.ts';
 export {
   findDependencyCycle,
   nextIssueNumber,

@@ -50,6 +50,7 @@ describe('safety flags', () => {
     const wt = await git.addWorktree('p1', 'r1');
     await writeFile(join(wt.dir, 'a.txt'), 'a\n');
     await git.commitAll(wt.dir, 'add a');
+    await git.changedPaths(wt.dir, wt.baseSha);
     await git.cleanWorktree(wt.dir);
     if (wt.branch === null) throw new Error('expected a branch');
     const fast = await git.integrate('p1', wt.branch, wt.baseSha, '#1 A');
@@ -188,6 +189,26 @@ describe('worktrees', () => {
     );
     // main is untouched by worktree commits
     expect(await git.mainSha('p1')).toBe(wt.baseSha);
+  });
+
+  it('changedPaths lists every path changed since a commit, both sides of renames, sorted', async () => {
+    const wt = await git.addWorktree('p1', 'r1');
+    await mkdir(join(wt.dir, 'a dir'), { recursive: true });
+    await writeFile(join(wt.dir, 'a dir', 'new file.txt'), 'hello\n');
+    await rawGit(['mv', 'docs/PRD.md', 'docs/SPEC.md'], wt.dir);
+    await rm(join(wt.dir, 'README.md'));
+    await git.commitAll(wt.dir, 'one');
+    await writeFile(join(wt.dir, 'Dockerfile'), 'FROM debian\n');
+    await git.commitAll(wt.dir, 'two');
+
+    expect(await git.changedPaths(wt.dir, wt.baseSha)).toEqual([
+      'Dockerfile',
+      'README.md',
+      'a dir/new file.txt',
+      'docs/PRD.md',
+      'docs/SPEC.md',
+    ]);
+    expect(await git.changedPaths(wt.dir, 'HEAD')).toEqual([]);
   });
 
   it('cleanWorktree resets tracked changes and removes untracked and ignored files', async () => {

@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { PlanResultSchema, type IssueOp, type PlanResult } from '../../shared/agent-results.ts';
+import {
+  PlanResultSchema,
+  ProjectConfigSchema,
+  type IssueOp,
+  type PlanResult,
+  type ProjectConfig,
+} from '../../shared/agent-results.ts';
 import type { IssueStatus, IssueView } from '../../shared/domain.ts';
 import type { Event, EventDraft } from '../../shared/events.ts';
 import type { IdGen, IssueId, ProductId } from '../../shared/ids.ts';
@@ -19,6 +25,13 @@ import {
 // cursor advance are committed together, so a failed run never moves the cursor.
 
 export type CommandDeps = { store: Store; ids: IdGen };
+
+export type ApplyPlanOptions = {
+  /** Validated `.vibecode/project.json` → `product.settings_changed{project}` in the same commit. */
+  project?: ProjectConfig;
+  /** Set for replans (PRD v > 1): `inbox.created{kind:'replan'}` with this text, same commit. */
+  replanSummary?: string;
+};
 
 export type ApplyPlanResult =
   | {
@@ -55,12 +68,21 @@ export function applyPlan(
   productId: ProductId,
   plan: PlanResult,
   consumedSeq: number,
+  opts: ApplyPlanOptions = {},
 ): ApplyPlanResult {
   const parsed = PlanResultSchema.safeParse(plan);
   if (!parsed.success) return fail(`invalid plan: ${z.prettifyError(parsed.error)}`);
+  const project =
+    opts.project === undefined ? undefined : ProjectConfigSchema.safeParse(opts.project);
+  if (project?.success === false) {
+    return fail(`invalid project config: ${z.prettifyError(project.error)}`);
+  }
   let built: Built = fail('plan was not applied');
   const events = deps.store.commit((tx) => {
-    built = buildPlan(tx.q, deps.ids, productId, parsed.data, consumedSeq);
+    built = buildPlan(tx.q, deps.ids, productId, parsed.data, consumedSeq, {
+      ...(project === undefined ? {} : { project: project.data }),
+      ...(opts.replanSummary === undefined ? {} : { replanSummary: opts.replanSummary }),
+    });
     return built.ok ? built.drafts : [];
   });
   // Reassigned inside the builder; TS cannot see that the callback ran.
@@ -74,6 +96,7 @@ function buildPlan(
   productId: ProductId,
   plan: PlanResult,
   consumedSeq: number,
+  opts: ApplyPlanOptions,
 ): Built {
   const product = q.product(productId);
   if (product === null) return fail(`unknown product "${productId}"`);
@@ -111,6 +134,29 @@ function buildPlan(
       entityId: ids.next('question'),
       v: 1,
       data: { target: 'orchestrator', issueId: null, agentId: null, text },
+    });
+  }
+  if (opts.project !== undefined) {
+    board.drafts.push({
+      type: 'product.settings_changed',
+      productId,
+      entityId: null,
+      v: 1,
+      data: { project: opts.project },
+    });
+  }
+  if (opts.replanSummary !== undefined) {
+    board.drafts.push({
+      type: 'inbox.created',
+      productId,
+      entityId: ids.next('inbox'),
+      v: 1,
+      data: {
+        kind: 'replan',
+        title: `Plan updated for ${product.name}`,
+        body: opts.replanSummary,
+        link: `/products/${productId}`,
+      },
     });
   }
   board.drafts.push({
