@@ -7,3 +7,6 @@ export {
   type AgentTool,
   type ToolName,
 } from './tools.ts';
+export { runAgent } from './run-agent.ts';
+export { DEFAULT_STEP_TIMEOUT_MS, FINISH_TOOL_NAME } from './api-backend.ts';
+export type { AgentLimits, AgentResult, AgentSpec, StepUsage } from './types.ts';
