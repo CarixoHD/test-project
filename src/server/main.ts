@@ -192,8 +192,43 @@ export async function start(
   };
 }
 
+/** The parts of `process` that graceful shutdown uses (tests pass a fake). */
+export interface SignalTarget {
+  once(signal: 'SIGINT' | 'SIGTERM', fn: () => void): unknown;
+  exit(code: number): void;
+}
+
+/**
+ * Graceful shutdown: the first SIGINT or SIGTERM closes the server once (scheduler first, see
+ * `close`), then exits 0, or 1 when closing failed. Listeners are `once`, so repeating the same
+ * signal gets Node's default handling and force-quits a stuck shutdown.
+ */
+export function closeOnSignals(
+  running: Pick<Running, 'close'>,
+  proc: SignalTarget = process,
+  log: (line: string) => void = console.error,
+): void {
+  let closing = false;
+  const onSignal = () => {
+    if (closing) return;
+    closing = true;
+    running.close().then(
+      () => {
+        proc.exit(0);
+      },
+      (err: unknown) => {
+        log(redactor.redact(`shutdown failed: ${String(err)}`));
+        proc.exit(1);
+      },
+    );
+  };
+  proc.once('SIGINT', onSignal);
+  proc.once('SIGTERM', onSignal);
+}
+
 if (import.meta.main) {
   const running = await start(parseConfig(process.env));
+  closeOnSignals(running);
   const { host, port } = running.address;
   console.log(`Vibecode listening on http://${host}:${String(port)}`);
 }
