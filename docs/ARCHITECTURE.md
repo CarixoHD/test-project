@@ -464,7 +464,11 @@ Never a shell. The child runs in its own process group, and timeout or abort sig
   sendSparMessage(productId, message, signal?): Promise<OkResponse>        // api.ts; POST /api/products/:id/spar (reply arrives as events)
   savePrdDraft(productId, markdown, signal?): Promise<OkResponse>          // api.ts; PUT /api/products/:id/prd-draft
   handoffProduct(productId, signal?): Promise<OkResponse>                  // api.ts; POST /api/products/:id/handoff
+  addIssue(productId, AddIssueRequest, signal?): Promise<AddIssueResponse>  // api.ts; POST /api/products/:id/issues
+  editIssue(issueId, EditIssueRequest, signal?): Promise<EditIssueResponse> // api.ts; PATCH /api/issues/:id (stale rev → ApiError status 409)
+  cancelIssue(issueId, signal?): Promise<OkResponse>                       // api.ts; POST /api/issues/:id/cancel
   ```
+- `features/issues/index.ts`: owner issue dialogs shared by the board and the issue detail page. `<AddIssueDialog productId open onClose>`, `<EditIssueDialog issue open onClose>` (sends the rev the form was loaded from; on 409 shows `STALE_REV_MESSAGE` with the live issue's latest values and a "Reload latest version" button), `<CancelIssueDialog issue open onClose>` (confirmation), plus `isEditable(issue)` / `isCancellable(issue)`. Results arrive as events, so dialogs only close on success.
   - `createAppStore` holds the snapshot and the connection, with no React involved. `start()` connects, and the function it returns disconnects. It can be started again after a stop.
   - `AppStoreProvider` puts one store in context and keeps it connected while it is mounted.
   - `useApp(selector)` returns a slice of `AppSnapshot` and re-renders when that slice changes. The selector must return existing objects, not build new ones each call.

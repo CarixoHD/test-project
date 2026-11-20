@@ -1,4 +1,4 @@
-import { useId, useMemo } from 'react';
+import { useId, useMemo, useState } from 'react';
 import type { IssueState, ProductState } from '../../../shared/state.ts';
 import { useApp, type AppSnapshot } from '../../state/store.ts';
 import {
@@ -8,6 +8,8 @@ import {
   type BoardColumn,
   type IssuesById,
 } from './board-model.ts';
+import { Button } from '../../ui/index.ts';
+import { AddIssueDialog } from '../issues/index.ts';
 import { IssueCard } from './IssueCard.tsx';
 import { useStatusAnnouncer } from './use-status-announcer.ts';
 
@@ -24,10 +26,17 @@ export function Board({ product }: { product: ProductState }) {
   const columns = useMemo(() => groupIntoColumns(issues, product.id), [issues, product.id]);
   const announcement = useStatusAnnouncer(issues, product.id, loaded, ANNOUNCE_DELAY_MS);
   const headingId = useId();
+  const [isAdding, setAdding] = useState(false);
 
   return (
     <section className="board" aria-labelledby={headingId}>
-      <h2 id={headingId}>Issues</h2>
+      <div className="board__header">
+        <h2 id={headingId}>Issues</h2>
+        <Button variant="primary" onClick={() => setAdding(true)}>
+          Add issue
+        </Button>
+      </div>
+      <AddIssueDialog productId={product.id} open={isAdding} onClose={() => setAdding(false)} />
       <div className="board__columns">
         {BOARD_COLUMNS.map((column) => (
           <Column
