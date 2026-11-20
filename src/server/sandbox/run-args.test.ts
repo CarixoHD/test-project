@@ -115,9 +115,7 @@ describe('buildRunArgs mandatory flags', () => {
     ['preview', PREVIEW, true],
     ['preview even if readOnly is false', { ...PREVIEW, readOnly: false }, true],
   ])('worktree mount for %s is readonly=%s', (_n, spec, ro) => {
-    const ws = values(buildRunArgs(spec, HOST), '--mount').find((m) =>
-      m.includes(`src=${WT},`),
-    );
+    const ws = values(buildRunArgs(spec, HOST), '--mount').find((m) => m.includes(`src=${WT},`));
     expect(ws === `type=bind,src=${WT},dst=/workspace,readonly`).toBe(ro);
     if (!ro) expect(ws).toBe(`type=bind,src=${WT},dst=/workspace`);
   });
@@ -144,7 +142,10 @@ describe('buildRunArgs mandatory flags', () => {
 describe('buildRunArgs refuses unsafe specs', () => {
   it.each([
     ['docker.sock as worktree', { ...AGENT, worktree: '/var/run/docker.sock' }],
-    ['docker.sock inside worktrees', { ...AGENT, worktree: `${HOST.dataDir}/worktrees/docker.sock` }],
+    [
+      'docker.sock inside worktrees',
+      { ...AGENT, worktree: `${HOST.dataDir}/worktrees/docker.sock` },
+    ],
     ['outside data/worktrees', { ...AGENT, worktree: '/home/owner/project' }],
     ['the data dir itself', { ...AGENT, worktree: HOST.dataDir }],
     ['the worktrees dir itself', { ...AGENT, worktree: `${HOST.dataDir}/worktrees` }],
@@ -157,7 +158,7 @@ describe('buildRunArgs refuses unsafe specs', () => {
     ['bad productId', { ...AGENT, productId: 'a,b' }],
     ['image looking like a flag', { ...AGENT, image: '--privileged' }],
     ['empty image', { ...AGENT, image: '' }],
-    ['preview without a port', { ...PREVIEW, publishPort: undefined } as SandboxSpec],
+    ['preview without a port', withoutPort(PREVIEW)],
     ['port on a non-preview network', { ...AGENT, publishPort: 3000 }],
     ['port out of range', { ...PREVIEW, publishPort: 70000 }],
     ['preview role on the egress network', { ...PREVIEW, network: 'egress' } as SandboxSpec],
@@ -175,3 +176,8 @@ describe('buildRunArgs refuses unsafe specs', () => {
     expect(() => buildRunArgs(spec, host)).toThrow();
   });
 });
+
+function withoutPort(spec: SandboxSpec): SandboxSpec {
+  const { publishPort: _omit, ...rest } = spec;
+  return rest;
+}

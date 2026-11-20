@@ -6,7 +6,11 @@ import type { HostIdentity, SandboxSpec } from './types.ts';
 export const WORKSPACE = '/workspace';
 export const AGENT_HOME = '/home/agent';
 export const CLAUDE_CONFIG_VOLUME = 'vibecode-claude-config';
-export const NETWORKS = { none: 'none', egress: 'vibecode-egress', preview: 'vibecode-preview' } as const;
+export const NETWORKS = {
+  none: 'none',
+  egress: 'vibecode-egress',
+  preview: 'vibecode-preview',
+} as const;
 export const MANAGED_LABEL = 'vibecode.managed';
 
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -42,7 +46,10 @@ export function buildRunArgs(spec: SandboxSpec, host: HostIdentity): string[] {
     ...['--security-opt', 'no-new-privileges:true'],
     '--read-only',
     ...['--tmpfs', '/tmp:rw,nosuid,nodev,exec,size=1g,mode=1777'],
-    ...['--tmpfs', `${AGENT_HOME}:rw,nosuid,nodev,exec,size=1g,mode=0700,uid=${host.uid},gid=${host.gid}`],
+    ...[
+      '--tmpfs',
+      `${AGENT_HOME}:rw,nosuid,nodev,exec,size=1g,mode=0700,uid=${host.uid},gid=${host.gid}`,
+    ],
     ...['--memory', '4g', '--memory-swap', '4g', '--cpus', '2', '--pids-limit', '512'],
     ...['--restart', 'no'],
     ...['--label', `${MANAGED_LABEL}=1`],
@@ -88,7 +95,8 @@ function assertHost(host: HostIdentity): void {
     ['uid', host.uid],
     ['gid', host.gid],
   ] as const) {
-    if (!Number.isInteger(v) || v < 0) throw new Error(`Sandbox ${k} must be a non-negative integer`);
+    if (!Number.isInteger(v) || v < 0)
+      throw new Error(`Sandbox ${k} must be a non-negative integer`);
   }
   if (host.uid === 0) {
     throw new Error('Refusing to run containers as root: start Vibecode as a non-root user');
@@ -117,7 +125,8 @@ function assertMountSource(source: string): void {
     throw new Error(`Refusing to mount a Docker socket into a container: ${source}`);
   }
   if (!path.isAbsolute(source)) throw new Error(`Mount source must be absolute: ${source}`);
-  if (UNSAFE_MOUNT_CHARS.test(source)) throw new Error(`Unsafe characters in mount source: ${source}`);
+  if (UNSAFE_MOUNT_CHARS.test(source))
+    throw new Error(`Unsafe characters in mount source: ${source}`);
 }
 
 /** Lexical check (pure): `p` must be strictly below `dir` after normalisation. */

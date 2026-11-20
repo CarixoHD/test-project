@@ -22,11 +22,11 @@ const WRITE_ARGV0 = 'vibecode-write';
 const LS_FLAGS = '-1Ap';
 const GREP_FLAGS = '-rnIE';
 const GREP_EXCLUDE = '--exclude-dir=.git';
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
 /** Normalises an agent-supplied path relative to /workspace. `''` and `.` mean the workspace root. */
 export function normalizeRelPath(input: string): PathResult {
-  if (CONTROL_CHARS.test(input)) return { ok: false, reason: 'path contains NUL or control characters' };
+  if (hasControlChar(input))
+    return { ok: false, reason: 'path contains NUL or control characters' };
   if (input.startsWith('/') || /^[A-Za-z]:/.test(input)) {
     return { ok: false, reason: `path must be relative to the workspace, got ${input}` };
   }
@@ -45,7 +45,9 @@ export function toWorkspacePath(rel: string): string {
   return rel === '.' ? WORKSPACE : `${WORKSPACE}/${rel}`;
 }
 
-export function fileOpArgv(op: FileOp): { ok: true; argv: string[] } | { ok: false; reason: string } {
+export function fileOpArgv(
+  op: FileOp,
+): { ok: true; argv: string[] } | { ok: false; reason: string } {
   const p = normalizeRelPath(op.path);
   if (!p.ok) return p;
   if ((op.op === 'read' || op.op === 'write') && p.path === '.') {
@@ -88,7 +90,8 @@ export function parseFileOp(argv: readonly string[]): ParsedFileOp {
     }
     return { ok: true, op: full };
   };
-  if (cmd === 'cat' && rest.length === 2 && rest[0] === '--') return build({ op: 'read', path: '' });
+  if (cmd === 'cat' && rest.length === 2 && rest[0] === '--')
+    return build({ op: 'read', path: '' });
   if (
     cmd === 'sh' &&
     rest.length === 4 &&
@@ -118,7 +121,8 @@ export function parseFileOp(argv: readonly string[]): ParsedFileOp {
 
 function fromWorkspacePath(p: string): PathResult {
   if (p === WORKSPACE) return { ok: true, path: '.' };
-  if (!p.startsWith(`${WORKSPACE}/`)) return { ok: false, reason: `path is outside ${WORKSPACE}: ${p}` };
+  if (!p.startsWith(`${WORKSPACE}/`))
+    return { ok: false, reason: `path is outside ${WORKSPACE}: ${p}` };
   return normalizeRelPath(p.slice(WORKSPACE.length + 1));
 }
 
@@ -128,4 +132,13 @@ function sameArgv(a: readonly string[], b: readonly string[]): boolean {
 
 function assertNever(x: never): never {
   throw new Error(`Unexpected file op: ${JSON.stringify(x)}`);
+}
+
+/** NUL, C0 control characters and DEL. */
+function hasControlChar(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) return true;
+  }
+  return false;
 }
