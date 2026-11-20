@@ -233,7 +233,7 @@ POST /api/login {password} · POST /api/logout · GET /api/session
 - No password (or no `access` wired): a `Host` header that is not loopback → 403 `forbidden` (DNS rebinding).
 - Every POST/PUT/PATCH/DELETE: a Content-Type other than `application/json` → 415 `unsupported_media_type`; an `Origin` (when present) whose host is not the request `Host` → 403 `forbidden`. The web client sends `Content-Type: application/json` on every mutation, bodyless ones included.
 - Password set: every `/api` path except `/api/login` and `/api/session` (SSE included) needs a valid `vibecode_session` cookie → else 401 `unauthorized`.
-- Routes (mounted when `access` is given; DTOs `LoginRequestSchema`, `PasswordChangeRequestSchema`, `SessionResponseSchema` in `shared/dto.ts`): `POST /api/login` sets the cookie (401 wrong password, 409 no password set, 429 `rate_limited` after 5 attempts per minute per `clientKey`, by default the socket's remote address). `POST /api/logout` clears it. `GET /api/session` → `{passwordSet, authenticated}` (authenticated is always true without a password). `POST /api/settings/password` `{current?, next}`: `next` 12–1024 chars, and `current` is required and checked (rate-limited) once a password is set (400 when missing or wrong). It answers with a fresh session cookie, because the change ends every other session.
+- Routes (mounted when `access` is given; DTOs `LoginRequestSchema`, `PasswordChangeRequestSchema`, `SessionResponseSchema` in `shared/dto.ts`): `POST /api/login` sets the cookie (401 wrong password, 409 no password set, 429 `rate_limited` after 5 attempts per minute per `clientKey`, by default the socket's remote address). `POST /api/logout` revokes the session on the server (`sessions.revoke`, survives restarts) and clears the cookie. `GET /api/session` → `{passwordSet, authenticated}` (authenticated is always true without a password). `POST /api/settings/password` `{current?, next}`: `next` 12–1024 chars, and `current` is required and checked (rate-limited) once a password is set (400 when missing or wrong). It answers with a fresh session cookie, because the change ends every other session.
 - `commands/access.ts`: `createAccess({store, secrets, clock})` → `{hasPassword(), checkPassword(pw), login(pw, client), changePassword(input, client), resetPassword(next), sessions}`. The scrypt hash is the `passwordHash` row of `settings`, read on every call, so a password set by `npm run set-password` (`scripts/set-password.ts`, which uses `resetPassword` and needs no current password) applies to a running server. Setting it rotates the session key and commits `settings.changed{sections:['password'], keys:[]}`.
 - Boot (`main.ts`): `assertBindAllowed(config.host, access.hasPassword())` runs before recovery and listen.
 
@@ -508,9 +508,11 @@ redactor.register(value); redactor.redact(text)            // all secret values 
 redactor.safeBoundary(text)                                // where continued/cut text may be split without splitting a secret
 hashPassword(pw) / verifyPassword(pw, hash): Promise       // node:crypto scrypt N=2^15 r=8 p=1, 16-byte salt, timingSafeEqual;
                                                            // stored `scrypt$N$r$p$salt$hash` (base64url)
-createSessions({key: () => string, clock}) → {issue(), verify(token)}
+createSessions({key: () => string, clock, revoked?}) → {issue(), verify(token), revoke(token)}
                                                            // `<expMs>.<nonce>.<HMAC-SHA256>`, 30-day expiry; key in secrets
-                                                           // `sessionKey` (SESSION_KEY_SECRET), rotated on password change
+                                                           // `sessionKey` (SESSION_KEY_SECRET), rotated on password change;
+                                                           // revoke (logout) adds the nonce to a JSON `{nonce: expMs}` list in
+                                                           // `revoked` {get, set} (access: secrets `sessionRevoked`), pruned at expiry
 sessionCookieOptions(secure)                               // HttpOnly, SameSite=Strict, Path=/, Max-Age 30 d, Secure over HTTPS
 assertBindAllowed(host, hasPassword)                       // throws (actionable message) unless loopback or password set
 isLoopbackHost(host) / isLoopbackHostHeader(header)        // localhost, 127.0.0.0/8, ::1
