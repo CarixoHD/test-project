@@ -16,7 +16,8 @@ export type UsageCost = Pick<
  * API billing: the provider-reported cost (OpenRouter `usage.cost`) when present, else priced
  * from overrides / the price table; unknown prices are unpriced (costUsd null), never $0.
  * Subscription billing (Claude Code): no spend, only tokens, calls and an informational
- * estimate at API prices (null when the model has no known price).
+ * estimate: the CLI-reported `reportedEstCostUsd` when present, else API prices (null when the
+ * model has no known price).
  */
 export function usageCost(model: ModelRef, u: StepUsage, overrides: PriceOverrides): UsageCost {
   const counts: Usage = {
@@ -28,7 +29,7 @@ export function usageCost(model: ModelRef, u: StepUsage, overrides: PriceOverrid
     webSearches: u.webSearches,
   };
   const { webSearches, ...tokens } = counts;
-  const base = { tokens, webSearches, calls: 1 };
+  const base = { tokens, webSearches, calls: u.calls ?? 1 };
   const priced = priceUsage(counts, price(model, overrides));
   if (capabilities(model).subscription) {
     return {
@@ -36,7 +37,7 @@ export function usageCost(model: ModelRef, u: StepUsage, overrides: PriceOverrid
       billing: 'subscription',
       costUsd: null,
       unpriced: false,
-      estCostUsd: priced.usd,
+      estCostUsd: u.reportedEstCostUsd ?? priced.usd,
       source: 'cli',
     };
   }
