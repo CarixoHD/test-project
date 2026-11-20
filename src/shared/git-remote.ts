@@ -10,8 +10,15 @@ export const GIT_REMOTE_URL_ERROR =
 
 export type GitRemoteUrlCheck = { ok: true } | { ok: false; reason: string };
 
-/** Whitespace, C0/C1 control characters and DEL. */
-const UNSAFE_CHAR = /[\s\u0000-\u001f\u007f-\u009f]/u;
+/** Whitespace, C0/C1 control characters or DEL anywhere in the text. */
+function hasUnsafeChar(text: string): boolean {
+  if (/\s/u.test(text)) return true;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true;
+  }
+  return false;
+}
 
 const LABEL = '[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?';
 /** DNS name / IPv4 (labels never start with `-`) or a bracketed IPv6 literal. */
@@ -35,6 +42,6 @@ const ALLOWED = [
 export function validateGitRemoteUrl(url: string): GitRemoteUrlCheck {
   const bad: GitRemoteUrlCheck = { ok: false, reason: GIT_REMOTE_URL_ERROR };
   if (url.length === 0 || url.length > GIT_REMOTE_URL_MAX_LENGTH) return bad;
-  if (UNSAFE_CHAR.test(url) || url.startsWith('-')) return bad;
+  if (hasUnsafeChar(url) || url.startsWith('-')) return bad;
   return ALLOWED.some((re) => re.test(url)) ? { ok: true } : bad;
 }

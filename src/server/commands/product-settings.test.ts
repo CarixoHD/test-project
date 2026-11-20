@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { GIT_REMOTE_URL_ERROR } from '../../shared/git-remote.ts';
 import { ProductIdSchema } from '../../shared/ids.ts';
 import { createApp } from '../http/index.ts';
 import { productCreated, setupStore, TEST_PRODUCT } from '../http/testing.ts';
@@ -111,6 +112,8 @@ describe('updateProductSettings', () => {
     [{ models: { implementer: { provider: 'openai', model: '' } } }],
     [{ models: { janitor: { provider: 'openai', model: 'x' } } }],
     [{ gitRemote: { url: '' } }],
+    [{ gitRemote: { url: 'ext::sh -c touch% /tmp/x' } }],
+    [{ gitRemote: { url: 'https://user:token@example.com/r.git' } }],
     [{ color: 'red' }],
   ])('refuses %j as invalid without emitting', (input) => {
     const { store, ids } = setup();
@@ -167,6 +170,39 @@ describe('PATCH /api/products/:id/settings', () => {
     expect(json.error.message).not.toBe('');
     expect(settingsEvents(store)).toEqual([]);
   });
+
+  it.each([
+    ['ext::', 'ext::sh -c id'],
+    ['file://', 'file:///etc/passwd'],
+    ['http://', 'http://example.com/r.git'],
+    ['a local path', '/srv/repos/a.git'],
+    ['a token in userinfo', 'https://token@example.com/r.git'],
+    ['a password in userinfo', 'https://user:pw@example.com/r.git'],
+    ['a leading -', '--upload-pack=x'],
+    ['a newline', 'https://example.com/r.git\nx'],
+  ])('answers 400 with a gitRemote.url field error for %s and stores nothing', async (_l, url) => {
+    const { app, store } = setup();
+    const res = await patch(app, { gitRemote: { url } });
+
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as { error: { code: string; message: string } };
+    expect(json.error).toEqual({
+      code: 'invalid',
+      message: `gitRemote.url: ${GIT_REMOTE_URL_ERROR}`,
+    });
+    expect(settingsEvents(store)).toEqual([]);
+    expect(store.q.product(TEST_PRODUCT)?.settings.gitRemote).toBeNull();
+  });
+
+  it.each(['git@example.com:me/a.git', 'https://example.com/r.git', 'ssh://git@h.io:22/a.git'])(
+    'stores the valid remote %s',
+    async (url) => {
+      const { app, store } = setup();
+      const res = await patch(app, { gitRemote: { url } });
+      expect(res.status).toBe(200);
+      expect(store.q.product(TEST_PRODUCT)?.settings.gitRemote).toEqual({ url });
+    },
+  );
 
   it('answers 404 for an unknown product', async () => {
     const { app } = setup();
