@@ -22,6 +22,7 @@ export const AGENT_IDENTITY = { name: 'Vibecode Agent', email: 'agent@vibecode.l
 export const MIN_GIT_VERSION = [2, 38] as const;
 const MAIN_REF = 'refs/heads/main';
 const BRANCH_PREFIX = 'vibecode/';
+const INTEGRATION_PREFIX = 'integrate-';
 const ZERO_OID = '0'.repeat(40);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -40,6 +41,10 @@ export type GitOptions = GitDeps & { dataDir: string };
 export type Worktree = { dir: string; branch: string | null; baseSha: string };
 export type AddWorktreeOptions = { detached?: boolean };
 export type CommitResult = { sha: string | null; diff: string };
+export type IntegrateResult =
+  | { kind: 'fast'; tree: string; commitSha: string }
+  | { kind: 'merged'; commitSha: string; dir: string }
+  | { kind: 'conflict'; paths: string[] };
 
 export interface Git {
   initRepo(productId: string): Promise<void>;
@@ -54,6 +59,18 @@ export interface Git {
   removeWorktree(dir: string): Promise<void>;
   pruneWorktrees(productId: string): Promise<void>;
   commitFilesOnMain(productId: string, files: Record<string, string>, msg: string): Promise<string>;
+  /**
+   * Prepares ONE squash commit (parent: current main) for `branch`. Never moves main; the caller
+   * re-checks `merged` results in `dir` and then calls advanceMain under the merge lock.
+   */
+  integrate(
+    productId: string,
+    branch: string,
+    baseSha: string,
+    message: string,
+  ): Promise<IntegrateResult>;
+  /** Moves main to `commitSha` only if it still points at `expectedOld`; else MainMovedError. */
+  advanceMain(productId: string, commitSha: string, expectedOld: string): Promise<void>;
   mainSha(productId: string): Promise<string>;
   readFileAtMain(productId: string, path: string): Promise<string | null>;
 }
@@ -64,6 +81,18 @@ export class GitError extends Error {
     const what = r.timedOut ? 'timed out' : `failed (exit ${String(r.code ?? r.signal)})`;
     super(`git ${args.join(' ').slice(0, 300)} ${what}: ${r.stderr.trim().slice(0, 2000)}`);
     this.name = 'GitError';
+  }
+}
+
+/** main no longer points at the commit the caller expected; integrate again on the new main. */
+export class MainMovedError extends Error {
+  readonly expected: string;
+  readonly actual: string | null;
+  constructor(productId: string, expected: string, actual: string | null) {
+    super(`main of ${productId} moved: expected ${expected}, found ${String(actual)}`);
+    this.name = 'MainMovedError';
+    this.expected = expected;
+    this.actual = actual;
   }
 }
 
@@ -212,7 +241,14 @@ export function createGit(o: GitOptions): Git {
     return abs;
   };
 
-  return {
+  const requireCommit = async (gitDir: string, ref: string): Promise<string> => {
+    assertRef(ref);
+    const sha = await resolveCommit(gitDir, ref);
+    if (!sha) throw new Error(`Unknown commit: ${JSON.stringify(ref.slice(0, 200))}`);
+    return sha;
+  };
+
+  const api: Git = {
     async initRepo(productId) {
       const gitDir = repoDir(productId);
       if (existsSync(gitDir) && (await resolveCommit(gitDir, MAIN_REF))) return;
@@ -300,5 +336,49 @@ export function createGit(o: GitOptions): Git {
       if (exists.code !== 0) return null;
       throw new GitError(['cat-file', 'blob', spec], r);
     },
+
+    async integrate(productId, branch, baseSha, message) {
+      const gitDir = repoDir(productId);
+      const main = await api.mainSha(productId);
+      const head = await requireCommit(gitDir, branch);
+      const base = await requireCommit(gitDir, baseSha);
+      const squash = (tree: string): Promise<string> =>
+        git
+          .run(['--git-dir', gitDir, 'commit-tree', tree, '-p', main, '-m', message])
+          .then((out) => out.trim());
+
+      if (main === base) {
+        const tree = (await git.run(['--git-dir', gitDir, 'rev-parse', `${head}^{tree}`])).trim();
+        return { kind: 'fast', tree, commitSha: await squash(tree) };
+      }
+
+      // Squash commits keep the attempt's base in main's ancestry, so the natural merge base is baseSha.
+      const args = ['merge-tree', '--write-tree', '-z', '--name-only', '--no-messages', main, head];
+      const r = await git.raw(['--git-dir', gitDir, ...args]);
+      if (r.code !== 0 && r.code !== 1) throw new GitError(args, r);
+      const [tree = '', ...rest] = r.stdout.split('\0');
+      if (r.code === 1) {
+        const paths = [...new Set(rest.filter((p) => p !== ''))].sort();
+        return { kind: 'conflict', paths };
+      }
+      const commitSha = await squash(tree);
+      const runId = `${INTEGRATION_PREFIX}${commitSha}`;
+      await api.removeWorktree(join(worktreesDir, runId));
+      const wt = await api.addWorktree(productId, runId, commitSha, { detached: true });
+      return { kind: 'merged', commitSha, dir: wt.dir };
+    },
+
+    async advanceMain(productId, commitSha, expectedOld) {
+      const gitDir = repoDir(productId);
+      const sha = await requireCommit(gitDir, commitSha);
+      assertRef(expectedOld);
+      const args = ['update-ref', '-m', `advance main to ${sha}`, MAIN_REF, sha, expectedOld];
+      const r = await git.raw(['--git-dir', gitDir, ...args]);
+      if (r.code === 0) return;
+      const actual = await resolveCommit(gitDir, MAIN_REF);
+      if (actual !== expectedOld) throw new MainMovedError(productId, expectedOld, actual);
+      throw new GitError(args, r);
+    },
   };
+  return api;
 }

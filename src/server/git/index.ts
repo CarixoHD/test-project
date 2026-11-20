@@ -2,6 +2,7 @@ export {
   AGENT_IDENTITY,
   GIT_SAFETY_FLAGS,
   GitError,
+  MainMovedError,
   MIN_GIT_VERSION,
   createGit,
   gitVersionOk,
@@ -10,5 +11,6 @@ export {
   type Git,
   type GitDeps,
   type GitOptions,
+  type IntegrateResult,
   type Worktree,
 } from './git.ts';
