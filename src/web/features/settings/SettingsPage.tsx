@@ -1,4 +1,5 @@
 import { ClaudeCodeSection } from './ClaudeCodeSection.tsx';
+import { ModelsSection } from './ModelsSection.tsx';
 import { PasswordSection } from './PasswordSection.tsx';
 import { ProvidersSection } from './ProvidersSection.tsx';
 import { useAccountSettings } from './use-account-settings.ts';
@@ -21,6 +22,7 @@ export function SettingsPage() {
       ) : (
         <div className="settings">
           <ProvidersSection settings={settings} onSaved={replace} />
+          <ModelsSection settings={settings} onSaved={replace} />
         </div>
       )}
       <ClaudeCodeSection />

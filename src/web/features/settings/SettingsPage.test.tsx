@@ -265,3 +265,53 @@ describe('Settings: live updates', () => {
     expect(pageContains(KEY)).toBe(false);
   });
 });
+
+describe('Settings: models per role', () => {
+  const modelsRegion = () => screen.getByRole('region', { name: 'Models' });
+  const roleGroup = (name: string) => within(modelsRegion()).getByRole('group', { name });
+
+  it('saves a role default and the global default model', async () => {
+    const { user } = await renderSettings();
+    const implementer = roleGroup('Implementer');
+    await user.selectOptions(within(implementer).getByLabelText('Provider'), 'anthropic');
+    await user.type(within(implementer).getByLabelText('Model'), 'claude-sonnet-4-5');
+    const fallback = roleGroup('Default for all roles');
+    await user.selectOptions(within(fallback).getByLabelText('Provider'), 'openai-compatible');
+    await user.type(within(fallback).getByLabelText('Model'), 'llama3.1');
+    await user.click(within(modelsRegion()).getByRole('button', { name: 'Save models' }));
+
+    expect(await within(modelsRegion()).findByText('Models saved.')).toBeVisible();
+    expect(server.puts).toContainEqual({
+      roleDefaults: { implementer: { provider: 'anthropic', model: 'claude-sonnet-4-5' } },
+      defaultModel: { provider: 'openai-compatible', model: 'llama3.1' },
+    });
+  });
+
+  it('shows saved role defaults and clears one when its provider is unset', async () => {
+    server.stored.roleDefaults = {
+      reviewer: { provider: 'openai', model: 'gpt-5' },
+      utility: { provider: 'google', model: 'gemini-2.5-flash' },
+    };
+    const { user } = await renderSettings();
+    expect(within(roleGroup('Reviewer')).getByLabelText('Provider')).toHaveValue('openai');
+    expect(within(roleGroup('Reviewer')).getByLabelText('Model')).toHaveValue('gpt-5');
+
+    await user.selectOptions(within(roleGroup('Utility')).getByLabelText('Provider'), '');
+    await user.click(within(modelsRegion()).getByRole('button', { name: 'Save models' }));
+
+    expect(await within(modelsRegion()).findByText('Models saved.')).toBeVisible();
+    expect(server.stored.roleDefaults).toEqual({ reviewer: { provider: 'openai', model: 'gpt-5' } });
+    expect(server.stored.defaultModel).toBeNull();
+  });
+
+  it('asks for a model name when a provider is chosen without one', async () => {
+    const { user } = await renderSettings();
+    await user.selectOptions(within(roleGroup('Sparring')).getByLabelText('Provider'), 'anthropic');
+    await user.click(within(modelsRegion()).getByRole('button', { name: 'Save models' }));
+
+    const model = within(roleGroup('Sparring')).getByLabelText('Model');
+    expect(model).toHaveAttribute('aria-invalid', 'true');
+    expect(model).toHaveFocus();
+    expect(server.puts).toEqual([]);
+  });
+});

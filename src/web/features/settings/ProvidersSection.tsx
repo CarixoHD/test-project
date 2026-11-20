@@ -1,36 +1,11 @@
 import { useId, useRef, useState, type FormEvent } from 'react';
-import {
-  SettingsUpdateRequestSchema,
-  type SettingsResponse,
-  type SettingsUpdateRequest,
-} from '../../../shared/dto.ts';
+import type { SettingsUpdateRequest } from '../../../shared/dto.ts';
 import { KEYED_PROVIDER_IDS, type KeyedProviderId } from '../../../shared/models.ts';
-import { ApiError, updateSettings } from '../../state/api.ts';
 import { Button, Dialog, Field } from '../../ui/index.ts';
-
-export interface SettingsSectionProps {
-  settings: SettingsResponse;
-  onSaved: (next: SettingsResponse) => void;
-}
+import { invalidReason, saveSettings, type SettingsSectionProps } from './settings-save.ts';
 
 const isKeyed = (id: string): id is KeyedProviderId =>
   (KEYED_PROVIDER_IDS as readonly string[]).includes(id);
-
-/** The first validation message for `body` (the server applies the same schema). */
-function invalidReason(body: SettingsUpdateRequest): string | null {
-  const parsed = SettingsUpdateRequestSchema.safeParse(body);
-  return parsed.success ? null : (parsed.error.issues[0]?.message ?? 'Invalid value');
-}
-
-async function save(body: SettingsUpdateRequest, onSaved: SettingsSectionProps['onSaved']) {
-  try {
-    const { ok: _ok, ...next } = await updateSettings(body);
-    onSaved(next);
-    return null;
-  } catch (err) {
-    return err instanceof ApiError ? err.message : 'Could not save the settings.';
-  }
-}
 
 /** One provider per fieldset: its API key (write-only) and, for OpenAI-compatible, the base URL. */
 export function ProvidersSection({ settings, onSaved }: SettingsSectionProps) {
@@ -94,7 +69,7 @@ function ProviderKey({ provider, name, optional, stored, onSaved }: ProviderKeyP
     setError(reason);
     if (reason !== null) return inputRef.current?.focus();
     setBusy(true);
-    const failed = await save(body, onSaved);
+    const failed = await saveSettings(body, onSaved);
     setBusy(false);
     setError(failed);
     if (failed !== null) return;
@@ -106,7 +81,7 @@ function ProviderKey({ provider, name, optional, stored, onSaved }: ProviderKeyP
   async function remove() {
     if (busy) return;
     setBusy(true);
-    const failed = await save({ keys: { [provider]: null } }, onSaved);
+    const failed = await saveSettings({ keys: { [provider]: null } }, onSaved);
     setBusy(false);
     setConfirmingRemove(false);
     setError(failed);
@@ -236,7 +211,7 @@ function BaseUrl({ name, settings, onSaved }: BaseUrlProps) {
     setNotice('');
     if (reason !== null) return inputRef.current?.focus();
     setBusy(true);
-    const failed = await save(body, onSaved);
+    const failed = await saveSettings(body, onSaved);
     setBusy(false);
     setError(failed);
     if (failed === null) setNotice(url === '' ? `${name} base URL cleared.` : `${name} base URL saved.`);
