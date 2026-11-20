@@ -8,6 +8,7 @@ import { reduceAgentEvent, reduceAttemptEvent, reduceIssueEvent } from './state-
 // snapshot≡replay invariant. Per-domain reducers live in state-product/-work/-account.ts.
 
 export * from './state-schema.ts';
+export { addUsage, EMPTY_USAGE_TOTALS } from './state-account.ts';
 
 export const emptyState: ClientState = {
   products: {},

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Redactor, redactor } from './index.ts';
+import { MIN_SECRET_LENGTH, Redactor, redactor } from './index.ts';
 
 const LONG = 'sk-ant-api03-abcdefghijklmnop1234'; // ≥ 16 chars → ***last4
 const MEDIUM = 'tok-9876'; // 8–15 chars → [REDACTED]
@@ -82,6 +82,42 @@ describe('Redactor', () => {
           }
         }
       }
+    });
+  });
+
+  describe('multi-line secrets', () => {
+    const LINES = ['MIIEvQIBADANBgkqhkiG9w0BAQEFAAS', 'CBKcwggSjAgEAAoIBAQC7VJTUt9Us8'];
+    const SHORT_LINE = 'cKBwko'; // < MIN_SECRET_LENGTH
+    const PEM = ['-----BEGIN PRIVATE KEY-----', ...LINES, SHORT_LINE, '-----END PRIVATE KEY-----'];
+    const masked = (s: string): string => `***${s.slice(-4)}`;
+
+    it.each([
+      ['LF', '\n'],
+      ['CRLF', '\r\n'],
+    ])('masks each line long enough to register when it appears alone (%s)', (_name, eol) => {
+      const r = new Redactor();
+      r.register(PEM.join(eol));
+      for (const line of LINES) {
+        expect(r.redact(`x ${line} y`)).toBe(`x ${masked(line)} y`);
+        expect(r.redact(`${line}\r`)).toBe(`${masked(line)}\r`);
+      }
+    });
+
+    it('skips line fragments shorter than MIN_SECRET_LENGTH', () => {
+      const r = new Redactor();
+      r.register(PEM.join('\n'));
+      expect(SHORT_LINE.length).toBeLessThan(MIN_SECRET_LENGTH);
+      expect(r.redact(`a ${SHORT_LINE} b`)).toBe(`a ${SHORT_LINE} b`);
+    });
+
+    it.each([
+      ['LF', '\n'],
+      ['CRLF', '\r\n'],
+    ])('masks the whole secret as one piece (%s)', (_name, eol) => {
+      const r = new Redactor();
+      const pem = PEM.join(eol);
+      r.register(pem);
+      expect(r.redact(`key:${eol}${pem}${eol}done`)).toBe(`key:${eol}${masked(pem)}${eol}done`);
     });
   });
 

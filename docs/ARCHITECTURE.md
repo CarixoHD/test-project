@@ -76,6 +76,7 @@ src/
     recovery/        recover.ts (boot reconciliation)
     notify/          inbox rules (event → inbox item)
     util/exec.ts     the ONLY child_process wrapper (argv only, timeout, redaction)
+    util/clock.ts, util/id-gen.ts  systemClock/FakeClock, monotonic ULID createIdGen(clock)/FakeIdGen
   web/
     main.tsx, App.tsx, routes/
     state/           store.ts (snapshot + EventSource + reduce), api.ts (typed fetch)
@@ -169,7 +170,14 @@ interface Store {
   q: Queries;                                         // typed read helpers (issues, attempts, usage totals …)
 }
 ```
-**Invariant (tested):** `events.reduce(reduce, emptyState)` equals `snapshot().state` after any command sequence.
+```ts
+interface Tx { q: Queries; db: Db }   // db: same connection, inside the transaction; write only tables without events (settings, secrets)
+interface Queries { product(id); issuesByProduct(productId) /* by number */; issue(id); attemptsByIssue(issueId) /* by n */;
+                    attempt(id); productUsage(productId); issueUsage(issueId) }   // ClientState shapes; usage zero when none
+createStore({db, clock, redactor}): Store;     // db from db/open(path) (':memory:' in tests; file created 0600; WAL pragmas; migrations applied)
+```
+Commit order: `build(tx)` → for each draft: zod-validate, redact every string in `data`, re-validate, insert (seq = AUTOINCREMENT, ts = `clock.now()` once per commit), then **project** (`store/project*.ts`, the server twin of `reduce`). Commands do not write projection tables themselves: the projector derives them from the events, so they cannot drift. A throwing builder, an invalid draft or a projection constraint failure (e.g. FK to a missing product) rolls the whole commit back and notifies nobody. Subscribers run after the commit; nested `commit` inside a builder throws. Usage totals are running sums in `usage_totals`, updated per event with the shared `addUsage` (never SQL `SUM()`).
+**Invariant (tested):** `events.reduce(reduce, emptyState)` equals `snapshot().state` after any command sequence. Tests call `expectSnapshotMatchesReplay(store)` from `store/testing.ts`.
 
 ### 4.3 server/http
 These are thin routes. Each one validates with zod, calls a command, and returns `{ok}` or a typed error.
@@ -291,22 +299,27 @@ It throws if a mount source contains `docker.sock` or is outside `data/worktrees
 Preview: `startPreview(productId) → {url}` and `stopPreview(productId)`. It uses a detached worktree of main, the product image, `project.preview.command` and a read-only mount. It polls `GET /` for up to 60 s. Only one preview runs per product.
 
 ### 4.9 server/git
-All git commands run on the host with `-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.file.allow=never`. Product repositories are bare: `data/repos/<productId>.git`.
+All git commands run on the host with `-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.file.allow=never` (`GIT_SAFETY_FLAGS`, always first in argv), a timeout, `GIT_CONFIG_GLOBAL=/dev/null` + `GIT_CONFIG_NOSYSTEM=1`, inherited `GIT_DIR`-style variables removed, and the fixed `AGENT_IDENTITY` as author and committer. Product repositories are bare: `data/repos/<productId>.git`. Product and run ids must be safe path segments (`[A-Za-z0-9][A-Za-z0-9_-]*`); repo paths must be relative, normalised and outside `.git`.
 ```ts
-initRepo(productId): Promise<void>                         // bare repo + initial commit (README, docs/PRD.md)
-addWorktree(productId, runId, ref='main'): Promise<{dir; branch; baseSha}>
+gitVersionOk(deps?): Promise<boolean>                      // host git >= 2.38
+createGit({dataDir, exec?, timeoutMs?}): Git               // exec injectable so tests can observe argv
+initRepo(productId): Promise<void>                         // bare repo + initial commit (README, docs/PRD.md); no-op if main exists
+addWorktree(productId, runId, ref='main', {detached?}): Promise<{dir; branch: string|null; baseSha}>
+                                                           // dir = data/worktrees/<runId>, branch = vibecode/<runId> (null when detached)
 commitAll(dir, message): Promise<{sha:string|null; diff:string}>   // null when nothing changed
 cleanWorktree(dir): Promise<void>                          // reset --hard + clean -ffdx (after checks)
+mainSha(productId): Promise<string>; readFileAtMain(productId, path): Promise<string|null>
 integrate(productId, branch, baseSha, message): Promise<
   | {kind:'fast'; tree; commitSha}                         // main == baseSha
   | {kind:'merged'; commitSha; dir}                        // merge-tree clean; dir = integration worktree to re-check
   | {kind:'conflict'; paths:string[]}>
-advanceMain(productId, commitSha, expectedOld): Promise<void>     // update-ref with old-value guard
-commitFilesOnMain(productId, files: Record<string,string>, msg): Promise<string>  // PRD.md on handoff/apply
+advanceMain(productId, commitSha, expectedOld): Promise<void>     // update-ref with old-value guard; throws MainMovedError if main != expectedOld
+commitFilesOnMain(productId, files: Record<string,string>, msg): Promise<string>  // PRD.md on handoff/apply; plumbing with a temp index, one commit, update-ref with old-value guard
 push(productId, remote): Promise<void>                    // token via GIT_ASKPASS env; redacted
-removeWorktree(dir): Promise<void>; pruneWorktrees(productId): Promise<void>
+removeWorktree(dir): Promise<void>                        // only under data/worktrees; also deletes its vibecode/* branch; no-op if dir is gone
+pruneWorktrees(productId): Promise<void>
 ```
-Main history has **one commit per merged issue**: `commit-tree <merged tree> -p main -m "#<n> <title>"`.
+Main history has **one commit per merged issue**: `commit-tree <merged tree> -p main -m "#<n> <title>"`. `integrate` never moves main; the caller advances it under the merge lock. The `merged` integration worktree is detached at `data/worktrees/integrate-<commitSha>`; the caller removes it with `removeWorktree`. Conflict paths are sorted and de-duplicated (`merge-tree -z --name-only`).
 
 ### 4.10 server/security
 ```ts
@@ -381,15 +394,16 @@ products(id PK, name, idea, phase 'sparring'|'building'|'complete', paused INT, 
          prd_version INT=0, orchestrator_cursor INT=0, project JSON NULL /* last valid .vibecode/project.json */, created_at)
 prd_versions(product_id, version, markdown, summary NULL, created_at)  PK(product_id, version)
 prd_drafts(product_id PK, markdown, base_version, updated_at)
-spar_messages(id PK, product_id, role 'owner'|'agent', text, created_at)
+spar_messages(id PK, product_id, role 'owner'|'agent', text, created_at, seq /* event seq: arrival order */)
 issues(id PK, product_id, number, title, body, status, rev, priority, origin 'orchestrator'|'owner', prd_version,
-       attempt_count, held_question_id NULL, run_after INT, merged_order INT NULL, merge_sha NULL, failure_reason NULL, created_at, updated_at)
-issue_deps(issue_id, depends_on_id)  PK(issue_id, depends_on_id)
+       attempt_count, held_question_id NULL, run_after INT, merged_order INT NULL, merge_sha NULL, failure_reason NULL,
+       cancel_reason NULL /* server-only */, created_at, updated_at)
+issue_deps(issue_id, depends_on_id, position /* order of dependsOn */)  PK(issue_id, depends_on_id)
 attempts(id PK, issue_id, product_id, n, issue_rev, base_sha, branch, head_sha NULL,
          status 'running'|'merged'|'check_failed'|'rejected'|'conflict'|'error'|'interrupted'|'discarded',
-         counted INT, step 'implement'|'check'|'review'|'merge', feedback NULL, review JSON NULL, check_exit NULL, started_at, ended_at NULL)
+         counted INT, step 'implement'|'check'|'review'|'merge', feedback NULL, review JSON NULL, check_exit NULL, interrupt_reason NULL, started_at, ended_at NULL)
 agents(id PK, product_id, role, provider, model, issue_id NULL, attempt_id NULL,
-       state 'working'|'waiting_owner'|'rate_limited'|'exited', until INT NULL, started_at, ended_at NULL)
+       state 'working'|'waiting_owner'|'rate_limited'|'exited', until INT NULL, last_activity NULL, started_at, ended_at NULL)
 usage(id PK, product_id, issue_id NULL, attempt_id NULL, agent_id, role, provider, model, billing 'api'|'subscription',
       input, output, cache_read, cache_write, reasoning, web_searches, calls, cost_usd REAL NULL, unpriced INT,
       est_cost_usd REAL NULL, source 'computed'|'provider'|'cli', ts)
@@ -397,6 +411,8 @@ questions(id PK, product_id, issue_id NULL, agent_id NULL, target 'orchestrator'
 inbox(id PK, product_id NULL, kind 'question'|'failed'|'budget_warn'|'budget_paused'|'rate_limited'|'auth_required'|'replan'|'complete'|'error',
       title, body, link, read_at NULL, created_at)
 backend_limits(backend PK /* e.g. 'claude-code', 'anthropic' */, until INT NULL, needs_login INT, reason)
+usage_totals(scope 'product'|'issue', scope_id, api_usd REAL, api_unpriced INT, sub_input, sub_output, sub_cache_read, sub_cache_write,
+             sub_reasoning, sub_calls)  PK(scope, scope_id)   -- running totals, added in commit order (snapshot ≡ replay)
 previews(product_id PK, container, url, started_at)
 settings(key PK, value JSON)      -- host-independent prefs, role defaults, provider configs (no secrets), price overrides, password_hash
 secrets(key PK, value, updated_at) -- api keys, git tokens, session HMAC key; never in events, never sent to the client in full
