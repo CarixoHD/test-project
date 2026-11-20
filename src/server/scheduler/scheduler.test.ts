@@ -77,6 +77,8 @@ function createProduct(
     maxParallel?: number;
     budgetUsd?: number | null;
     handOff?: boolean;
+    /** false: no `.vibecode/project.json` yet (before the first orchestrator run). */
+    project?: boolean;
     models?: Record<string, { provider: string; model: string }>;
   } = {},
 ) {
@@ -92,8 +94,13 @@ function createProduct(
     }),
     draft('prd.applied', p, null, { version: 1, markdown: '# v1', summary: null }),
     ...(opts.handOff === false ? [] : [draft('product.handed_off', p, null, { prdVersion: 1 })]),
+    ...(opts.project === false
+      ? []
+      : [draft('product.settings_changed', p, null, { project: PROJECT })]),
   ]);
 }
+
+const PROJECT = { check: ['npm', 'test'], imageInputs: [] };
 
 const create = (key: string, dependsOn: string[] = [], priority?: number) => ({
   op: 'create' as const,
@@ -170,6 +177,21 @@ function setup(
 }
 
 describe('scheduler: attempts', () => {
+  it('starts no attempt before the product has a check command (project.json), then starts it', async () => {
+    const t = setup({ project: false });
+    const ids = t.plan([create('a')]);
+    t.scheduler.start();
+    t.timer.fire();
+    expect(t.attempts()).toHaveLength(0);
+
+    // The first orchestrator run's plan writes project.json; its commit ticks the scheduler.
+    t.store.commit(() => [draft('product.settings_changed', P, null, { project: PROJECT })]);
+    expect(t.attempts()).toHaveLength(1);
+    const first = nth(t.attempts(), 0);
+    expect(first.kind === 'attempt' && first.issueId).toBe(ids.a);
+    await t.shutdown();
+  });
+
   it('starts at most maxParallel (default 3) attempts and fills a freed slot on the next tick', async () => {
     const t = setup();
     t.plan(['a', 'b', 'c', 'd', 'e'].map((k) => create(k)));
