@@ -29,3 +29,12 @@ export {
 } from './orchestrator-backoff.ts';
 export { orchestratorPrompt, type OrchestratorPromptInput } from './orchestrator-prompt.ts';
 export { SPAR_LIMITS, sparTurn, type SparringDeps } from './sparring.ts';
+export {
+  CHECK_TIMEOUT_MS,
+  DEFAULT_ATTEMPT_LIMITS,
+  ERROR_RETRY_DELAY_MS,
+  NO_CHECK_REASON,
+  runAttempt,
+  type AttemptDeps,
+} from './attempt.ts';
+export { implementerPrompt, reviewerPrompt, tailLines } from './attempt-prompt.ts';

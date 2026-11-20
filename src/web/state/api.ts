@@ -158,3 +158,12 @@ export function updateProductSettings(
     ...(signal ? { signal } : {}),
   });
 }
+
+/** Hands the PRD draft to the orchestrator; the phase change arrives as events. */
+export function handoffProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/handoff`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
