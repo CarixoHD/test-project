@@ -20,3 +20,12 @@ export {
   containerName,
   managedLabels,
 } from './run-args.ts';
+export {
+  fileOpArgv,
+  normalizeRelPath,
+  parseFileOp,
+  toWorkspacePath,
+  type FileOp,
+  type ParsedFileOp,
+  type PathResult,
+} from './file-ops.ts';
