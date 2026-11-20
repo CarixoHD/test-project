@@ -347,9 +347,8 @@ describe('FakeContainerRuntime detached preview', () => {
   it('enforces the run-args policy for detached containers', async () => {
     const rt = new FakeContainerRuntime({ dataDir });
     await expect(rt.runDetached(spec({ worktree: outside }), ['x'])).rejects.toThrow();
-    await expect(
-      rt.runDetached({ ...previewSpec(), publishPort: undefined }, ['x']),
-    ).rejects.toThrow(/publishPort/);
+    const { publishPort: _omit, ...noPort } = previewSpec();
+    await expect(rt.runDetached(noPort, ['x'])).rejects.toThrow(/publishPort/);
     expect(await rt.listManaged()).toEqual([]);
   });
 });

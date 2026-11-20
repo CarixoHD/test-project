@@ -131,12 +131,18 @@ export class FakeContainerRuntime implements ContainerRuntime {
       res.end(PREVIEW_PAGE);
     });
     this.#servers.set(name, server);
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(0, '127.0.0.1', () => {
-        resolve();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          resolve();
+        });
       });
-    });
+    } catch (err) {
+      this.#servers.delete(name);
+      this.#open.delete(name);
+      throw err;
+    }
     return { name, hostPort: (server.address() as AddressInfo).port };
   }
 

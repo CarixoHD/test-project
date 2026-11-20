@@ -38,3 +38,13 @@ export {
   type FakeRunRule,
 } from './fake.ts';
 export { DOCKER_UNAVAILABLE_REASON, selectRuntime } from './select-runtime.ts';
+export {
+  createPreviews,
+  PREVIEW_POLL_MS,
+  PREVIEW_TIMEOUT_MS,
+  type PreviewDeps,
+  type PreviewFetch,
+  type Previews,
+  type StartPreviewResult,
+  type StopPreviewResult,
+} from './preview.ts';
