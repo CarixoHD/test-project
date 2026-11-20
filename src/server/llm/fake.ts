@@ -57,9 +57,14 @@ export const FakeScriptSchema = z.array(FakeTurnSchema);
 
 export type FakeTurn = z.input<typeof FakeTurnSchema>;
 export type FakeScript = z.input<typeof FakeScriptSchema>;
+/** The prompt (system + messages) a model call receives. */
+export type FakeCallPrompt = Parameters<MockLanguageModelV4['doGenerate']>[0]['prompt'];
+
 export type FakeModelOptions = {
   /** Template variables, e.g. `{issue: {number: 11}}` for `{{issue.number}}`. */
   vars?: Record<string, unknown>;
+  /** Called with the prompt of every model call, before its turn is replayed (tests). */
+  onCall?: (prompt: FakeCallPrompt) => void;
 };
 
 type ParsedTurn = z.output<typeof FakeTurnSchema>;
@@ -205,7 +210,8 @@ export function fakeModel(script: FakeScript, options: FakeModelOptions = {}): M
   return new MockLanguageModelV4({
     provider: 'fake',
     modelId: 'fake',
-    doGenerate: async ({ abortSignal }) => {
+    doGenerate: async ({ abortSignal, prompt }) => {
+      options.onCall?.(prompt);
       const { turn, rendered } = next();
       if (turn.hang === true) return hangUntilAborted(abortSignal);
       const { text, toolCalls, searches, finishReason, usage } = rendered();
@@ -214,7 +220,8 @@ export function fakeModel(script: FakeScript, options: FakeModelOptions = {}): M
       content.push(...toolCalls);
       return { content, finishReason, usage, warnings: [] };
     },
-    doStream: async ({ abortSignal }) => {
+    doStream: async ({ abortSignal, prompt }) => {
+      options.onCall?.(prompt);
       const { turn, rendered } = next();
       if (turn.hang === true) return hangUntilAborted(abortSignal);
       const { text, toolCalls, searches, finishReason, usage } = rendered();
