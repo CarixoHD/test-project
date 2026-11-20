@@ -77,7 +77,14 @@ export function recordEnd(ctx: OutcomeCtx, ended: Ended): void {
       const { limit, runAfter, question } = ended;
       return interruptAttempt(ctx, ended.reason, redact(ended.feedback), outcome, {
         ...(runAfter === undefined ? {} : { runAfter }),
-        ...(limit === undefined ? {} : { limit: { ...limit, reason: redact(limit.reason) } }),
+        ...(limit === undefined
+          ? {}
+          : {
+              limit: {
+                draft: { ...limit, reason: redact(limit.reason) },
+                now: ctx.deps.clock.now(),
+              },
+            }),
         ...(question === undefined ? {} : { question }),
       });
     }

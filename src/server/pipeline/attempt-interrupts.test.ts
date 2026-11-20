@@ -195,6 +195,28 @@ describe('runAttempt: rate limits and logins', () => {
     expect(h.store.q.backendLimit('fake')).toMatchObject({ until: extended });
   });
 
+  it('an expired limit the scheduler has not cleared yet does not swallow a new 429', async () => {
+    let retry = 60;
+    const h = await setup({
+      inbox: true,
+      script: (a) => (a.role === 'implementer' ? rateLimited(retry) : undefined),
+    });
+    const id = h.addIssue('Scaffold');
+
+    await h.run(id);
+    h.clock.advance(61_000);
+    retry = 2;
+    await h.run(id);
+
+    expect(eventsOf(h.store, 'backend.limited').map((e) => e.data.until)).toEqual([
+      START + 60_000,
+      START + 63_000,
+    ]);
+    expect(inboxItems(h.store).map((i) => i.kind)).toEqual(['rate_limited', 'rate_limited']);
+    expect(h.store.q.backendLimit('fake')).toMatchObject({ until: START + 63_000 });
+    expectSnapshotMatchesReplay(h.store);
+  });
+
   it('after the limit has cleared, a new hit records backend.limited again', async () => {
     const h = await setup({
       inbox: true,
@@ -220,7 +242,7 @@ describe('runAttempt: rate limits and logins', () => {
   it('needs-login transitions are always recorded; a repeated needs-login is not', async () => {
     const h = await setup();
     const record = (limit: BackendLimitDraft) =>
-      h.store.commit((tx) => backendLimitDrafts(tx, limit));
+      h.store.commit((tx) => backendLimitDrafts(tx, limit, h.clock.now()));
     const rate = { backend: 'fake', until: START + 600_000, needsLogin: false, reason: 'r' };
     const login = { backend: 'fake', until: null, needsLogin: true, reason: 'l' };
 

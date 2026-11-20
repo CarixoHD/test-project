@@ -125,7 +125,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       if (outcome.kind === 'failed') recordFailure(productId, consumedSeq, outcome.reason);
       if (outcome.kind === 'limited') {
         const { limit } = outcome;
-        deps.store.commit((tx) => backendLimitDrafts(tx, limit));
+        deps.store.commit((tx) => backendLimitDrafts(tx, limit, deps.clock.now()));
         backoff.waitUntil(productId, outcome.retryAt);
       }
     },
