@@ -4,6 +4,7 @@ import { registerAgentRoutes } from './agents.ts';
 import { registerAttemptRoutes } from './attempts.ts';
 import { registerBackendRoutes } from './backends.ts';
 import { registerEventRoutes } from './events.ts';
+import { registerGitTokenRoutes } from './git-token.ts';
 import { registerHealthRoutes } from './health.ts';
 import { registerPreviewRoutes } from './preview.ts';
 import { registerProductRoutes } from './products.ts';
@@ -26,6 +27,7 @@ export function registerRoutes(app: Hono, deps: AppDeps): void {
   registerQuestionRoutes(app, deps);
   registerBackendRoutes(app, deps);
   if (deps.settings !== undefined) registerSettingsRoutes(app, deps.settings);
+  if (deps.gitTokens !== undefined) registerGitTokenRoutes(app, deps.gitTokens);
   if (deps.previews !== undefined) registerPreviewRoutes(app, deps.previews);
   if (deps.logsDir !== undefined) registerAgentRoutes(app, deps, deps.logsDir);
   if (deps.artifactsDir !== undefined) registerAttemptRoutes(app, deps, deps.artifactsDir);

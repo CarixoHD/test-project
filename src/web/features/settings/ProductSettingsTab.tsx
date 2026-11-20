@@ -15,6 +15,7 @@ import {
 import type { ProductState } from '../../../shared/state.ts';
 import { ApiError, updateProductSettings } from '../../state/api.ts';
 import { Button, Field } from '../../ui/index.ts';
+import { GitTokenSection } from './GitTokenSection.tsx';
 
 const ROLE_LABELS: Record<Role, string> = {
   sparring: 'Sparring',
@@ -100,8 +101,13 @@ function toRequest(
 
 /** Settings tab of a product: budget, parallelism, attempts, git remote and models per role. */
 export function ProductSettingsTab({ product }: { product: ProductState }) {
-  // Another product starts from its own values.
-  return <ProductSettingsForm key={product.id} product={product} />;
+  // Another product starts from its own values. The token has its own form (write-only).
+  return (
+    <>
+      <ProductSettingsForm key={product.id} product={product} />
+      <GitTokenSection key={`token-${product.id}`} productId={product.id} />
+    </>
+  );
 }
 
 function ProductSettingsForm({ product }: { product: ProductState }) {
@@ -207,7 +213,7 @@ function ProductSettingsForm({ product }: { product: ProductState }) {
       </Field>
       <Field
         label="Git remote URL"
-        hint="Optional. An https:// or SSH URL (git@host:path) without credentials. Leave blank for none."
+        hint="Optional. An https:// or SSH URL (git@host:path) without credentials; main is pushed there after each merge. Leave blank for none."
         error={errors.gitRemote ?? null}
       >
         {(control) => (

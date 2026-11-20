@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rm,
   symlink,
@@ -612,7 +613,64 @@ describe('open and Sandbox', () => {
     expect(call?.o).toMatchObject({ input: 'hello\n', killSignal: 'SIGKILL' });
     // The deadline is enforced in the container first; the client's own timeout is a backstop.
     expect(call?.o.timeoutMs).toBeGreaterThan(1234);
-    expect(stub.argvs()).toHaveLength(2); // no kill when the command ends on its own
+    // No kill when the command ends on its own; only the pid/cancel file cleanup follows.
+    const pidFile = call?.argv[9] ?? '';
+    expect(stub.argvs().slice(2)).toEqual([
+      ['exec', 'vibecode-01RUN', 'rm', '-f', pidFile, `${pidFile}.cancel`],
+    ]);
+    expect(stub.calls[2]?.o.timeoutMs).toBeLessThanOrEqual(10_000);
+  });
+
+  it('logs a failed pid file cleanup with container and pid file, keeping the exec result', async () => {
+    const logs: string[] = [];
+    const stub = stubDocker((argv) =>
+      argv[0] === 'exec' && argv[2] === 'rm'
+        ? { code: 1, stderr: 'Error response from daemon: container is paused' }
+        : argv[0] === 'exec'
+          ? { code: 4, stdout: 'out\n', stderr: 'err\n' }
+          : {},
+    );
+    const rt = new DockerCliRuntime({
+      dataDir,
+      uid: 1000,
+      gid: 1000,
+      exec: stub.exec,
+      spawnStream: stub.spawnStream,
+      log: (l) => logs.push(l),
+    });
+    const sb = await rt.open(spec());
+    const r = await sb.exec(['make'], T);
+    expect(r).toEqual({
+      code: 4,
+      stdout: 'out\n',
+      stderr: 'err\n',
+      timedOut: false,
+      aborted: false,
+      truncated: false,
+    });
+    const pidFile = stub.argvs()[1]?.[9] ?? '';
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain('vibecode-01RUN');
+    expect(logs[0]).toContain(pidFile);
+    expect(logs[0]).toContain('container is paused');
+
+    logs.length = 0;
+    const throwing = stubDocker((argv) =>
+      argv[0] === 'exec' && argv[2] === 'rm'
+        ? new ExecError('Could not run "docker": EACCES', 'EACCES')
+        : {},
+    );
+    const sb2 = await new DockerCliRuntime({
+      dataDir,
+      uid: 1000,
+      gid: 1000,
+      exec: throwing.exec,
+      spawnStream: throwing.spawnStream,
+      log: (l) => logs.push(l),
+    }).open(spec());
+    expect(await sb2.exec(['make'], T)).toMatchObject({ code: 0 });
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/vibecode-01RUN.*\/tmp\/vibecode-exec-.*EACCES/);
   });
 
   it('runs file ops through the shared fileOpArgv protocol', async () => {
@@ -717,7 +775,10 @@ describe('open and Sandbox', () => {
         'INT',
         pidFile,
       ]);
-      expect(docker.argvs()).toHaveLength(3); // ended on SIGINT: no SIGKILL fallback
+      // Ended on SIGINT: no SIGKILL fallback; the client returned, so plain file cleanup.
+      expect(docker.argvs().slice(3)).toEqual([
+        ['exec', 'vibecode-01RUN', 'rm', '-f', pidFile, `${pidFile}.cancel`],
+      ]);
       expect(r).toMatchObject({ aborted: true, stdout: 'partial\n' });
     });
 
@@ -735,13 +796,15 @@ describe('open and Sandbox', () => {
       const r = await running;
 
       const pidFile = docker.argvs()[1]?.[9];
-      const kills = docker
-        .argvs()
-        .slice(2)
-        .map((a) => a.slice(-2));
-      expect(kills).toEqual([
+      const after = docker.argvs().slice(2);
+      expect(after.slice(0, 2).map((a) => a.slice(-2))).toEqual([
         ['INT', pidFile],
         ['KILL', pidFile],
+      ]);
+      // The client was killed, so a late wrapper may still read the cancel marker: the
+      // cleanup goes through the guarded script, not a plain `rm`.
+      expect(after.slice(2)).toEqual([
+        ['exec', 'vibecode-01RUN', 'sh', '-c', expect.any(String), 'sh', pidFile],
       ]);
       expect(docker.calls[1]?.o.killSignal).toBe('SIGKILL');
       expect(r.aborted).toBe(true);
@@ -769,8 +832,10 @@ describe('open and Sandbox', () => {
      * under the test dir. Like real `docker exec`, killing the client does NOT reach the
      * command: the client's signal is ignored, only the in-container kill can stop it.
      */
-    function localDocker(o: { startDelayMs?: number; logs?: string[] } = {}) {
+    function localDocker(o: { startDelayMs?: number; clientDetaches?: boolean } = {}) {
       const calls: Call[] = [];
+      /** In-container commands still running after their client returned (clientDetaches). */
+      const background: Promise<unknown>[] = [];
       const local = (argv: readonly string[]) => {
         let i = 1;
         while (argv[i] === '-i' || argv[i] === '-w') i += argv[i] === '-w' ? 2 : 1;
@@ -785,14 +850,28 @@ describe('open and Sandbox', () => {
         if (argv[0] !== 'exec') return { ...OK };
         const [cmd = '', ...rest] = local(argv);
         const isMain = argv[1] === '-i';
-        if (isMain && o.startDelayMs !== undefined) {
-          await new Promise((r) => setTimeout(r, o.startDelayMs));
-        }
-        return realExec(cmd, rest, { input: opts.input, cwd: wt, timeoutMs: 20_000 });
+        const run = (async () => {
+          if (isMain && o.startDelayMs !== undefined) {
+            await new Promise((r) => setTimeout(r, o.startDelayMs));
+          }
+          return realExec(cmd, rest, { input: opts.input, cwd: wt, timeoutMs: 20_000 });
+        })();
+        if (!isMain || o.clientDetaches !== true) return run;
+        // Killing the client returns at once; the exec may still start in the container later.
+        background.push(run);
+        return new Promise<ExecResult>((resolve, reject) => {
+          opts.signal?.addEventListener('abort', () =>
+            resolve({ ...OK, code: null, aborted: true }),
+          );
+          run.then(resolve, reject);
+        });
       };
       const spawnStream = () => Promise.reject(new Error('not used'));
-      return { calls, exec, spawnStream, argvs: () => calls.map((c) => c.argv) };
+      return { calls, exec, spawnStream, background, argvs: () => calls.map((c) => c.argv) };
     }
+    /** The pid and cancel files the wrapper and kill script left in the "container" /tmp. */
+    const execFiles = async () =>
+      (await readdir(base)).filter((f) => f.startsWith('vibecode-exec-')).sort();
     const OK: ExecResult = {
       code: 0,
       signal: null,
@@ -848,6 +927,15 @@ describe('open and Sandbox', () => {
       ]);
       const pid = await childPid();
       await expect.poll(() => alive(pid)).toBe(false);
+      expect(await execFiles()).toEqual([]);
+    });
+
+    it('leaves no pid or cancel file after commands that end on their own', async () => {
+      const docker = localDocker();
+      const sb = await rtWith(docker).open(spec());
+      expect(await sb.exec(['sh', '-c', 'echo hi'], T)).toMatchObject({ code: 0, stdout: 'hi\n' });
+      expect(await sb.exec(['sh', '-c', 'exit 3'], T)).toMatchObject({ code: 3 });
+      expect(await execFiles()).toEqual([]);
     });
 
     it('on abort, delivers killSignal first, then SIGKILL after the grace period', async () => {
@@ -871,9 +959,10 @@ describe('open and Sandbox', () => {
       expect(
         docker
           .argvs()
-          .slice(2)
+          .slice(2, 4)
           .map((a) => a[6]),
       ).toEqual(['INT', 'KILL']);
+      expect(await execFiles()).toEqual([]);
     });
 
     it('stops the command when the abort arrives before the wrapper wrote its pid file', async () => {
@@ -891,14 +980,54 @@ describe('open and Sandbox', () => {
       expect(r).toMatchObject({ aborted: true, code: 143 });
       expect(existsSync(path.join(wt, 'ran'))).toBe(false);
       expect(logs).toEqual([]);
+      expect(await execFiles()).toEqual([]);
+    });
+
+    it('removes both files when the client was killed after the wrapper started', async () => {
+      const docker = localDocker({ clientDetaches: true });
+      const sb = await rtWith(docker, 50).open(spec());
+      const ac = new AbortController();
+      const running = sb.exec(
+        ['sh', '-c', "trap '' TERM; sleep 300 & echo $! > child.pid; touch ready; wait"],
+        { timeoutMs: 60_000, signal: ac.signal },
+      );
+      await expect.poll(() => existsSync(path.join(wt, 'ready'))).toBe(true);
+      ac.abort();
+      expect(await running).toMatchObject({ aborted: true });
+      expect(await execFiles()).toEqual([]);
+      const pid = await childPid();
+      await expect.poll(() => alive(pid)).toBe(false);
+      await Promise.all(docker.background);
+    });
+
+    it('keeps the cancel marker for a wrapper that starts after the client was killed', async () => {
+      const docker = localDocker({ startDelayMs: 400, clientDetaches: true });
+      const logs: string[] = [];
+      const sb = await rtWith(docker, 20, logs).open(spec());
+      const ac = new AbortController();
+      const running = sb.exec(['sh', '-c', 'touch ran; sleep 300'], {
+        timeoutMs: 60_000,
+        signal: ac.signal,
+      });
+      await Promise.resolve();
+      ac.abort();
+      expect(await running).toMatchObject({ aborted: true, code: null });
+      // The wrapper has not started yet: the marker must still be there for it.
+      expect(await execFiles()).toEqual([expect.stringMatching(/\.pid\.cancel$/)]);
+      const [late] = await Promise.all(docker.background);
+      expect(late).toMatchObject({ code: 143 });
+      expect(existsSync(path.join(wt, 'ran'))).toBe(false);
+      expect(logs).toEqual([]);
+      // The late wrapper saw the marker and removed both files itself.
+      expect(await execFiles()).toEqual([]);
     });
 
     it('logs a failed in-container kill with container, signal and reason', async () => {
       const logs: string[] = [];
       const stub = stubDocker((argv) =>
-        argv[0] === 'exec' && argv[1] !== '-i'
+        argv[0] === 'exec' && argv[6] === 'TERM'
           ? { code: 1, stderr: 'Error response from daemon: container abc is not running' }
-          : argv[0] === 'exec'
+          : argv[0] === 'exec' && argv[1] === '-i'
             ? { code: null, timedOut: true }
             : {},
       );
@@ -920,9 +1049,9 @@ describe('open and Sandbox', () => {
 
       logs.length = 0;
       const throwing = stubDocker((argv) =>
-        argv[0] === 'exec' && argv[1] !== '-i'
+        argv[0] === 'exec' && argv[6] === 'INT'
           ? new ExecError('Could not run "docker": EACCES', 'EACCES')
-          : argv[0] === 'exec'
+          : argv[0] === 'exec' && argv[1] === '-i'
             ? { code: null }
             : {},
       );
@@ -1150,6 +1279,32 @@ describe('Docker unavailable', () => {
     await expect(rt.runOnce(spec({ role: 'check' }), ['npm', 'test'], T)).rejects.toThrow(
       DOCKER_NOT_RUNNING,
     );
+    // Sandbox.exec confirmed it with the daemon probe; nothing else is tried once it is down.
+    const versions = stub.argvs().filter((a) => a[0] === 'version');
+    expect(versions).toHaveLength(2);
+    expect(stub.argvs().filter((a) => a[2] === 'rm' || a[2] === 'sh')).toEqual([]);
+  });
+
+  it('keeps a Sandbox.exec that exits 1 with the daemon message a command result while the daemon answers', async () => {
+    const stderr = 'Error: Is the docker daemon running? (printed by the product tests)\n';
+    const stub = stubDocker((argv) =>
+      argv[0] === 'exec' && argv[1] === '-i' ? { code: 1, stdout: 'x\n', stderr } : {},
+    );
+    const sb = await runtime(stub).open(spec());
+    expect(await sb.exec(['npm', 'test'], T)).toEqual({
+      code: 1,
+      stdout: 'x\n',
+      stderr,
+      timedOut: false,
+      aborted: false,
+      truncated: false,
+    });
+    expect(await sb.exec(['npm', 'test'], { ...T, onLine: () => {} })).toMatchObject({
+      code: 1,
+      stderr,
+    });
+    // The confirmation probe: `docker version` against the server.
+    expect(stub.argvs()).toContainEqual(['version', '--format', '{{.Server.Version}}']);
   });
 
   it('keeps a failing command that merely prints the daemon message a command result', async () => {

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -169,6 +169,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount while the fake network is still in place.
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -217,6 +219,27 @@ describe('IssuePage: issue facts', () => {
       event('issue.held', 'i2', { questionId: 'q1' }),
     ]);
     expect(screen.getByText('Which colour for dark mode?')).toBeInTheDocument();
+  });
+
+  it('shows a withdrawn held question as withdrawn, without an answer form', async () => {
+    await renderPage([
+      ...HISTORY(),
+      event('question.asked', 'q1', {
+        target: 'issue',
+        issueId: 'i2',
+        agentId: null,
+        text: 'Which colour for dark mode?',
+      }),
+      event('issue.held', 'i2', { questionId: 'q1' }),
+      event('issue.cancelled', 'i2', { from: 'open', by: 'owner', reason: 'Not needed' }),
+      event('question.withdrawn', 'q1', { reason: 'The issue was cancelled.' }),
+    ]);
+    const section = screen.getByRole('region', { name: 'Question withdrawn' });
+    expect(section).toHaveTextContent('Which colour for dark mode?');
+    expect(section).toHaveTextContent('Withdrawn (issue cancelled)');
+    expect(within(section).queryByRole('textbox')).toBeNull();
+    expect(within(section).queryByRole('button', { name: 'Send answer' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Waiting for your answer' })).toBeNull();
   });
 
   it('answers the held question with the shared answer form', async () => {

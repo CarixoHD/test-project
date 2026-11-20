@@ -1,9 +1,11 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect } from 'react';
+import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventSchema, type Event } from '../../shared/events.ts';
-import { ProductIdSchema } from '../../shared/ids.ts';
+import { AgentIdSchema, ProductIdSchema } from '../../shared/ids.ts';
+import { FakeEventSource } from '../features/agents/testing.ts';
 import { emptyState, reduce, type ClientState, type ProductState } from '../../shared/state.ts';
 import { AppStoreContext, type AppSnapshot, type AppStore } from '../state/store.ts';
 import type { Scene3DProps } from './scene-model.ts';
@@ -123,6 +125,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount while the fake network is still in place.
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -235,5 +239,84 @@ describe('LazyScene3D', () => {
     expect((LazyScene3D as unknown as { $$typeof: symbol }).$$typeof).toBe(
       Symbol.for('react.lazy'),
     );
+  });
+});
+
+describe('ScenePanel worker pick', () => {
+  beforeEach(() => {
+    FakeEventSource.reset();
+    vi.stubGlobal('EventSource', FakeEventSource);
+  });
+
+  function renderWithRouter(store: AppStore, Scene: (p: Scene3DProps) => React.ReactNode) {
+    const product = store.getSnapshot().state.products[P] as ProductState;
+    return render(
+      <MemoryRouter>
+        <AppStoreContext value={store}>
+          <ScenePanel product={product} Scene={Scene} />
+        </AppStoreContext>
+      </MemoryRouter>,
+    );
+  }
+
+  const reviewerSpawned = (id: string) =>
+    event('agent.spawned', id, {
+      role: 'reviewer',
+      model: { provider: 'openrouter', model: 'qwen/qwen3-coder' },
+      issueId: 'i2',
+      attemptId: null,
+    });
+
+  it('opens the AgentPanel of the picked worker', () => {
+    const { store } = storeFrom([
+      productCreated(),
+      issueCreated(2, 'open', null),
+      agentSpawned('a1'),
+      reviewerSpawned('a2'),
+    ]);
+    const scene = recordingScene();
+    renderWithRouter(store, scene.Scene);
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    act(() => scene.last()?.onPickWorker?.(AgentIdSchema.parse('a2')));
+    const dialog = screen.getByRole('dialog', { name: 'Inspector (reviewer)' });
+    expect(dialog).toHaveTextContent('openrouter / qwen/qwen3-coder');
+    expect(dialog).toHaveTextContent('#2 Issue 2');
+    expect(FakeEventSource.find('/api/agents/a2/log?follow=1')).toBeDefined();
+  });
+
+  it('offers no agent-control actions in the panel opened from the scene', async () => {
+    const user = userEvent.setup();
+    const { store } = storeFrom([productCreated(), agentSpawned('a1')]);
+    const scene = recordingScene();
+    renderWithRouter(store, scene.Scene);
+    act(() => scene.last()?.onPickWorker?.(AgentIdSchema.parse('a1')));
+
+    const dialog = screen.getByRole('dialog', { name: 'Builder (implementer)' });
+    const buttons = within(dialog)
+      .getAllByRole('button')
+      .map((b) => b.getAttribute('aria-label') ?? b.textContent);
+    expect(buttons).toEqual(['Close']);
+
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('ignores a pick on an agent it does not know', () => {
+    const { store } = storeFrom([productCreated(), agentSpawned('a1')]);
+    const scene = recordingScene();
+    renderWithRouter(store, scene.Scene);
+    act(() => scene.last()?.onPickWorker?.(AgentIdSchema.parse('nope')));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('keeps the pick handler stable so the scene does not re-render for it', () => {
+    const { store, apply } = storeFrom([productCreated(), agentSpawned('a1')]);
+    const scene = recordingScene();
+    renderWithRouter(store, scene.Scene);
+    const first = scene.last()?.onPickWorker;
+    act(() => scene.last()?.onPickWorker?.(AgentIdSchema.parse('a1')));
+    act(() => apply(agentSpawned('a2')));
+    expect(scene.last()?.onPickWorker).toBe(first);
   });
 });

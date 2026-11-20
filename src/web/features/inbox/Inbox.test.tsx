@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,7 @@ import { App } from '../../App.tsx';
 import { routes } from '../../routes.tsx';
 import { createAppStore } from '../../state/store.ts';
 import { FakeEventSource } from '../agents/testing.ts';
+import { formatInboxTime } from './inbox-model.ts';
 
 // The inbox against the real store and router: the snapshot comes from a stubbed
 // GET /api/state, live events are pushed through a fake EventSource, and the browser
@@ -182,6 +183,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount while the fake network is still in place.
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -325,6 +328,31 @@ describe('Inbox: questions', () => {
     await user.type(screen.getByRole('textbox', { name: 'Your answer' }), 'Yes');
     await user.click(screen.getByRole('button', { name: 'Send answer' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('The question was already answered');
+  });
+
+  it('shows a withdrawn question as withdrawn, with its time and no answer form', async () => {
+    const history = [productCreated(), ...questionWithItem('q1', 'n9', 'Sync?')];
+    const withdrawn = event('question.withdrawn', 'p1', 'q1', {
+      reason: 'The issue was cancelled.',
+    });
+    await renderApp([...history, withdrawn]);
+    const entry = item(0);
+    expect(entry).toHaveTextContent('Sync?');
+    expect(entry).toHaveTextContent(`Withdrawn (issue cancelled) ${formatInboxTime(withdrawn.ts)}`);
+    expect(within(entry).queryByRole('textbox')).toBeNull();
+    expect(within(entry).queryByRole('button', { name: 'Send answer' })).toBeNull();
+  });
+
+  it('replaces the open answer form when the question is withdrawn live', async () => {
+    await renderApp([productCreated(), ...questionWithItem('q1', 'n9', 'Sync?')]);
+    const entry = item(0);
+    expect(within(entry).getByRole('textbox', { name: 'Your answer' })).toBeEnabled();
+    expect(entry).not.toHaveTextContent('Withdrawn');
+
+    push(event('question.withdrawn', 'p1', 'q1', { reason: 'The issue was cancelled.' }));
+    expect(entry).toHaveTextContent('Withdrawn (issue cancelled)');
+    expect(within(entry).queryByRole('textbox')).toBeNull();
+    expect(within(entry).queryByRole('button', { name: 'Send answer' })).toBeNull();
   });
 });
 

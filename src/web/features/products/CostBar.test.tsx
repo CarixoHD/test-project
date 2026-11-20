@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventSchema, type Event } from '../../../shared/events.ts';
 import { ProductIdSchema } from '../../../shared/ids.ts';
@@ -87,6 +87,8 @@ const subscriptionUsage = (calls: number, tokens: typeof ZERO_TOKENS) =>
 const fixture = (...events: Event[]): ClientState => events.reduce(reduce, emptyState);
 
 afterEach(() => {
+  // Unmount while the fake network is still in place.
+  cleanup();
   vi.unstubAllGlobals();
 });
 

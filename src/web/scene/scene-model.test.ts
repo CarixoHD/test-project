@@ -9,6 +9,7 @@ import {
   pieceFacing,
   piecesByType,
   sceneFrameloop,
+  workerName,
   workerPlacements,
 } from './scene-model.ts';
 
@@ -156,5 +157,14 @@ describe('pieceFacing', () => {
     for (const p of sceneWith(3, 3).pieces.filter((x) => x.type === 'floor' || x.type === 'roof')) {
       expect(pieceFacing(p)).toBe(p.rotY);
     }
+  });
+});
+
+describe('workerName', () => {
+  it('names the figure as the agent list does', () => {
+    expect(workerName(worker('a1'))).toBe('Builder (implementer)');
+    expect(workerName(worker('a2', { role: 'reviewer', figure: 'inspector' }))).toBe(
+      'Inspector (reviewer)',
+    );
   });
 });

@@ -5,6 +5,7 @@ export {
   GitError,
   MainMovedError,
   MIN_GIT_VERSION,
+  PUSH_TRANSPORT_FLAGS,
   createGit,
   gitVersionOk,
   type AddWorktreeOptions,
@@ -14,5 +15,6 @@ export {
   type GitDeps,
   type GitOptions,
   type IntegrateResult,
+  type PushRemote,
   type Worktree,
 } from './git.ts';

@@ -132,7 +132,9 @@ function IssueDetail({ issue }: { issue: IssueState }) {
 
       {question !== undefined && (
         <section className="issue-detail__question" aria-labelledby="held-question">
-          <h2 id="held-question">Waiting for your answer</h2>
+          <h2 id="held-question">
+            {question.withdrawnAt === null ? 'Waiting for your answer' : 'Question withdrawn'}
+          </h2>
           <p>{question.text}</p>
           <QuestionAnswer question={question} />
         </section>

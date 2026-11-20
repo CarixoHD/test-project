@@ -12,6 +12,8 @@ import {
   type SandboxNetwork,
   type SandboxSpec,
 } from '../../src/server/sandbox/index.ts';
+import { exec } from '../../src/server/util/exec.ts';
+import { EGRESS_PROBE, openInterfaces } from './net-probes.ts';
 
 const uid = process.getuid?.() ?? 1000;
 const gid = process.getgid?.() ?? 1000;
@@ -90,17 +92,30 @@ describe('DockerCliRuntime against a real Docker daemon', () => {
     expect(await readFile(path.join(s.worktree, '.git'), 'utf8')).toBe(GIT_POINTER);
   });
 
-  it('blocks all egress on network none', async () => {
-    const s = await spec();
-    const probe =
-      "require('net').connect({host:'1.1.1.1',port:53,timeout:5000})" +
-      ".on('connect',()=>process.exit(0)).on('error',()=>process.exit(3))" +
-      ".on('timeout',()=>process.exit(4))";
-    const r = await rt.runOnce(s, ['node', '-e', probe], T);
-    expect(r.code).not.toBe(0);
-    const ifaces = await rt.runOnce({ ...s, runId: `${s.runId}b` }, ['cat', '/proc/net/dev'], T);
-    expect(ifaces.stdout).toContain('lo:');
-    expect(ifaces.stdout).not.toMatch(/eth\d+:/);
+  it('gives network-none containers no interface but loopback (needs no internet)', async () => {
+    const r = await rt.runOnce(await spec(), ['cat', '/proc/net/dev'], T);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('lo:');
+    expect(openInterfaces(r.stdout)).toEqual([]);
+  });
+
+  it('blocks egress on network none where a bridge-network control connects', async (ctx) => {
+    const blocked = await rt.runOnce(await spec(), ['node', '-e', EGRESS_PROBE], T);
+    expect(blocked.code).not.toBe(0);
+    // Positive control: the same probe on Docker's default bridge. If that cannot connect
+    // either, this host has no egress and the failure above proves nothing.
+    const control = await exec(
+      'docker',
+      ['run', '--rm', '--network', 'bridge', image, 'node', '-e', EGRESS_PROBE],
+      T,
+    );
+    const egressVerifiable = control.code === 0;
+    ctx.skip(
+      !egressVerifiable,
+      `egress NOT verified: the bridge-network control could not reach 1.1.1.1:53 (exit ${String(control.code)}), ` +
+        'so this host has no egress; only the structural no-interface test counts',
+    );
+    await ctx.annotate('bridge control connected to 1.1.1.1:53; network none blocked it');
   });
 
   it('writes files into the worktree owned by the host uid', async () => {
@@ -166,4 +181,41 @@ describe('DockerCliRuntime against a real Docker daemon', () => {
       await sb.close();
     }
   }, 60_000);
+
+  it('leaves no vibecode-exec pid or cancel file in /tmp after execs end, time out or abort', async () => {
+    const sb = await rt.open(await spec());
+    try {
+      expect(await sb.exec(sh('echo hi'), T)).toMatchObject({ code: 0, stdout: 'hi\n' });
+      expect(await sb.exec(sh('exit 3'), T)).toMatchObject({ code: 3 });
+      const op = fileOpArgv({ op: 'write', path: 'a.txt' });
+      if (!op.ok) throw new Error(op.reason);
+      expect(await sb.exec(op.argv, { stdin: 'x', ...T })).toMatchObject({ code: 0 });
+      expect(await sb.exec(sh('sleep 300'), { timeoutMs: 500 })).toMatchObject({ timedOut: true });
+      const ac = new AbortController();
+      const aborted = sb.exec(sh('echo ready; sleep 300'), {
+        ...T,
+        signal: ac.signal,
+        onLine: (l) => {
+          if (l === 'ready') ac.abort();
+        },
+      });
+      expect(await aborted).toMatchObject({ aborted: true });
+      // Listed with a plain `docker exec`: a Sandbox.exec would see its own pid file.
+      const ls = await exec('docker', ['exec', sb.name, 'ls', '-a', '/tmp'], T);
+      expect(ls.code).toBe(0);
+      expect(ls.stdout.split('\n').filter((f) => f.startsWith('vibecode-exec-'))).toEqual([]);
+    } finally {
+      await sb.close();
+    }
+  }, 60_000);
+
+  it('returns a command that exits 1 printing the daemon message as a result while Docker runs', async () => {
+    const sb = await rt.open(await spec());
+    try {
+      const r = await sb.exec(sh('echo "Is the docker daemon running?" >&2; exit 1'), T);
+      expect(r).toMatchObject({ code: 1, stderr: 'Is the docker daemon running?\n' });
+    } finally {
+      await sb.close();
+    }
+  });
 });

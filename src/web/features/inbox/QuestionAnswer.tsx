@@ -3,6 +3,7 @@ import { ANSWER_MAX, AnswerQuestionRequestSchema } from '../../../shared/dto.ts'
 import type { QuestionState } from '../../../shared/state.ts';
 import { ApiError, answerQuestion } from '../../state/api.ts';
 import { Button, Field } from '../../ui/index.ts';
+import { formatInboxTime } from './inbox-model.ts';
 
 export interface QuestionAnswerProps {
   question: QuestionState;
@@ -11,8 +12,9 @@ export interface QuestionAnswerProps {
 }
 
 /**
- * An agent's question's answer: the owner's answer once given, else a labelled form that posts
- * it (POST /api/questions/:id/answer). Shared by the inbox and the issue page.
+ * An agent's question's answer: the owner's answer once given, a "Withdrawn" status once the
+ * question was withdrawn, else a labelled form that posts it (POST /api/questions/:id/answer).
+ * Shared by the inbox and the issue page.
  */
 export function QuestionAnswer({ question, onAnswered }: QuestionAnswerProps) {
   const [text, setText] = useState('');
@@ -23,6 +25,17 @@ export function QuestionAnswer({ question, onAnswered }: QuestionAnswerProps) {
 
   if (question.answer !== null) {
     return <p className="question-answer__answer">Your answer: {question.answer}</p>;
+  }
+  if (question.withdrawnAt !== null) {
+    // Status in text, not colour. Cancelling the issue is the only path that withdraws today.
+    return (
+      <p className="question-answer__withdrawn">
+        <strong>Withdrawn (issue cancelled)</strong>{' '}
+        <time dateTime={new Date(question.withdrawnAt).toISOString()}>
+          {formatInboxTime(question.withdrawnAt)}
+        </time>
+      </p>
+    );
   }
 
   async function onSubmit(ev: FormEvent<HTMLFormElement>) {

@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProductSettings } from '../../../shared/domain.ts';
@@ -49,6 +49,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount while the fake network is still in place.
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -89,7 +91,7 @@ describe('ProductSettingsTab', () => {
   });
 
   it('saves the edited settings with the keyboard and reports success', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     render(
       <ProductSettingsTab
         product={product({ models: { reviewer: { provider: 'openai', model: 'gpt-x' } } })}
@@ -132,7 +134,7 @@ describe('ProductSettingsTab', () => {
   });
 
   it('shows inline validation errors, focuses the first one and does not save', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     render(<ProductSettingsTab product={product()} />);
 
     await user.type(screen.getByLabelText('Budget (USD)'), '0');
@@ -163,7 +165,7 @@ describe('ProductSettingsTab', () => {
     'file:///etc/passwd',
     '../local/repo',
   ])('shows an inline error for the git remote %s and does not save', async (url) => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     render(<ProductSettingsTab product={product()} />);
 
     await user.type(screen.getByLabelText('Git remote URL'), url);
@@ -181,7 +183,7 @@ describe('ProductSettingsTab', () => {
   });
 
   it('saves a valid https git remote', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     render(<ProductSettingsTab product={product()} />);
 
     await user.type(screen.getByLabelText('Git remote URL'), 'https://example.com/r.git');
@@ -192,7 +194,7 @@ describe('ProductSettingsTab', () => {
   });
 
   it('shows the server error when saving fails and keeps the input', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     response = () =>
       Response.json({ error: { code: 'invalid', message: 'Budget too big' } }, { status: 400 });
     render(<ProductSettingsTab product={product()} />);

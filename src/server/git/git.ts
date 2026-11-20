@@ -2,9 +2,11 @@
 // Every invocation goes through util/exec with GIT_SAFETY_FLAGS first, a timeout, and an
 // environment that ignores the host's global/system git config and any inherited GIT_* repo vars.
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
+import { validateGitRemoteUrl } from '../../shared/git-remote.ts';
+import { redactor } from '../security/index.ts';
 import { exec as defaultExec, ExecError, type ExecResult } from '../util/exec.ts';
 
 export const GIT_SAFETY_FLAGS = [
@@ -33,6 +35,28 @@ const README = (productId: string): string =>
   `# ${productId}\n\nThis repository is managed by Vibecode.\n`;
 const PRD_PLACEHOLDER = '# Product requirements\n\nThe PRD is written in the Spec view.\n';
 
+/** Extra `-c` flags of `git push`: no command-running or local-path transports (defence in depth). */
+export const PUSH_TRANSPORT_FLAGS = [
+  '-c',
+  'protocol.ext.allow=never',
+  '-c',
+  'protocol.file.allow=never',
+  '-c',
+  'credential.helper=',
+] as const;
+/** Env var the askpass helper reads the token from; the token is never in argv, URL or config. */
+const TOKEN_ENV = 'VIBECODE_GIT_TOKEN';
+/** Username the askpass helper answers (GitHub/GitLab accept any user name with a token). */
+const TOKEN_USERNAME = 'x-access-token';
+/** The askpass helper: holds no secret, prints the env var's token for password prompts. */
+const ASKPASS_SCRIPT = `#!/bin/sh
+case "$1" in
+  Username*|username*) printf '%s\\n' '${TOKEN_USERNAME}' ;;
+  *) printf '%s\\n' "$${TOKEN_ENV}" ;;
+esac
+`;
+const PUSH_TIMEOUT_MS = 120_000;
+
 export type GitDeps = {
   /** Process runner; defaults to util/exec. Injected so tests can observe every invocation. */
   exec?: typeof defaultExec;
@@ -40,7 +64,17 @@ export type GitDeps = {
   /** Warnings (e.g. a skipped non-repo in data/repos); default console.warn. */
   log?: (line: string) => void;
 };
-export type GitOptions = GitDeps & { dataDir: string };
+export type GitOptions = GitDeps & {
+  dataDir: string;
+  /**
+   * TESTS ONLY: lets `push` reach a local path remote (skips validateGitRemoteUrl and re-allows
+   * protocol.file). Never set in production; main.ts does not.
+   */
+  allowFileRemotes?: boolean;
+};
+
+/** Where `push` sends main: a validated URL (no credentials) and the token kept in `secrets`. */
+export type PushRemote = { url: string; token: string | null };
 
 /** Trailing options of every Git method: aborting rejects the call with a GitError. */
 export type GitCallOptions = { signal?: AbortSignal | undefined };
@@ -107,6 +141,12 @@ export interface Git {
    * is missing or main cannot be resolved.
    */
   readFileAtMain(productId: string, path: string, o?: GitCallOptions): Promise<string | null>;
+  /**
+   * `git push -- <url> refs/heads/main:refs/heads/main` (no force). The URL must pass
+   * validateGitRemoteUrl (else GitError before git runs); the token reaches git only through a
+   * GIT_ASKPASS helper reading an env var, and is redacted from every error.
+   */
+  push(productId: string, remote: PushRemote, o?: GitCallOptions): Promise<void>;
 }
 
 /** Infrastructure failure of git (failed, aborted, timed out or truncated command; missing repo). */
@@ -149,6 +189,7 @@ export class MainMovedError extends Error {
 
 type RunOpts = {
   cwd?: string;
+  timeoutMs?: number;
   input?: string;
   env?: Record<string, string>;
   signal?: AbortSignal | undefined;
@@ -168,7 +209,7 @@ function runner(deps: GitDeps): Runner {
       cwd: o.cwd,
       input: o.input,
       env: { ...gitEnv(), ...o.env },
-      timeoutMs,
+      timeoutMs: o.timeoutMs ?? timeoutMs,
       signal: o.signal,
     });
     // Never hand back partial output: an aborted, timed-out or cut-off command is a failure.
@@ -251,6 +292,9 @@ export function createGit(o: GitOptions): Git {
   const log = o.log ?? ((line: string) => console.warn(line));
   const reposDir = resolve(o.dataDir, 'repos');
   const worktreesDir = resolve(o.dataDir, 'worktrees');
+  // Scratch space for executables (the askpass helper): under the data dir, because hosts may
+  // mount os.tmpdir() noexec.
+  const scratchDir = resolve(o.dataDir, 'tmp');
   const repoDir = (productId: string): string => {
     assertSafeId('product id', productId);
     return join(reposDir, `${productId}.git`);
@@ -554,6 +598,48 @@ export function createGit(o: GitOptions): Git {
         signal,
       });
       return { kind: 'merged', commitSha, dir: wt.dir };
+    },
+
+    async push(productId, remote, opts = {}) {
+      const { signal } = opts;
+      const gitDir = repoDir(productId);
+      if (!o.allowFileRemotes) {
+        const valid = validateGitRemoteUrl(remote.url);
+        if (!valid.ok) throw new GitError(`Refusing to push to the remote: ${valid.reason}`);
+      }
+      if (remote.token !== null) redactor.register(remote.token);
+      throwIfAborted(signal);
+      await mkdir(scratchDir, { recursive: true, mode: 0o700 });
+      const tmp = await mkdtemp(join(scratchDir, 'askpass-')); // mkdtemp creates it 0o700
+      try {
+        const askpass = join(tmp, 'askpass.sh');
+        await writeFile(askpass, ASKPASS_SCRIPT, { mode: 0o700 });
+        const args = [
+          ...PUSH_TRANSPORT_FLAGS,
+          ...(o.allowFileRemotes ? ['-c', 'protocol.file.allow=always'] : []),
+          '--git-dir',
+          gitDir,
+          'push',
+          '--porcelain',
+          '--',
+          remote.url,
+          `${MAIN_REF}:${MAIN_REF}`,
+        ];
+        const env: Record<string, string> = {
+          GIT_ASKPASS: askpass,
+          [TOKEN_ENV]: remote.token ?? '',
+          GIT_SSH_COMMAND: 'ssh -o BatchMode=yes',
+        };
+        let r: ExecResult;
+        try {
+          r = await git.raw(args, { env, signal, timeoutMs: PUSH_TIMEOUT_MS });
+        } catch (err) {
+          throw new GitError(redactor.redact(err instanceof Error ? err.message : String(err)));
+        }
+        if (r.code !== 0) throw new GitError(redactor.redact(commandError(args, r).message));
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
     },
 
     async advanceMain(productId, commitSha, expectedOld, opts = {}) {

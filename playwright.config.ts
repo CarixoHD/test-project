@@ -32,6 +32,8 @@ const url = (port: number): string => `http://127.0.0.1:${String(port)}`;
 export default defineConfig({
   testDir: 'tests/e2e',
   globalSetup: './tests/e2e/global-setup.ts',
+  // Deletes DATA_DIR and SETTINGS_DATA_DIR once the web servers have stopped.
+  globalTeardown: './tests/e2e/global-teardown.ts',
   fullyParallel: false,
   workers: 1,
   forbidOnly: true,

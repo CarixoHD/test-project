@@ -1,6 +1,7 @@
 import {
   lazy,
   memo,
+  useCallback,
   Suspense,
   useEffect,
   useId,
@@ -11,8 +12,10 @@ import {
   type ComponentType,
   type RefObject,
 } from 'react';
+import type { AgentId } from '../../shared/ids.ts';
 import { sceneFromState, type SceneState } from '../../shared/scene.ts';
 import type { ProductState } from '../../shared/state.ts';
+import { AgentPanel } from '../features/agents/index.ts';
 import { useApp, type AppSnapshot } from '../state/store.ts';
 import { sceneFrameloop, type Scene3DProps } from './scene-model.ts';
 
@@ -71,6 +74,21 @@ function useOnScreen(ref: RefObject<HTMLElement | null>): boolean {
 }
 
 const selectState = (s: AppSnapshot) => s.state;
+const selectAgents = (s: AppSnapshot) => s.state.agents;
+const selectIssues = (s: AppSnapshot) => s.state.issues;
+
+/**
+ * The AgentPanel for a worker picked in the 3D view, the same panel the agent list opens
+ * (keyboard users reach it there). Looked up among all agents so it stays open after an exit.
+ */
+function PickedAgentPanel({ agentId, onClose }: { agentId: AgentId; onClose: () => void }) {
+  const agents = useApp(selectAgents);
+  const issues = useApp(selectIssues);
+  const agent = agents[agentId];
+  if (agent === undefined) return null;
+  const issue = agent.issueId === null ? null : issues[agent.issueId];
+  return <AgentPanel agent={agent} issue={issue} open onClose={onClose} />;
+}
 
 /**
  * This product's scene from the live state (sceneFromState ≡ replaying sceneReduce, tested in
@@ -100,6 +118,9 @@ export function ScenePanel({
   const reducedMotion = usePrefersReducedMotion();
   const scene = useScene(product.id);
   const bodyId = useId();
+  const [pickedId, setPickedId] = useState<AgentId | null>(null);
+  const pickWorker = useCallback((agentId: AgentId) => setPickedId(agentId), []);
+  const closePicked = useCallback(() => setPickedId(null), []);
 
   const toggle = () => {
     const next = !expanded;
@@ -137,11 +158,13 @@ export function ScenePanel({
                 scene={scene}
                 frameloop={sceneFrameloop({ expanded, onScreen, reducedMotion })}
                 reducedMotion={reducedMotion}
+                onPickWorker={pickWorker}
               />
             </Suspense>
           )}
         </div>
       </div>
+      {pickedId !== null && <PickedAgentPanel agentId={pickedId} onClose={closePicked} />}
     </section>
   );
 }
