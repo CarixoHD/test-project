@@ -1,11 +1,23 @@
 import { z } from 'zod';
 import {
+  AddIssueResponseSchema,
   CreateProductResponseSchema,
+  EditIssueResponseSchema,
   OkResponseSchema,
+  SettingsResponseSchema,
+  SettingsUpdateResponseSchema,
   StateResponseSchema,
+  type AddIssueRequest,
+  type AddIssueResponse,
   type CreateProductRequest,
   type CreateProductResponse,
+  type EditIssueRequest,
+  type EditIssueResponse,
   type OkResponse,
+  type ProductSettingsUpdateRequest,
+  type SettingsResponse,
+  type SettingsUpdateRequest,
+  type SettingsUpdateResponse,
   type StateResponse,
 } from '../../shared/dto.ts';
 
@@ -144,9 +156,99 @@ export function savePrdDraft(
   });
 }
 
+/** Changes a product's settings; the new values arrive as a `product.settings_changed` event. */
+export function updateProductSettings(
+  productId: string,
+  body: ProductSettingsUpdateRequest,
+  signal?: AbortSignal,
+): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/settings`, {
+    method: 'PATCH',
+    body,
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
 /** Hands the PRD draft to the orchestrator; the phase change arrives as events. */
 export function handoffProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
   return request(`/api/products/${encodeURIComponent(productId)}/handoff`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Pauses the product's build; 409 when it is already paused. */
+export function pauseProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/pause`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Resumes the product's build; 409 when it is not paused or its budget is still exhausted. */
+export function resumeProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/resume`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Account-wide settings; API keys appear only as provider + last 4 characters. */
+export function getSettings(signal?: AbortSignal): Promise<SettingsResponse> {
+  return request('/api/settings', {
+    schema: SettingsResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Updates the given settings sections; answers with the settings after the update. */
+export function updateSettings(
+  body: SettingsUpdateRequest,
+  signal?: AbortSignal,
+): Promise<SettingsUpdateResponse> {
+  return request('/api/settings', {
+    method: 'PUT',
+    body,
+    schema: SettingsUpdateResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Adds an owner issue to the product; the card arrives later as `issue.created`. */
+export function addIssue(
+  productId: string,
+  body: AddIssueRequest,
+  signal?: AbortSignal,
+): Promise<AddIssueResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/issues`, {
+    method: 'POST',
+    body,
+    schema: AddIssueResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Edits an issue based on revision `body.rev`; a stale rev is an ApiError with status 409. */
+export function editIssue(
+  issueId: string,
+  body: EditIssueRequest,
+  signal?: AbortSignal,
+): Promise<EditIssueResponse> {
+  return request(`/api/issues/${encodeURIComponent(issueId)}`, {
+    method: 'PATCH',
+    body,
+    schema: EditIssueResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Cancels an issue; the status change arrives as `issue.cancelled`. */
+export function cancelIssue(issueId: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/issues/${encodeURIComponent(issueId)}/cancel`, {
     method: 'POST',
     schema: OkResponseSchema,
     ...(signal ? { signal } : {}),

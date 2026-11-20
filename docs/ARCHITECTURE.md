@@ -219,6 +219,8 @@ POST /api/settings/password             {current?, next}
 POST /api/login {password} · POST /api/logout · GET /api/session
 ```
 
+**Product settings** (`routes/product-settings.ts`, `commands/product-settings.ts`): `PATCH /api/products/:id/settings` takes `ProductSettingsUpdateRequestSchema` (`shared/dto.ts`, strict, at least one field): `budgetUsd` null or > 0, `maxParallel` and `maxAttempts` integers 1–10, `models` a partial `Record<Role, ModelRef|null>` (null = back to the global default; other roles keep their override), `gitRemote` `{url}`|null. `updateProductSettings({store, ids}, productId, input)` → `{ok; events}` | `{ok:false; code:'invalid'|'not_found'; reason}` commits one `product.settings_changed` with the given fields (`models` = the merged map). Invalid → 400, unknown product → 404, else `{ok:true}`.
+
 **Settings** (DTOs in `shared/dto.ts`; `commands/settings.ts`, `createAccountSettings({store, db, secrets})` → `{read, view, update, modelDeps}`; mounted when `AppDeps.settings` is given):
 - `GET /api/settings` → `{providers: [{id, name, enabled, needsKey, baseURL|null}], providerConfig, keys: [{provider, last4|null}], roleDefaults, defaultModel|null, priceOverrides}`. Keys never appear in full; `last4` is null for keys shorter than 16 chars.
 - `PUT /api/settings` `{providerConfig?: ProviderConfig, keys?: {<provider>: string|null}, roleDefaults?, defaultModel?: ModelRef|null, priceOverrides?}` (strict; at least one field). Sections present replace the stored value; `keys` set (≥ 8 chars, no whitespace) or clear one provider's key under `API_KEY_SECRETS`; `defaultModel: null` deletes it. Invalid → 400. One commit writes the rows and emits `settings.changed{sections, keys:[{provider, set}]}` (never values). Responds `{ok:true, ...view}`.
@@ -285,6 +287,9 @@ handoff({store, ids, git}, productId): Promise<{ok; events}>   // flow 2; phase 
 //   product.phase_changed{building}; phase and draft are re-checked inside the commit. One handoff per product
 //   at a time (in-memory) → conflict.
 // SparRequestSchema / SavePrdDraftRequestSchema in shared/dto.ts. Spar message ids: nextSparMessageId(deps).
+pauseProduct({store, ids}, productId) → {ok; events}    // flow 5; product.paused{owner}; already paused → conflict
+resumeProduct({store, ids}, productId) → {ok; events}   // product.resumed; not paused, or budget still exhausted → conflict
+//   POST /api/products/:id/pause | resume → 200 {ok:true}. The scheduler reacts through the store bus.
 createProduct({store, ids, git}, {name, idea}): Promise<{ok:true; id: ProductId} | {ok:false; reason}>;
 // CreateProductRequestSchema (shared/dto.ts): trimmed name 1–80, idea 1–4000. git.initRepo(id) runs first,
 // then ONE commit: product.created with DEFAULT_PRODUCT_SETTINGS (budget null, maxParallel 3, maxAttempts 3,
@@ -465,7 +470,11 @@ Never a shell. The child runs in its own process group, and timeout or abort sig
   sendSparMessage(productId, message, signal?): Promise<OkResponse>        // api.ts; POST /api/products/:id/spar (reply arrives as events)
   savePrdDraft(productId, markdown, signal?): Promise<OkResponse>          // api.ts; PUT /api/products/:id/prd-draft
   handoffProduct(productId, signal?): Promise<OkResponse>                  // api.ts; POST /api/products/:id/handoff
+  addIssue(productId, AddIssueRequest, signal?): Promise<AddIssueResponse>  // api.ts; POST /api/products/:id/issues
+  editIssue(issueId, EditIssueRequest, signal?): Promise<EditIssueResponse> // api.ts; PATCH /api/issues/:id (stale rev → ApiError status 409)
+  cancelIssue(issueId, signal?): Promise<OkResponse>                       // api.ts; POST /api/issues/:id/cancel
   ```
+- `features/issues/index.ts`: owner issue dialogs shared by the board and the issue detail page. `<AddIssueDialog productId open onClose>`, `<EditIssueDialog issue open onClose>` (sends the rev the form was loaded from; on 409 shows `STALE_REV_MESSAGE` with the live issue's latest values and a "Reload latest version" button), `<CancelIssueDialog issue open onClose>` (confirmation), plus `isEditable(issue)` / `isCancellable(issue)`. Results arrive as events, so dialogs only close on success.
   - `createAppStore` holds the snapshot and the connection, with no React involved. `start()` connects, and the function it returns disconnects. It can be started again after a stop.
   - `AppStoreProvider` puts one store in context and keeps it connected while it is mounted.
   - `useApp(selector)` returns a slice of `AppSnapshot` and re-renders when that slice changes. The selector must return existing objects, not build new ones each call.
