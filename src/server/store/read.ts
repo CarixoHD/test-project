@@ -5,17 +5,21 @@ import {
   EMPTY_USAGE_TOTALS,
   InboxItemSchema,
   IssueStateSchema,
+  PrdDraftSchema,
   ProductStateSchema,
+  SparMessageSchema,
   type AttemptState,
   type ClientState,
   type InboxItem,
   type IssueState,
+  type PrdDraft,
   type ProductState,
+  type SparMessage,
   type UsageTotals,
 } from '../../shared/state.ts';
 import type { AttemptId, InboxId, IssueId, ProductId } from '../../shared/ids.ts';
 import { type Db, schema } from '../db/index.ts';
-import { totalsFromRow } from './project-account.ts';
+import { readSettingsChangedAt, totalsFromRow } from './project-account.ts';
 
 // Reads projection tables back into the shared ClientState shapes. Rows are validated with
 // the shared zod schemas, which also gives them their branded id types.
@@ -142,6 +146,7 @@ export function readSnapshot(db: Db): { state: ClientState; lastSeq: number } {
         .all()
         .map(({ productId, ...preview }) => [productId, preview]),
     ),
+    settingsChangedAt: readSettingsChangedAt(db),
     lastSeq: seq,
   };
   return { state: ClientStateSchema.parse(raw), lastSeq: seq };
@@ -160,6 +165,10 @@ export interface Queries {
   productUsage(productId: ProductId): UsageTotals;
   issueUsage(issueId: IssueId): UsageTotals;
   inboxItem(id: InboxId): InboxItem | null;
+  /** The sparring transcript in arrival (event seq) order. */
+  sparMessages(productId: ProductId): SparMessage[];
+  /** The current PRD draft, null before the first save. */
+  prdDraft(productId: ProductId): PrdDraft | null;
   /** Raw JSON value of a `settings` row (unvalidated; callers parse it), undefined when unset. */
   setting(key: string): unknown;
 }
@@ -209,6 +218,23 @@ export function createQueries(db: Db): Queries {
     inboxItem(id) {
       const r = db.select().from(s.inbox).where(eq(s.inbox.id, id)).get();
       return r === undefined ? null : InboxItemSchema.parse(inboxView(r));
+    },
+    sparMessages(productId) {
+      return db
+        .select()
+        .from(s.sparMessages)
+        .where(eq(s.sparMessages.productId, productId))
+        .orderBy(asc(s.sparMessages.seq))
+        .all()
+        .map(({ id, role, text, createdAt }) =>
+          SparMessageSchema.parse({ id, role, text, createdAt }),
+        );
+    },
+    prdDraft(productId) {
+      const r = db.select().from(s.prdDrafts).where(eq(s.prdDrafts.productId, productId)).get();
+      if (r === undefined) return null;
+      const { productId: _p, ...draft } = r;
+      return PrdDraftSchema.parse(draft);
     },
     setting(key) {
       return db.select().from(s.settings).where(eq(s.settings.key, key)).get()?.value;

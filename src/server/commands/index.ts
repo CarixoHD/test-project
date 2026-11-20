@@ -27,3 +27,20 @@ export {
   type EditIssueResult,
   type IssueCommandFailure,
 } from './issues.ts';
+export {
+  createAccountSettings,
+  SETTING_KEYS,
+  type AccountSettings,
+  type AccountSettingsDeps,
+  type StoredSettings,
+} from './settings.ts';
+export {
+  createSparring,
+  nextSparMessageId,
+  savePrdDraft,
+  type SavePrdDraftResult,
+  type SendSparMessageResult,
+  type Sparring,
+  type SparringCommandDeps,
+  type SparTurnRunner,
+} from './spar.ts';

@@ -205,6 +205,7 @@ export const NO_OP_SCENE_EVENTS = [
   'inbox.read',
   'backend.limited',
   'backend.cleared',
+  'settings.changed',
   'preview.started',
   'preview.stopped',
 ] as const satisfies readonly EventType[];
@@ -306,6 +307,7 @@ export function sceneReduce(s: SceneState, e: Event): SceneState {
     case 'inbox.read':
     case 'backend.limited':
     case 'backend.cleared':
+    case 'settings.changed':
     case 'preview.started':
     case 'preview.stopped':
       return s;

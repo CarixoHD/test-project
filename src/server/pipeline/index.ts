@@ -34,3 +34,4 @@ export {
   OrchestratorBackoff,
 } from './orchestrator-backoff.ts';
 export { orchestratorPrompt, type OrchestratorPromptInput } from './orchestrator-prompt.ts';
+export { SPAR_LIMITS, sparTurn, type SparringDeps } from './sparring.ts';

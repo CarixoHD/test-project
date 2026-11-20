@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { StateResponseSchema } from '../../shared/dto.ts';
+import { InboxIdSchema } from '../../shared/ids.ts';
 import { createApp } from './index.ts';
 import { productCreated, setupStore, sparMessage } from './testing.ts';
 
@@ -75,5 +76,29 @@ describe('static web root', () => {
   it('serves nothing statically when the web root does not exist', async () => {
     const { app } = setup(join(tmpdir(), 'vibecode-missing-web-root'));
     expect((await app.request('/')).status).toBe(404);
+  });
+});
+
+describe('POST /api/inbox/:id/read', () => {
+  it('is mounted: marks an existing inbox item read and 404s an unknown one', async () => {
+    const { app, store } = setup();
+    store.commit(() => [
+      {
+        type: 'inbox.created',
+        productId: null,
+        entityId: InboxIdSchema.parse('inbox-1'),
+        v: 1,
+        data: { kind: 'rate_limited', title: 'Rate limited', body: 'slow down', link: null },
+      },
+    ]);
+
+    const res = await app.request('/api/inbox/inbox-1/read', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(store.snapshot().state.inbox[InboxIdSchema.parse('inbox-1')]?.read).toBe(true);
+
+    const missing = await app.request('/api/inbox/nope/read', { method: 'POST' });
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toMatchObject({ error: { code: 'not_found' } });
   });
 });

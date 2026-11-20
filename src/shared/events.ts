@@ -28,7 +28,7 @@ import {
   USAGE_SOURCES,
   UsdSchema,
 } from './domain.ts';
-import { ModelRefSchema, RoleSchema } from './models.ts';
+import { ModelRefSchema, ProviderIdSchema, RoleSchema } from './models.ts';
 
 // The event catalogue (ARCHITECTURE §5). Every state change is one of these events, and
 // payloads carry everything `reduce` needs. Event time comes from the envelope `ts`.
@@ -36,6 +36,16 @@ import { ModelRefSchema, RoleSchema } from './models.ts';
 // the entity the event is about (issue, attempt, agent, …), or null for product-level events.
 
 export const EVENT_VERSION = 1;
+
+/** Parts of the account-wide settings a `settings.changed` event can name. */
+export const SETTINGS_SECTIONS = [
+  'providerConfig',
+  'keys',
+  'roleDefaults',
+  'defaultModel',
+  'priceOverrides',
+] as const;
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 const Text = z.string().min(1);
 const Count = z.int().min(0);
@@ -295,6 +305,19 @@ const accountingEvents = [
     }),
   ),
   defineEvent('backend.cleared', GLOBAL, z.object({ backend: Text })),
+  /**
+   * Account-wide settings changed (GET|PUT /api/settings). Says what changed, never values:
+   * API keys are write-only and must not reach events (ADR 9).
+   */
+  defineEvent(
+    'settings.changed',
+    GLOBAL,
+    z.object({
+      sections: z.array(z.enum(SETTINGS_SECTIONS)).min(1),
+      /** Providers whose API key was set (`set: true`) or cleared. */
+      keys: z.array(z.object({ provider: ProviderIdSchema, set: z.boolean() })),
+    }),
+  ),
   defineEvent('preview.started', PRODUCT, z.object({ url: z.url(), container: Text })),
   defineEvent('preview.stopped', PRODUCT, z.object({})),
 ] as const;
