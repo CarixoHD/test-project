@@ -7,6 +7,7 @@ import { AgentIdSchema } from '../../shared/ids.ts';
 import { createAccess, LOGIN_RATE_LIMIT } from '../commands/index.ts';
 import { agentLogPath } from '../pipeline/index.ts';
 import { createSecrets, SESSION_COOKIE } from '../security/index.ts';
+import { fastPasswordHasher } from '../security/password.testing.ts';
 import { createApp } from './app.ts';
 import type { ErrorBody } from './errors.ts';
 import { productCreated, setupStore, TEST_PRODUCT } from './testing.ts';
@@ -18,7 +19,12 @@ const JSON_HEADERS = { 'content-type': 'application/json' };
 function setup() {
   const base = setupStore();
   const secrets = createSecrets(base);
-  const access = createAccess({ store: base.store, secrets, clock: base.clock });
+  const access = createAccess({
+    store: base.store,
+    secrets,
+    clock: base.clock,
+    passwords: fastPasswordHasher,
+  });
   const app = createApp({
     store: base.store,
     ids: base.ids,
@@ -313,7 +319,12 @@ describe('SSE streams behind the session check', () => {
   async function withPasswordAndAgent() {
     const base = setupStore();
     const secrets = createSecrets(base);
-    const access = createAccess({ store: base.store, secrets, clock: base.clock });
+    const access = createAccess({
+      store: base.store,
+      secrets,
+      clock: base.clock,
+      passwords: fastPasswordHasher,
+    });
     await access.resetPassword(PW);
     logsDir = mkdtempSync(join(tmpdir(), 'vibecode-auth-sse-'));
     base.store.commit(() => [

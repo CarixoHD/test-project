@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { setupStore } from '../http/testing.ts';
-import { createSecrets, SESSION_KEY_SECRET } from '../security/index.ts';
+import { createSecrets, SESSION_KEY_SECRET, verifyPassword } from '../security/index.ts';
+import { fastPasswordHasher } from '../security/password.testing.ts';
 import { expectSnapshotMatchesReplay } from '../store/testing.ts';
 import { createAccess, LOGIN_RATE_LIMIT, PASSWORD_HASH_SETTING } from './access.ts';
 
@@ -10,7 +11,12 @@ const PW2 = 'staple battery horse';
 function setup() {
   const base = setupStore();
   const secrets = createSecrets(base);
-  const access = createAccess({ store: base.store, secrets, clock: base.clock });
+  const access = createAccess({
+    store: base.store,
+    secrets,
+    clock: base.clock,
+    passwords: fastPasswordHasher,
+  });
   return { ...base, secrets, access };
 }
 
@@ -67,6 +73,29 @@ describe('access (owner password and sessions)', () => {
       ok: false,
       code: 'rate_limited',
     });
+  });
+
+  it('hashes and checks with the injected hasher', async () => {
+    const { access, store } = setup();
+    await access.resetPassword(PW);
+    const hash = String(store.q.setting(PASSWORD_HASH_SETTING));
+    expect(hash).toMatch(/^scrypt\$1024\$8\$1\$/);
+    expect(await fastPasswordHasher.verify(PW, hash)).toBe(true);
+    expect(await access.checkPassword(PW)).toBe(true);
+  });
+
+  it('defaults to the production hasher (N=2^15) when none is injected', async () => {
+    const base = setupStore();
+    const access = createAccess({
+      store: base.store,
+      secrets: createSecrets(base),
+      clock: base.clock,
+    });
+    await access.resetPassword(PW);
+    const hash = String(base.store.q.setting(PASSWORD_HASH_SETTING));
+    expect(hash).toMatch(/^scrypt\$32768\$8\$1\$/);
+    expect(await verifyPassword(PW, hash)).toBe(true);
+    expect(await access.checkPassword(PW)).toBe(true);
   });
 
   it('rejects a short password', async () => {
