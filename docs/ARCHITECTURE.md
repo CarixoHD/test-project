@@ -177,10 +177,15 @@ interface Store {
 ```ts
 interface Tx { q: Queries; db: Db }   // db: same connection, inside the transaction; write only tables without events (settings, secrets)
 interface Queries { product(id); issuesByProduct(productId) /* by number */; issue(id); attemptsByIssue(issueId) /* by n */;
-                    attempt(id); productUsage(productId); issueUsage(issueId) }   // ClientState shapes; usage zero when none
-createStore({db, clock, redactor}): Store;     // db from db/open(path) (':memory:' in tests; file created 0600; WAL pragmas; migrations applied)
+                    attempt(id); productUsage(productId); issueUsage(issueId); inboxItem(id) }   // ClientState shapes; usage zero when none
+type CommitHook = (committed: readonly Event[], tx: Tx) => EventDraft[];  // derived drafts, same transaction
+createStore({db, clock, redactor, hooks?: CommitHook[]}): Store;  // main passes hooks: [inboxHook({ids})]     // db from db/open(path) (':memory:' in tests; file created 0600; WAL pragmas; migrations applied)
 ```
 Commit order: `build(tx)` → for each draft: zod-validate, redact every string in `data`, re-validate, insert (seq = AUTOINCREMENT, ts = `clock.now()` once per commit), then **project** (`store/project*.ts`, the server twin of `reduce`). Commands do not write projection tables themselves: the projector derives them from the events, so they cannot drift. A throwing builder, an invalid draft or a projection constraint failure (e.g. FK to a missing product) rolls the whole commit back and notifies nobody. Subscribers run after the commit; nested `commit` inside a builder throws. Usage totals are running sums in `usage_totals`, updated per event with the shared `addUsage` (never SQL `SUM()`).
+Hooks run inside the transaction after the builder's drafts are appended and projected (so `tx.q` sees them); their drafts are appended next, in the same commit, and are not fed back into hooks. A throwing hook rolls back the whole commit.
+
+**notify/** (`inboxHook`, `inboxFor`, `markInboxRead`, `inboxRoutes`): `inboxFor(event, lookup, {timeZone?}) → InboxDraft|null` is pure. Rules: `question.asked` → question (issue link, or product link for orchestrator questions); `issue.failed` → failed; `budget.warned` → budget_warn; `product.paused{budget}` → budget_paused; `backend.limited` → rate_limited ("Claude Code rate limited until 14:05") or auth_required when `needsLogin` (global, link null); `product.phase_changed{complete}` → complete. Links are `/products/:id` or `/products/:id/issues/:issueId`. `inboxHook({ids})` is the store hook that turns them into `inbox.created`. `markInboxRead(store, id)` emits `inbox.read` once (idempotent) or returns `{ok:false, code:'not_found'}`; `inboxRoutes({store})` serves `POST /api/inbox/:id/read` for the HTTP app to mount.
+
 **Invariant (tested):** `events.reduce(reduce, emptyState)` equals `snapshot().state` after any command sequence. Tests call `expectSnapshotMatchesReplay(store)` from `store/testing.ts`.
 
 ### 4.3 server/http
@@ -209,8 +214,15 @@ POST /api/login {password} · POST /api/logout · GET /api/session
 
 ### 4.4 server/scheduler
 ```ts
-interface Scheduler { start(): void; stop(): Promise<void>; kick(): void; }
+createScheduler({store, clock, runners: {runOrchestrator(productId, triggers, run), runAttempt(issueId, run)},
+  isBackendBlocked?(productId, role) /* default: backendBlockedByLimits(store, clock) */,
+  orchestratorNotBefore?(productId): epochMs, ids?, timer?, tickMs? /* 2000 */, onError?}): Scheduler
+interface Scheduler { start(): void; stop(): Promise<void>; kick(): void;
+  shouldStop(runId): boolean; withMergeLock<T>(productId, fn: () => Promise<T>): Promise<T>;
+  liveRuns(): ReadonlyMap<RunId, {abort: AbortController, productId, kind: 'orchestrator'|'attempt', issueId?}>; }
+RunHandle = {runId, signal /* aborted on stop() */, shouldStop()}
 ```
+Issue `priority` is an integer; higher is more urgent (urgent > high > normal > low), ties by lower number. Runners are called synchronously; a run that settles does not re-tick by itself (its end events or the 2 s timer do), so a run that ends without committing cannot hot-loop. The orchestrator counts against `maxParallel`. The default backend check resolves the role's backend from `settings.models[role].provider` and treats a `backendLimits` entry as active while it needs login, has no `until`, or `until` is in the future.
 It ticks on every bus event and every 2 s. A product is skipped if it is not `building`, if it is paused, or if its budget is exhausted. For each remaining product it does three things. (1) If `pendingTriggers` is non-empty and no orchestrator run is live, it starts one. (2) While running agents (orchestrator plus attempts) is below `maxParallel`, it starts `runAttempt` for the next ready issue, ordered by priority and then number. (3) It skips roles whose backend is rate-limited or needs login. Live runs are kept in an in-memory `Map<runId, {abort, productId}>`. `shouldStop(runId)` returns true when the product is paused, the budget is exhausted, or the server is shutting down. It also owns `withMergeLock(productId, fn)`, a per-product async mutex.
 
 ### 4.5 server/pipeline
@@ -237,7 +249,15 @@ applyPlan(deps, productId, plan: PlanResult, consumedSeq): {ok:true; events; cre
 // Valid → ONE commit: issue.created (next per-product numbers, origin orchestrator, product prdVersion, priority ?? 0),
 // issue.edited, issue.cancelled{by:'orchestrator'}, issue.rewritten, question.asked{target:'orchestrator'},
 // orchestrator.cursor_advanced{cursor: consumedSeq} (refused if consumedSeq < current cursor).
-nextIssueNumber(issues); resolveDependsOn(refs, {keys, existingIds}); findDependencyCycle(graph) → [a,…,a] | null
+nextIssueNumber(issues); resolveDependsOn(refs, {keys, existingIds, cancelledIds}); findDependencyCycle(graph) → [a,…,a] | null
+// resolveDependsOn refuses unknown refs and refs to cancelled issues (applyPlan passes its working copy,
+// so cancel X then create Y ← X in one plan fails). Owner commands (flow 7), {ok:false; reason; code} on failure:
+addIssue(deps, productId, {title, body, dependsOn, priority?}) → {ok; events; issueId; number}
+//   origin owner, next number, prdVersion; a complete product → product.phase_changed{building} in the same commit
+editIssue(deps, issueId, {title?, body?, dependsOn?, rev}) → {ok; events; rev}
+//   open|failed|in_progress|in_review only (else conflict); rev ≠ current → conflict; rev+1; no cycles
+cancelIssue(deps, issueId) → {ok; events}   // via transition(); completed/cancelled → conflict; by:'owner'
+// codes: invalid → 400, not_found → 404, conflict → 409
 createProduct({store, ids, git}, {name, idea}): Promise<{ok:true; id: ProductId} | {ok:false; reason}>;
 // CreateProductRequestSchema (shared/dto.ts): trimmed name 1–80, idea 1–4000. git.initRepo(id) runs first,
 // then ONE commit: product.created with DEFAULT_PRODUCT_SETTINGS (budget null, maxParallel 3, maxAttempts 3,
@@ -254,13 +274,20 @@ runAgent<T>(spec: {
   agentId: string; role: Role; model: ModelRef;  // ModelRef = {provider, model}; provider 'claude-code' selects the CLI backend
   instructions: string; prompt: string; schema: ZodType<T>;
   sandbox?: Sandbox; tools: ToolName[]; webSearch?: boolean;
-  limits: {maxSteps: number; wallClockMs: number};
+  limits: {maxSteps: number; wallClockMs: number; stepTimeoutMs?: number /* default 10 min */};
   shouldStop: () => boolean;
+  modelDeps: ModelDeps; clock: Clock;            // llm model() deps (secrets, provider config, fake script)
+  onActivity?: (line: string) => void;           // redacted lines: tool calls, tool errors, assistant text
+  onUsage?: (u: StepUsage) => void;              // per step: Usage buckets + step + providerMetadata
 }): Promise<
   | {kind:'ok'; result:T} | {kind:'stopped'} | {kind:'rate_limited'; until:number; backend:string}
   | {kind:'auth_required'; backend:string} | {kind:'error'; message:string; transient:boolean}>
 ```
 - **ApiBackend.** This is our own step loop over AI SDK `streamText` with tools. The tools are `read_file, write_file, edit_file, list_dir, grep, run`, plus a `finish` tool whose input schema is `schema`. It checks `shouldStop()` between steps. Every tool executes through `sandbox.exec`. The loop runs on the host, so keys never enter a container. Tool output is truncated in the middle to 30k characters. Web search, when enabled, is the provider-native tool from `llm/capabilities.ts`.
+  - Implemented in `agents/api-backend.ts` (the only agents file that imports `ai`). Each step is one `streamText` call with `maxRetries: 0` and an `abortSignal` that fires on `wallClockMs` (→ error, non-transient) or `stepTimeoutMs` (→ error, transient); the wall clock is also checked between steps. `maxSteps` without a valid `finish` → error. Invalid `finish` input goes back to the model as a tool error.
+  - Errors: 429 → `rate_limited` (`until` from `retry-after`, else now + 60 s; `backend` = provider); 401/403 → non-transient error pointing to Settings; 5xx/network → transient error; `MissingProviderSetupError` → non-transient error with its message.
+  - `webSearches` per step = max(provider-executed `web_search` tool results, Anthropic `usage.server_tool_use.web_search_requests`). Web search is added only when `spec.webSearch` and `capabilities(ref).webSearch` (OpenRouter via `ModelDeps.webSearch`).
+  - Until ClaudeCodeBackend lands, provider `claude-code` returns `{kind:'error', message:'Claude Code backend not available yet', transient:false}`.
 - **ClaudeCodeBackend.** It runs `claude -p --output-format stream-json --verbose --permission-mode acceptEdits --allowedTools <role list> --permission-prompts none --strict-mcp-config --max-turns N --json-schema <schema> --model <m>` through `sandbox.exec`. The prompt goes on stdin. The environment has `CLAUDE_CONFIG_DIR=/home/agent/.claude` and `DISABLE_AUTOUPDATER=1`, and `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are never set. `--bare` is never used. The backend parses the NDJSON output:
   - `rate_limit_event.status=="rejected"` + `resetsAt` becomes `rate_limited`. If those are missing, it falls back to `api_retry.error=="rate_limit"` or to parsing the "resets …" text.
   - `authentication_failed` or "Login expired" becomes `auth_required`.
@@ -287,8 +314,9 @@ fakeModel(script: FakeScript, {vars?}): LanguageModel;  // MockLanguageModelV4 f
 Unknown models are `unpriced` and are never counted as $0. If OpenRouter's `usage.cost` is present in provider metadata, it is used instead of our computed cost. OpenRouter goes through `@ai-sdk/openai-compatible` with `usage: {include: true}` in the request body and a metadata extractor that copies `usage.cost` (generate and stream).
 
 A `FakeScript` is JSON: a list of turns, one per model call (doGenerate or doStream):
-`{text?, toolCalls?: [{name, input}], usage?: {input, output, cacheRead, cacheWrite, reasoning}, error?: {status: 429, retryAfterSeconds?} | {status: 401}}`.
-`{{path}}` placeholders in `text` and in string values of tool `input` are filled from `vars` (an unknown variable throws). An `error` turn throws an `APICallError` (429 is retryable and has a `retry-after` header; 401 is not). An exhausted script throws.
+`{text?, toolCalls?: [{name, input}], usage?: {input, output, cacheRead, cacheWrite, reasoning}, error?: {status: 429, retryAfterSeconds?} | {status: 401 | 403 | 503}, webSearches?: [{query}], hang?: true}`.
+`webSearches` streams provider-executed `web_search` tool calls and results; `hang` never answers until the call's abortSignal fires.
+`{{path}}` placeholders in `text` and in string values of tool `input` are filled from `vars` (an unknown variable throws). An `error` turn throws an `APICallError` (429 and 503 are retryable, 429 with a `retry-after` header; 401 and 403 are not). An exhausted script throws.
 
 Only `src/server/llm` and `src/server/agents/api-backend.ts` may import `ai` or `@ai-sdk/*` (ESLint enforces this).
 

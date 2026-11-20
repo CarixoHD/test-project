@@ -11,3 +11,14 @@ export {
   type CreateProductDeps,
   type CreateProductResult,
 } from './create-product.ts';
+export {
+  addIssue,
+  cancelIssue,
+  editIssue,
+  type AddIssueInput,
+  type AddIssueResult,
+  type CancelIssueResult,
+  type EditIssueInput,
+  type EditIssueResult,
+  type IssueCommandFailure,
+} from './issues.ts';

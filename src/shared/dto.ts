@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ProductIdSchema } from './ids.ts';
+import { IssueIdSchema } from './ids.ts';
 import { ClientStateSchema } from './state-schema.ts';
 
 // HTTP request/response bodies shared by server routes and `src/web/state/api.ts`
@@ -33,3 +34,32 @@ export type CreateProductRequest = z.input<typeof CreateProductRequestSchema>;
 /** `201` answer of `POST /api/products`. */
 export const CreateProductResponseSchema = z.object({ id: ProductIdSchema });
 export type CreateProductResponse = z.infer<typeof CreateProductResponseSchema>;
+/** `POST /api/products/:id/issues`: the owner adds an issue. */
+export const AddIssueRequestSchema = z.object({
+  title: z.string().trim().min(1),
+  body: z.string(),
+  dependsOn: z.array(IssueIdSchema).default([]),
+  priority: z.int().optional(),
+});
+export type AddIssueRequest = z.infer<typeof AddIssueRequestSchema>;
+export const AddIssueResponseSchema = z.object({
+  ok: z.literal(true),
+  issueId: IssueIdSchema,
+  number: z.int().min(1),
+});
+export type AddIssueResponse = z.infer<typeof AddIssueResponseSchema>;
+
+/** `PATCH /api/issues/:id`: `rev` is the revision the edit is based on (409 when stale). */
+export const EditIssueRequestSchema = z.object({
+  title: z.string().trim().min(1).optional(),
+  body: z.string().optional(),
+  dependsOn: z.array(IssueIdSchema).optional(),
+  rev: z.int().min(1),
+});
+export type EditIssueRequest = z.infer<typeof EditIssueRequestSchema>;
+export const EditIssueResponseSchema = z.object({ ok: z.literal(true), rev: z.int().min(1) });
+export type EditIssueResponse = z.infer<typeof EditIssueResponseSchema>;
+
+/** `POST /api/issues/:id/cancel` (and other plain command acknowledgements). */
+export const OkResponseSchema = z.object({ ok: z.literal(true) });
+export type OkResponse = z.infer<typeof OkResponseSchema>;

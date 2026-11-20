@@ -16,6 +16,13 @@ export interface Tx {
   db: Db;
 }
 
+/**
+ * Runs inside the commit transaction after the builder's drafts were appended and projected
+ * (so `tx.q` sees them). Returns extra drafts to append in the same commit, e.g. inbox items
+ * derived from domain events. Hooks see only the builder's events, never other hooks' output.
+ */
+export type CommitHook = (committed: readonly Event[], tx: Tx) => EventDraft[];
+
 export interface Store {
   /**
    * One synchronous transaction: runs `build`, then validates, redacts, numbers, appends and
@@ -36,6 +43,8 @@ export interface StoreDeps {
   db: Db;
   clock: Clock;
   redactor: { redact(text: string): string };
+  /** Derived-event hooks, run in order in every commit (see `CommitHook`). */
+  hooks?: readonly CommitHook[];
 }
 
 /** Applies `redact` to every string in a JSON-like value. */
@@ -48,7 +57,7 @@ function redactDeep(value: unknown, redact: (t: string) => string): unknown {
   return value;
 }
 
-export function createStore({ db, clock, redactor }: StoreDeps): Store {
+export function createStore({ db, clock, redactor, hooks = [] }: StoreDeps): Store {
   const listeners = new Set<(e: Event) => void>();
   const q = createQueries(db);
   let committing = false;
@@ -102,9 +111,12 @@ export function createStore({ db, clock, redactor }: StoreDeps): Store {
       try {
         committed = db.$client
           .transaction(() => {
-            const drafts = build({ q, db });
+            const tx: Tx = { q, db };
+            const drafts = build(tx);
             const ts = clock.now();
-            return drafts.map((d) => append(d, ts));
+            const built = drafts.map((d) => append(d, ts));
+            const derived = hooks.flatMap((hook) => hook(built, tx).map((d) => append(d, ts)));
+            return [...built, ...derived];
           })
           .immediate();
       } finally {

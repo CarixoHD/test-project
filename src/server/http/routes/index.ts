@@ -3,6 +3,7 @@ import type { AppDeps } from '../deps.ts';
 import { registerEventRoutes } from './events.ts';
 import { registerHealthRoutes } from './health.ts';
 import { registerProductRoutes } from './products.ts';
+import { registerIssueRoutes } from './issues.ts';
 import { registerStateRoutes } from './state.ts';
 
 export { HEARTBEAT_MS } from './events.ts';
@@ -13,4 +14,5 @@ export function registerRoutes(app: Hono, deps: AppDeps): void {
   registerStateRoutes(app, deps);
   registerEventRoutes(app, deps);
   registerProductRoutes(app, deps);
+  registerIssueRoutes(app, deps);
 }

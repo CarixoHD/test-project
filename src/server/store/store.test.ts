@@ -4,7 +4,7 @@ import { ProductIdSchema } from '../../shared/ids.ts';
 import { open, schema } from '../db/index.ts';
 import { Redactor } from '../security/index.ts';
 import { FakeClock } from '../util/clock.ts';
-import { createStore } from './index.ts';
+import { createStore, type CommitHook } from './index.ts';
 import { expectSnapshotMatchesReplay } from './testing.ts';
 
 const P = ProductIdSchema.parse('product-1');
@@ -153,5 +153,49 @@ describe('store.eventsSince', () => {
     const { store } = setup();
     const committed = store.commit(() => [productCreated(), sparMessage('m1', 'hello')]);
     expect(store.eventsSince(0)).toStrictEqual(committed);
+  });
+});
+
+describe('commit hooks', () => {
+  function setupWithHook(hook: CommitHook) {
+    const db = open(':memory:');
+    const store = createStore({
+      db,
+      clock: new FakeClock(1_700_000_000_000),
+      redactor: new Redactor(),
+      hooks: [hook],
+    });
+    return { db, store };
+  }
+
+  it('appends the drafts a hook derives from the builder events in the same commit', () => {
+    const seen: string[] = [];
+    const { store } = setupWithHook((events, tx) => {
+      seen.push(...events.map((e) => e.type));
+      // The hook reads the projections as of the builder's events.
+      const name = tx.q.product(P)?.name ?? 'missing';
+      return events
+        .filter((e) => e.type === 'product.created')
+        .map(() => sparMessage('hooked', `welcome ${name}`));
+    });
+    const committed = store.commit(() => [productCreated()]);
+
+    expect(committed.map((e) => [e.seq, e.type])).toEqual([
+      [1, 'product.created'],
+      [2, 'spar.message'],
+    ]);
+    expect(committed[1]?.data).toMatchObject({ text: 'welcome Todo' });
+    // Hook output is not fed back into hooks.
+    expect(seen).toEqual(['product.created']);
+    expectSnapshotMatchesReplay(store);
+  });
+
+  it('rolls back the builder events when a hook throws', () => {
+    const { store, db } = setupWithHook(() => {
+      throw new Error('hook failed');
+    });
+    expect(() => store.commit(() => [productCreated()])).toThrow('hook failed');
+    expect(rowCount(db, 'events')).toBe(0);
+    expect(rowCount(db, 'products')).toBe(0);
   });
 });
