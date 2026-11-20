@@ -11,6 +11,7 @@ import {
   budgetAfterUsage,
   createAccess,
   createAccountSettings,
+  createGitTokens,
   createSparring,
   type SparTurnRunner,
 } from './commands/index.ts';
@@ -20,6 +21,7 @@ import {
   createOrchestrator,
   runAttempt,
   sparTurn,
+  startRemotePusher,
   type OrchestratorDeps,
 } from './pipeline/index.ts';
 import { recover } from './recovery/index.ts';
@@ -169,6 +171,7 @@ export async function start(
     webRoot,
     access,
     settings,
+    gitTokens: createGitTokens({ store, secrets }),
     sparring,
     previews,
     claudeLogin: runtime,
@@ -242,6 +245,8 @@ export async function start(
     });
   });
 
+  // Optional push of main to the product's git remote after merges and PRD commits (§6 flow 4).
+  const pusher = startRemotePusher({ store, ids, git, secrets, redactor });
   scheduler.start();
 
   return {
@@ -251,6 +256,9 @@ export async function start(
     close: async () => {
       // First: live orchestrator runs see shouldStop() and settle before anything closes.
       await scheduler.stop();
+      // A push in flight is aborted (main is pushed again after the next merge).
+      pusher.stop();
+      await pusher.idle();
       // A sparring turn commits when its agent answers: let it finish before the DB closes.
       await sparring.idle();
       // Previews started by this process: remove their containers and worktrees.
