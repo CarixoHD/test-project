@@ -1,12 +1,76 @@
 # Vibecode platform
 
+## Try it yourself
+
+From a fresh clone to your first product build.
+
+**1. Check requirements and install.** You need Node ≥ 22.18 (official build), git ≥ 2.38 and
+Docker; see [Requirements](#requirements). On Linux the `br_netfilter` kernel module must be
+loaded, or Docker cannot create the isolated agent network
+([ARCHITECTURE §9](docs/ARCHITECTURE.md#9-running-locally)):
+
+```sh
+node --version && git --version && docker --version
+lsmod | grep br_netfilter || sudo modprobe br_netfilter
+npm ci
+```
+
+**2. Build the images and the UI, then start.**
+
+```sh
+npm run -s docker:images | sh   # builds vibecode/base and vibecode/claude-code
+npm run build                   # the web UI that npm start serves
+npm start                       # Vibecode listening on http://127.0.0.1:4317
+```
+
+Open <http://127.0.0.1:4317>. `VIBECODE_PORT`, `VIBECODE_HOST` and `VIBECODE_DATA_DIR` change the
+port, bind address and data dir (default `~/.local/share/vibecode`). For other devices, see
+[Remote access](#remote-access).
+
+**3. Optional: demo mode first.** `VIBECODE_DEMO=1 npm start` runs the pipeline on a scripted fake
+model, with no account. Add `VIBECODE_FAKE_DOCKER=1` to skip Docker too. Use a throwaway data dir,
+e.g. `VIBECODE_DATA_DIR=/tmp/vibecode-demo`. `curl -s http://127.0.0.1:4317/api/health` answers
+`{"ok":true}` once it is up.
+
+**4. Connect a model.** Run `claude setup-token` on any machine with Claude Code and paste the token
+under **Settings → Claude Code → Subscription token**. Then pick the **Claude Code** provider for
+the roles under **Settings → Models**. Or add an API key under **Settings → Providers** instead.
+Details and the terms: [Using your Claude subscription](#using-your-claude-subscription-claude-code).
+
+**5. Build a product.** Click **New product**, spar with the agent on the **Spec** tab until the
+PRD says what you want, then **Hand off to orchestrator**. The **Build** tab shows the board and
+the 3D view as agents work. Answer agents' questions in the **Inbox**. For a web app, **Preview**
+runs the current `main` locally.
+
+**6. If something goes wrong.**
+
+- **Logs** are in `<data dir>/logs/`; state is in `<data dir>/vibecode.db`.
+- **Rate limited until …** banner: Vibecode starts no Claude Code runs until then.
+- **Needs login:** paste a new `claude setup-token` token in Settings → Claude Code; saving clears it.
+- **"Docker can't turn off inter-container traffic"**: `br_netfilter` is missing. Run
+  `sudo modprobe br_netfilter`, persist it with
+  `echo br_netfilter | sudo tee /etc/modules-load.d/br_netfilter.conf`, and restart Vibecode.
+  Do not set `DOCKER_IGNORE_BR_NETFILTER_ERROR`: containers could then reach each other.
+- **"Docker is not running"**: start Docker Desktop or the docker service.
+- **Old images piling up:** `npm run -s docker:prune` prints `docker image rm` commands for
+  outdated Vibecode images; read them, then pipe to `sh`.
+
 ## Requirements
 
 Node ≥ 22.18 from an official build (nodejs.org, nvm/fnm or NodeSource; `.nvmrc` pins 22) and
 git ≥ 2.38. Vibecode runs `.ts` files through Node's built-in type stripping, which distro builds
 such as the Debian/Ubuntu apt `nodejs` package may lack. The npm scripts that run `.ts` files
 (`start`, `dev`, `set-password`, `docker:images`, `docker:prune` and `claude:record`) check Node
-first with `scripts/preflight.mjs` and print what to fix. Docker is needed for real agent runs.
+first with `scripts/preflight.mjs` and print what to fix.
+
+Docker is a host requirement for every real run, including the Claude Code backend; only demo
+mode with `VIBECODE_FAKE_DOCKER=1` runs without it. On Linux the `br_netfilter` kernel module must
+be loaded ([ARCHITECTURE §9](docs/ARCHITECTURE.md#9-running-locally)).
+
+`npm start` serves the web UI that `npm run build` writes to `dist/web`; it does not build it, so
+run `npm run build` after a fresh clone and after each update, then (re)start. Without `dist/web`
+the server still starts and the API works, but it serves no UI (pages return 404); with an old
+build it serves the old UI.
 
 ## Remote access
 
