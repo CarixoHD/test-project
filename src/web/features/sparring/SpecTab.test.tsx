@@ -2,6 +2,7 @@ import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventSchema, type Event } from '../../../shared/events.ts';
+import { ProductIdSchema } from '../../../shared/ids.ts';
 import { emptyState, reduce, type ClientState, type ProductState } from '../../../shared/state.ts';
 import { AppStoreProvider } from '../../state/AppStoreProvider.tsx';
 import { createAppStore } from '../../state/store.ts';
@@ -27,11 +28,11 @@ class FakeEventSource {
   }
 }
 
-const P = 'p1';
+const P = ProductIdSchema.parse('p1');
 const T0 = 1_700_000_000_000;
 let seq = 0;
 
-type Draft = { type: string; entityId?: string | null; data: unknown; ts?: number };
+type Draft = { type: string; entityId?: string | null; data: unknown; ts?: number | undefined };
 const event = ({ type, entityId = null, data, ts }: Draft): Event => {
   seq += 1;
   return EventSchema.parse({
