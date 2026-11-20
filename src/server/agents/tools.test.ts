@@ -371,6 +371,35 @@ describe('sandbox output truncation notice', () => {
     expect(failed).toContain('[output truncated by sandbox]');
   });
 
+  it('edit_file refuses to write when the read was truncated, leaving the file unchanged', async () => {
+    const original = `start\n${'x'.repeat(100)}\nend\n`;
+    await writeFile(path.join(wt, 'big.txt'), original);
+    const { sb } = await open();
+    const writes: string[][] = [];
+    // Simulates the sandbox output cap: `cat` returns only the head of the file, flagged truncated.
+    const capped: Sandbox = {
+      name: sb.name,
+      close: () => sb.close(),
+      exec: async (argv, o) => {
+        const r = await sb.exec(argv, o);
+        if (argv[0] !== 'cat') {
+          writes.push([...argv]);
+          return r;
+        }
+        return { ...r, stdout: r.stdout.slice(0, 20), truncated: true };
+      },
+    };
+    const out = await tool('edit_file').execute(
+      { path: 'big.txt', old: 'start', new: 'begin' },
+      capped,
+    );
+    expect(out).toMatch(/^Error:/);
+    expect(out).toContain('truncated');
+    expect(out).toMatch(/write_file|run/);
+    expect(writes).toEqual([]);
+    expect(await file('big.txt')).toBe(original);
+  });
+
   it('adds no notice when the output was not truncated', async () => {
     const { sb } = await open([{ match: ['bash', '-lc'], result: { code: 0, stdout: 'ok' } }]);
     expect(await tool('run').execute({ command: 'true' }, sb)).not.toContain('truncated');
