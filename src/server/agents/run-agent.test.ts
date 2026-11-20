@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import type { FakeScript } from '../llm/index.ts';
+import type { ModelRef } from '../../shared/models.ts';
+import { API_KEY_SECRETS, type FakeScript } from '../llm/index.ts';
 import { FakeContainerRuntime, type Sandbox } from '../sandbox/index.ts';
 import { FakeClock } from '../util/clock.ts';
 import { runAgent, type AgentSpec, type StepUsage } from './index.ts';
@@ -337,5 +338,270 @@ describe('runAgent with the API backend', () => {
 
     expect(result).toMatchObject({ kind: 'error', transient: false });
     expect(rec.usage).toHaveLength(1);
+  });
+});
+
+type Captured = { url: string; body: Record<string, unknown> };
+
+/** A fetch stand-in that records each request body and answers with a streamed `finish` call. */
+function recordingFetch(respond: () => Response) {
+  const requests: Captured[] = [];
+  const fetch = (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({
+      url: String(input),
+      body:
+        typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {},
+    });
+    return Promise.resolve(respond());
+  };
+  return { fetch: fetch as typeof globalThis.fetch, requests };
+}
+
+function sse(chunks: unknown[], done = false): Response {
+  const lines = chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`);
+  if (done) lines.push('data: [DONE]\n\n');
+  return new Response(lines.join(''), { headers: { 'content-type': 'text/event-stream' } });
+}
+
+const FINISH_ARGS = JSON.stringify({ summary: 'searched' });
+
+/** Anthropic Messages stream: one `finish` tool_use block. */
+const anthropicFinish = () =>
+  sse([
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-sonnet-4-5',
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 10, output_tokens: 0 },
+      },
+    },
+    {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'tool_use', id: 'toolu_1', name: 'finish', input: {} },
+    },
+    {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'input_json_delta', partial_json: FINISH_ARGS },
+    },
+    { type: 'content_block_stop', index: 0 },
+    {
+      type: 'message_delta',
+      delta: { stop_reason: 'tool_use', stop_sequence: null },
+      usage: { output_tokens: 5 },
+    },
+    { type: 'message_stop' },
+  ]);
+
+/** OpenAI Responses stream: one `finish` function call. */
+const openaiFinish = () => {
+  const item = {
+    type: 'function_call',
+    id: 'fc_1',
+    call_id: 'call_1',
+    name: 'finish',
+    arguments: FINISH_ARGS,
+    status: 'completed',
+  };
+  return sse([
+    {
+      type: 'response.created',
+      response: { id: 'resp_1', created_at: 1, model: 'gpt-5', service_tier: null },
+    },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { ...item, arguments: '', status: 'in_progress' },
+    },
+    {
+      type: 'response.function_call_arguments.delta',
+      item_id: 'fc_1',
+      output_index: 0,
+      delta: FINISH_ARGS,
+    },
+    { type: 'response.output_item.done', output_index: 0, item },
+    {
+      type: 'response.completed',
+      response: {
+        incomplete_details: null,
+        usage: {
+          input_tokens: 10,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens: 5,
+          output_tokens_details: { reasoning_tokens: 0 },
+        },
+        service_tier: null,
+      },
+    },
+  ]);
+};
+
+/** Chat Completions stream (OpenRouter, openai-compatible): one `finish` tool call. */
+const chatFinish = () =>
+  sse(
+    [
+      {
+        id: 'gen-1',
+        created: 1,
+        model: 'm',
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_1',
+                  type: 'function',
+                  function: { name: 'finish', arguments: FINISH_ARGS },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      },
+      {
+        id: 'gen-1',
+        created: 1,
+        model: 'm',
+        choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      },
+    ],
+    true,
+  );
+
+const SECRETS: Record<string, string> = {
+  [API_KEY_SECRETS.anthropic]: 'sk-ant-test',
+  [API_KEY_SECRETS.openai]: 'sk-openai-test',
+  [API_KEY_SECRETS.openrouter]: 'sk-or-test',
+};
+
+/** Runs a tool-less agent against `ref` with a recording fetch; returns the result and requests. */
+async function runWithProvider(
+  ref: ModelRef,
+  respond: () => Response,
+  webSearch: boolean | undefined,
+) {
+  const { fetch, requests } = recordingFetch(respond);
+  const { spec: s } = spec([], {
+    model: ref,
+    tools: [],
+    ...(webSearch === undefined ? {} : { webSearch }),
+    modelDeps: {
+      getSecret: (key) => SECRETS[key],
+      providerConfig: { openaiCompatible: { baseURL: 'http://llm.local/v1' } },
+      fetch,
+    },
+  });
+  const { sandbox: _omit, ...noSandbox } = s;
+  const result = await runAgent(noSandbox);
+  return { result, requests };
+}
+
+/** The single model request of a one-step run. */
+function only(requests: Captured[]): Captured {
+  expect(requests).toHaveLength(1);
+  const [request] = requests;
+  if (request === undefined) throw new Error('no request captured');
+  return request;
+}
+
+function toolList(body: Record<string, unknown>): Record<string, unknown>[] {
+  return Array.isArray(body.tools) ? (body.tools as Record<string, unknown>[]) : [];
+}
+
+const isFunctionNamed = (name: string) => (t: Record<string, unknown>) =>
+  t.name === name ||
+  (typeof t.function === 'object' &&
+    t.function !== null &&
+    (t.function as Record<string, unknown>).name === name);
+
+describe('runAgent provider web search', () => {
+  const ok = { kind: 'ok', result: { summary: 'searched' } };
+  const anthropicRef: ModelRef = { provider: 'anthropic', model: 'claude-sonnet-4-5' };
+
+  it('anthropic + webSearch: sends the Anthropic web search tool', async () => {
+    const { result, requests } = await runWithProvider(anthropicRef, anthropicFinish, true);
+
+    expect(result).toEqual(ok);
+    const tools = toolList(only(requests).body);
+    expect(tools).toContainEqual(
+      expect.objectContaining({ name: 'web_search', type: expect.stringMatching(/^web_search_/) }),
+    );
+    expect(tools.some(isFunctionNamed('finish'))).toBe(true);
+  });
+
+  it.each([false, undefined])('anthropic + webSearch %s: no web search tool', async (webSearch) => {
+    const { result, requests } = await runWithProvider(anthropicRef, anthropicFinish, webSearch);
+
+    expect(result).toEqual(ok);
+    const tools = toolList(only(requests).body);
+    expect(tools.some((t) => String(t.type).startsWith('web_search'))).toBe(false);
+    expect(tools.some(isFunctionNamed('web_search'))).toBe(false);
+    expect(tools.some(isFunctionNamed('finish'))).toBe(true);
+  });
+
+  it('openai + webSearch: sends the OpenAI web search tool', async () => {
+    const { result, requests } = await runWithProvider(
+      { provider: 'openai', model: 'gpt-5' },
+      openaiFinish,
+      true,
+    );
+
+    expect(result).toEqual(ok);
+    expect(only(requests).url).toMatch(/\/responses$/);
+    const tools = toolList(only(requests).body);
+    expect(tools).toContainEqual(expect.objectContaining({ type: 'web_search' }));
+    expect(tools.some(isFunctionNamed('finish'))).toBe(true);
+  });
+
+  it('openrouter + webSearch: uses the :online model and sends no web_search function', async () => {
+    const { result, requests } = await runWithProvider(
+      { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5' },
+      chatFinish,
+      true,
+    );
+
+    expect(result).toEqual(ok);
+    expect(only(requests).body.model).toBe('anthropic/claude-sonnet-4.5:online');
+    const tools = toolList(only(requests).body);
+    expect(tools.some(isFunctionNamed('web_search'))).toBe(false);
+    expect(tools.some((t) => String(t.type).startsWith('web_search'))).toBe(false);
+    expect(tools.some(isFunctionNamed('finish'))).toBe(true);
+  });
+
+  it('openrouter without webSearch: plain model id', async () => {
+    const { requests } = await runWithProvider(
+      { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5' },
+      chatFinish,
+      false,
+    );
+
+    expect(only(requests).body.model).toBe('anthropic/claude-sonnet-4.5');
+  });
+
+  it('openai-compatible + webSearch: no search tool and the plain model id', async () => {
+    const { result, requests } = await runWithProvider(
+      { provider: 'openai-compatible', model: 'llama3.2' },
+      chatFinish,
+      true,
+    );
+
+    expect(result).toEqual(ok);
+    expect(only(requests).url).toBe('http://llm.local/v1/chat/completions');
+    expect(only(requests).body.model).toBe('llama3.2');
+    const tools = toolList(only(requests).body);
+    expect(tools.map((t) => (t.function as { name: string }).name)).toEqual(['finish']);
   });
 });
