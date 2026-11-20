@@ -282,24 +282,31 @@ test('after an SSE outage the board reloads its snapshot and matches the server'
 }) => {
   await trackEventSources(page);
   await openBoard(page);
-  await recordAnnouncements(page);
   const before = new Set((await serverIssues(request, product.id)).map((i) => i.id));
+  const api = `/api/products/${product.id}`;
+  const addIssueViaApi = async (title: string): Promise<string> => {
+    const res = await request.post(`${api}/issues`, { data: { title, body: '' } });
+    expect(res.ok()).toBe(true);
+    return ((await res.json()) as { issueId: string }).issueId;
+  };
+
+  // Paused, so issues stay open; two of them are on the board before the outage.
+  expect((await request.post(`${api}/pause`, { data: {} })).ok()).toBe(true);
+  const known = [await addIssueViaApi('Offline B'), await addIssueViaApi('Offline C')];
+  await expect(card(page, 'Open', 'Offline B')).toBeVisible();
+  await expect(card(page, 'Open', 'Offline C')).toBeVisible();
+  await recordAnnouncements(page);
 
   // Drop the stream; while it is down the server's issues change.
   await dropEventStream(page);
   await expect(page.getByRole('status').filter({ hasText: 'Reconnecting…' })).toBeVisible();
   const snapshotReload = page.waitForRequest('**/api/state', { timeout: 60_000 });
-  const api = `/api/products/${product.id}`;
-  expect((await request.post(`${api}/pause`, { data: {} })).ok()).toBe(true);
-  const added: string[] = [];
-  for (const title of ['Offline A', 'Offline B']) {
-    const res = await request.post(`${api}/issues`, { data: { title, body: '' } });
-    expect(res.ok()).toBe(true);
-    added.push(((await res.json()) as { issueId: string }).issueId);
+  await addIssueViaApi('Offline A');
+  for (const id of known) {
+    expect((await request.post(`/api/issues/${id}/cancel`, { data: {} })).ok()).toBe(true);
   }
-  const cancelled = await request.post(`/api/issues/${added[1] ?? ''}/cancel`, { data: {} });
-  expect(cancelled.ok()).toBe(true);
   await expect(card(page, 'Open', 'Offline A')).toHaveCount(0);
+  await expect(card(page, 'Open', 'Offline B')).toBeVisible();
 
   // Reconnects keep failing until the store gives up on them and reloads the snapshot.
   await snapshotReload;
@@ -312,11 +319,13 @@ test('after an SSE outage the board reloads its snapshot and matches the server'
   await expandCancelled(page);
   await expect(card(page, 'Open', 'Offline A')).toBeVisible();
   await expect(card(page, 'Cancelled', 'Offline B')).toBeVisible();
+  await expect(card(page, 'Cancelled', 'Offline C')).toBeVisible();
   const server = await serverIssues(request, product.id);
   expect(server.filter((i) => !before.has(i.id)).map((i) => [i.title, i.status])).toEqual(
     expect.arrayContaining([
       ['Offline A', 'open'],
       ['Offline B', 'cancelled'],
+      ['Offline C', 'cancelled'],
     ]),
   );
   for (const issue of server) {
@@ -329,9 +338,15 @@ test('after an SSE outage the board reloads its snapshot and matches the server'
   }
   await expectSameDocument(page);
 
-  // The catch-up is not announced as a flood: at most one grouped message.
-  await page.waitForTimeout(2_000); // longer than the board's announce delay
-  expect((await announcements(page)).length).toBeLessThanOrEqual(1);
+  // The catch-up is not announced as a flood: both cancellations arrive in one grouped message.
+  // A per-change flood would record one of them alone first, so this list never matches.
+  await expect
+    .poll(() => announcements(page))
+    .toEqual([
+      expect.stringMatching(
+        /^(?=.*Offline B is now Cancelled\.)(?=.*Offline C is now Cancelled\.)/,
+      ),
+    ]);
 
   expect((await request.post(`${api}/resume`, { data: {} })).ok()).toBe(true);
 });
