@@ -665,6 +665,25 @@ describe('orchestrator prompt', () => {
     expect(withSearch).toMatch(/Web search is available/);
   });
 
+  it('requires `preview` for products that serve HTTP, on 0.0.0.0, and tells it to add a missing one', async () => {
+    const h = await setup();
+    const { instructions } = orchestratorPrompt({
+      store: h.store,
+      productId: P,
+      triggers: [],
+      prd: null,
+      webSearch: false,
+    });
+
+    expect(instructions).toMatch(/`preview` is REQUIRED for any product that serves HTTP/);
+    expect(instructions).toMatch(/optional only for CLIs, libraries and scripts/);
+    expect(instructions).not.toMatch(/`preview` \(optional\)/);
+    expect(instructions).toMatch(/listen on `0\.0\.0\.0` .*`port`/);
+    expect(instructions).toMatch(/"--host", "0\.0\.0\.0"/);
+    expect(instructions).toMatch(/uvicorn/);
+    expect(instructions).toMatch(/lacks `preview`.*add it/);
+  });
+
   it('on a replan shows the previous and the new PRD version, all issues and the replan rules', async () => {
     const h = await setup();
     await h.run(setupScript());
