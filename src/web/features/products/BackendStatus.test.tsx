@@ -93,7 +93,7 @@ describe('BackendStatus', () => {
     await renderBanner(fixture(limited(null, true)));
     const region = banner();
     if (region === null) throw new Error('no banner');
-    expect(region).toHaveTextContent('Claude Code needs login — see Settings');
+    expect(region).toHaveTextContent('Claude Code needs login — see Settings. Pasting a new token in Settings fixes it.');
     expect(within(region).getByRole('link', { name: 'Settings' })).toHaveAttribute(
       'href',
       '/settings',

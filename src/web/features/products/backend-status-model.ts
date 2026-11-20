@@ -59,9 +59,12 @@ export function backendNotices(
   return notices.sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label));
 }
 
+/** Follows "needs login — see Settings": a new subscription token (ADR 13) is the quick fix. */
+export const NEEDS_LOGIN_FIX = 'Pasting a new token in Settings fixes it.';
+
 /** The notice as one line of text (the banner links "Settings" in the needs-login one). */
 export function noticeText(n: BackendNotice): string {
-  if (n.kind === 'needs_login') return `${n.label} needs login — see Settings`;
+  if (n.kind === 'needs_login') return `${n.label} needs login — see Settings. ${NEEDS_LOGIN_FIX}`;
   return n.resumesAt === null
     ? `${n.label} rate limited — work resumes when the limit resets`
     : `${n.label} rate limited until ${n.resumesAt} — work resumes automatically`;
