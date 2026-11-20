@@ -73,7 +73,12 @@ const flush = () => new Promise<void>((r) => setImmediate(r));
 function createProduct(
   store: Store,
   p: ProductId,
-  opts: { maxParallel?: number; budgetUsd?: number | null; handOff?: boolean } = {},
+  opts: {
+    maxParallel?: number;
+    budgetUsd?: number | null;
+    handOff?: boolean;
+    models?: Record<string, { provider: string; model: string }>;
+  } = {},
 ) {
   store.commit(() => [
     draft('product.created', p, null, {
@@ -82,7 +87,7 @@ function createProduct(
       budgetUsd: opts.budgetUsd ?? null,
       maxParallel: opts.maxParallel ?? 3,
       maxAttempts: 2,
-      models: {},
+      models: opts.models ?? {},
       gitRemote: null,
     }),
     draft('prd.applied', p, null, { version: 1, markdown: '# v1', summary: null }),
@@ -515,5 +520,65 @@ describe('withMergeLock', () => {
     expect(await third).toBe(3);
     expect(await other).toBe('x');
     expect(log).toEqual(['1 start', 'other', '1 end', '2 start', '3 start']);
+  });
+});
+
+describe('scheduler: clearing backend limits', () => {
+  const CLAUDE = { provider: 'claude-code', model: 'sonnet' } as const;
+
+  /** A building product whose implementer runs on Claude Code, with the default backend check. */
+  function limited(limit: { until: number | null; needsLogin: boolean }) {
+    const db = open(':memory:');
+    const clock = new FakeClock();
+    const store = createStore({ db, clock, redactor: new Redactor() });
+    const ids = new FakeIdGen();
+    createProduct(store, P, { models: { implementer: CLAUDE } });
+    const r = applyPlan(
+      { store, ids },
+      P,
+      { issueOps: [create('a')], questions: [], summary: 's' },
+      store.snapshot().lastSeq,
+    );
+    if (!r.ok) throw new Error(r.reason);
+    store.commit(() => [
+      draft('backend.limited', null, null, { backend: 'claude-code', reason: 'limit', ...limit }),
+    ]);
+    const fake = fakeRunners();
+    const timer = new FakeTimer();
+    const scheduler = createScheduler({ store, clock, runners: fake.runners, ids, timer });
+    const cleared = () => store.eventsSince(0).filter((e) => e.type === 'backend.cleared');
+    return { store, clock, timer, scheduler, cleared, ...fake };
+  }
+
+  it('commits backend.cleared once `until` has passed, then starts the next attempt', () => {
+    const t = limited({ until: new FakeClock().now() + 60_000, needsLogin: false });
+    t.scheduler.start();
+    expect(t.attempts()).toHaveLength(0);
+    expect(t.cleared()).toHaveLength(0);
+
+    t.clock.advance(59_999);
+    t.timer.fire();
+    expect(t.cleared()).toHaveLength(0);
+    expect(t.attempts()).toHaveLength(0);
+
+    t.clock.advance(1);
+    t.timer.fire();
+    expect(t.cleared().map((e) => e.data)).toEqual([{ backend: 'claude-code' }]);
+    expect(t.store.q.backendLimit('claude-code')).toBeNull();
+    expect(t.attempts()).toHaveLength(1);
+
+    t.timer.fire();
+    t.scheduler.kick();
+    expect(t.cleared()).toHaveLength(1);
+  });
+
+  it('does not clear needs_login on its own: it waits for the owner', () => {
+    const t = limited({ until: null, needsLogin: true });
+    t.scheduler.start();
+    t.clock.advance(24 * 60 * 60_000);
+    t.timer.fire();
+    expect(t.cleared()).toHaveLength(0);
+    expect(t.store.q.backendLimit('claude-code')).toMatchObject({ needsLogin: true });
+    expect(t.attempts()).toHaveLength(0);
   });
 });
