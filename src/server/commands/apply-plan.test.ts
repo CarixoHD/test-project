@@ -13,7 +13,7 @@ import { createStore } from '../store/index.ts';
 import { expectSnapshotMatchesReplay } from '../store/testing.ts';
 import { FakeClock } from '../util/clock.ts';
 import { FakeIdGen } from '../util/id-gen.ts';
-import { applyPlan, type ApplyPlanResult, type CommandDeps } from './index.ts';
+import { applyPlan, checkPlan, type ApplyPlanResult, type CommandDeps } from './index.ts';
 
 const P = ProductIdSchema.parse('product-1');
 const P2 = ProductIdSchema.parse('product-2');
@@ -391,8 +391,10 @@ describe('applyPlan: invalid plans commit nothing', () => {
     const ids = seedIssues(deps);
     const issueOps = ops(ids, deps);
     const before = store.snapshot();
+    const checked = checkPlan(deps, P, plan(issueOps, ['a question']), 7);
+    expect(checked).toEqual({ ok: false, reason: expect.stringMatching(reason) });
     const r = applyPlan(deps, P, plan(issueOps, ['a question']), 7);
-    expect(r).toEqual({ ok: false, reason: expect.stringMatching(reason) });
+    expect(r).toEqual(checked);
     expect(store.snapshot()).toStrictEqual(before);
     expect(before.state.products[P]?.orchestratorCursor).toBe(1);
   });
@@ -424,6 +426,35 @@ describe('applyPlan: invalid plans commit nothing', () => {
     expect(applyPlan(deps, P, plan([create('x')]), 5).ok).toBe(true);
     expect(store.snapshot().state.products[P]?.orchestratorCursor).toBe(5);
     expectSnapshotMatchesReplay(store);
+  });
+});
+
+describe('checkPlan', () => {
+  it('accepts a valid plan without committing anything or using ids', () => {
+    const { store, deps } = setup();
+    const before = store.snapshot();
+    const ids = new FakeIdGen();
+    const checked = checkPlan(deps, P, plan([create('a'), create('b', ['a'])], ['q?']), 1, {
+      project: { check: ['npm', 'test'], imageInputs: [] },
+      replan: { version: 2, summary: 's' },
+    });
+    expect(checked).toEqual({ ok: true });
+    expect(store.snapshot()).toStrictEqual(before);
+    // The ids the next apply gets are the ones it would have got without the check.
+    const r = applyPlan(deps, P, plan([create('a')]), 1);
+    const fresh = applyPlan({ store: setup().store, ids }, P, plan([create('a')]), 1);
+    expect(idOf(r, 'a')).toBe(idOf(fresh, 'a'));
+  });
+
+  it('refuses an invalid project config, an unknown product and a cursor moving backwards', () => {
+    const { deps } = setup();
+    seedIssues(deps);
+    const bad = { check: 'npm test' } as unknown as { check: string[]; imageInputs: string[] };
+    expect(checkPlan(deps, P, plan([]), 1, { project: bad })).toMatchObject({ ok: false });
+    expect(checkPlan(deps, ProductIdSchema.parse('nope'), plan([]), 1)).toMatchObject({
+      ok: false,
+    });
+    expect(checkPlan(deps, P, plan([]), 0)).toMatchObject({ ok: false });
   });
 });
 

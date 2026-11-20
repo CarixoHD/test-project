@@ -98,6 +98,8 @@ async function setup(
     runtime?: FakeContainerRuntime;
     failImageBuild?: () => boolean;
     models?: Record<string, { provider: string; model: string }>;
+    log?: (line: string) => void;
+    redactor?: Redactor;
   } = {},
 ): Promise<Harness> {
   const clock = new FakeClock(START);
@@ -129,7 +131,7 @@ async function setup(
     store,
     ids,
     clock,
-    redactor: new Redactor(),
+    redactor: o.redactor ?? new Redactor(),
     logsDir: path.join(dataDir, 'logs'),
     setTimer: () => () => {},
     git,
@@ -139,6 +141,7 @@ async function setup(
     },
     withMergeLock: (_p, fn) => fn(),
     demo: true,
+    ...(o.log === undefined ? {} : { log: o.log }),
   };
   const orchestrator = createOrchestrator(deps);
   return {
@@ -302,6 +305,16 @@ describe('runOrchestrator: rejected runs leave main and the cursor unchanged', (
     expect(h.orchestrator.orchestratorNotBefore(P)).toBe(START + ORCHESTRATOR_BACKOFF_MS[0]);
   });
 
+  it('rejects an invalid plan with changed setup files before merging them to main', async () => {
+    const h = await setup();
+    const bad: PlanResult = {
+      issueOps: [{ op: 'create', key: 'a', title: 'A', body: 'a', dependsOn: ['missing'] }],
+      questions: [],
+      summary: 'bad',
+    };
+    await expectRejected(h, setupScript(bad));
+  });
+
   it('rejects an invalid .vibecode/project.json', async () => {
     const h = await setup();
     await expectRejected(h, [
@@ -367,6 +380,70 @@ describe('runOrchestrator: backoff and the error inbox', () => {
     expect(h.store.q.issuesByProduct(P).length).toBe(3);
     expect(h.orchestrator.orchestratorNotBefore(P)).toBe(0);
     expect(h.cursor()).toBe(applied?.seq);
+  });
+});
+
+describe('runOrchestrator: cleanup errors after a successful apply', () => {
+  const disallowed: FakeScript = [
+    { toolCalls: [write('package.json', '{}')] },
+    finish(THREE_ISSUES),
+  ];
+
+  async function failTwice(h: Harness) {
+    for (const ms of [0, 30_000]) {
+      h.clock.advance(ms);
+      await h.run(disallowed);
+    }
+    h.clock.advance(120_000);
+  }
+
+  it('a throwing sandbox.close() still counts as success and is logged redacted', async () => {
+    const runtime = new FakeContainerRuntime({ dataDir });
+    const realOpen = runtime.open.bind(runtime);
+    let failClose = false;
+    runtime.open = async (spec) => {
+      const sb = await realOpen(spec);
+      return {
+        ...sb,
+        close: async () => {
+          await sb.close();
+          if (failClose) throw new Error('docker rm failed: token sk-ant-api03-SECRETSECRETSECRET');
+        },
+      };
+    };
+    const logs: string[] = [];
+    const redactor = new Redactor();
+    redactor.register('sk-ant-api03-SECRETSECRETSECRET');
+    const h = await setup({ runtime, redactor, log: (l) => logs.push(l) });
+    await failTwice(h);
+    failClose = true;
+
+    await h.run(setupScript());
+
+    expect(h.store.q.issuesByProduct(P)).toHaveLength(3);
+    expect(h.orchestrator.orchestratorNotBefore(P)).toBe(0);
+    expect(inboxOf(h.store)).toEqual([]);
+    expect(logs.join('\n')).toMatch(/docker rm failed/);
+    expect(logs.join('\n')).not.toContain('SECRETSECRET');
+    expect(await readdir(path.join(dataDir, 'worktrees'))).toEqual([]);
+  });
+
+  it('a throwing removeWorktree() still counts as success', async () => {
+    const logs: string[] = [];
+    const h = await setup({ log: (l) => logs.push(l) });
+    await failTwice(h);
+    const realRemove = h.git.removeWorktree.bind(h.git);
+    h.git.removeWorktree = async (dir) => {
+      await realRemove(dir);
+      throw new Error('git worktree remove failed');
+    };
+
+    await h.run(setupScript());
+
+    expect(h.store.q.issuesByProduct(P)).toHaveLength(3);
+    expect(h.orchestrator.orchestratorNotBefore(P)).toBe(0);
+    expect(inboxOf(h.store)).toEqual([]);
+    expect(logs.join('\n')).toMatch(/git worktree remove failed/);
   });
 });
 

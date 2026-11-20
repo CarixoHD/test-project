@@ -10,7 +10,7 @@ import type { ProductId } from '../../shared/ids.ts';
 import type { ProductState } from '../../shared/state.ts';
 import { pendingTriggers } from '../../shared/triggers.ts';
 import { TOOL_NAMES, type AgentLimits, type AgentResult } from '../agents/index.ts';
-import { applyPlan, type ApplyPlanOptions } from '../commands/index.ts';
+import { applyPlan, checkPlan, type ApplyPlanOptions } from '../commands/index.ts';
 import type { Git, Worktree } from '../git/index.ts';
 import { capabilities, type ModelDeps } from '../llm/index.ts';
 import type { ContainerRuntime, Sandbox } from '../sandbox/index.ts';
@@ -58,6 +58,8 @@ export interface OrchestratorDeps extends RecordedRunContext {
   demo?: boolean;
   limits?: AgentLimits;
   backoff?: { delaysMs?: readonly number[]; maxFailures?: number };
+  /** Warnings (cleanup failures), already redacted; default console.warn. */
+  log?: (line: string) => void;
 }
 
 export interface Orchestrator {
@@ -201,11 +203,22 @@ async function orchestrate(
     if (result.kind !== 'ok') return failed(agentFailure(result));
     return await land(deps, productId, wt, result.result, triggers, consumedSeq);
   } finally {
-    try {
-      await sandbox?.close();
-    } finally {
-      await deps.git.removeWorktree(wt.dir);
-    }
+    // Cleanup failures must not turn a landed plan into a failed run (backoff, error inbox).
+    await cleanup(deps, 'close the orchestrator sandbox', () => sandbox?.close());
+    await cleanup(deps, `remove worktree ${wt.dir}`, () => deps.git.removeWorktree(wt.dir));
+  }
+}
+
+async function cleanup(
+  deps: OrchestratorDeps,
+  what: string,
+  fn: () => Promise<void> | undefined,
+): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    const log = deps.log ?? ((line: string) => console.warn(line));
+    log(deps.redactor.redact(`orchestrator: could not ${what}: ${errorText(err)}`));
   }
 }
 
@@ -261,6 +274,9 @@ async function land(
   const opts = planOptions(product, project.value, plan, triggers);
 
   return deps.withMergeLock(productId, async () => {
+    // Check against the state under the lock, so a rejected plan never merges setup files.
+    const checked = checkPlan(deps, productId, plan, consumedSeq, opts);
+    if (!checked.ok) return failed(checked.reason);
     if (commit.sha !== null) {
       const merged = await mergeToMain(deps.git, productId, wt, message);
       if (!merged.ok) return failed(merged.reason);
