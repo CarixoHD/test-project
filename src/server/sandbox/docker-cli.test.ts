@@ -860,7 +860,9 @@ describe('open and Sandbox', () => {
         // Killing the client returns at once; the exec may still start in the container later.
         background.push(run);
         return new Promise<ExecResult>((resolve, reject) => {
-          opts.signal?.addEventListener('abort', () => resolve({ ...OK, code: null, aborted: true }));
+          opts.signal?.addEventListener('abort', () =>
+            resolve({ ...OK, code: null, aborted: true }),
+          );
           run.then(resolve, reject);
         });
       };
