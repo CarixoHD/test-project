@@ -56,6 +56,11 @@ export interface OrchestratorDeps extends RecordedRunContext {
   backoff?: { delaysMs?: readonly number[]; maxFailures?: number };
   /** Warnings (cleanup failures), already redacted; default console.warn. */
   log?: (line: string) => void;
+  /**
+   * Called once after a run moved the product's main (setup files merged), under the merge lock;
+   * main.ts wires it to the remote pusher. Not called when the run lands nothing or fails.
+   */
+  onMainAdvanced?: (productId: ProductId) => void;
 }
 
 export interface Orchestrator {
@@ -276,6 +281,7 @@ async function land(
     if (commit.sha !== null) {
       const merged = await mergeToMain(deps.git, productId, wt, message);
       if (!merged.ok) return failed(merged.reason);
+      deps.onMainAdvanced?.(productId);
     }
     const applied = applyPlan(deps, productId, plan, consumedSeq, opts);
     return applied.ok ? { kind: 'done' } : failed(applied.reason);

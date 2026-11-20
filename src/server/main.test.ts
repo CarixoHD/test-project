@@ -211,6 +211,58 @@ describe('start (composition root)', () => {
     ]);
   });
 
+  it('pushes main after an orchestrator run lands setup files on it (remote pusher wiring)', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    // A local TCP listener stands in for the https remote: every push attempt connects once
+    // (and fails, which only adds an inbox error). No network is used.
+    let pushes = 0;
+    const remote = createServer((socket) => {
+      pushes++;
+      socket.destroy();
+    });
+    await new Promise<void>((done) => remote.listen(0, '127.0.0.1', done));
+    try {
+      const { port } = remote.address() as { port: number };
+      const config = {
+        ...parseConfig({
+          VIBECODE_DATA_DIR: join(root, 'data'),
+          VIBECODE_DEMO: '1',
+          VIBECODE_FAKE_DOCKER: '1',
+        }),
+        port: 0,
+      };
+      running = await start(config, join(root, 'no-web'), {
+        fakeScript: [
+          {
+            toolCalls: [{ name: 'write_file', input: { path: 'docs/adr/1.md', content: '# 1\n' } }],
+          },
+          finish(PLAN),
+        ],
+      });
+      const base = `http://127.0.0.1:${String(running.address.port)}`;
+      const productId = ProductIdSchema.parse(await createProduct(base));
+      running.store.commit(() => [
+        {
+          type: 'product.settings_changed',
+          productId,
+          entityId: null,
+          v: 1,
+          data: { gitRemote: { url: `https://127.0.0.1:${String(port)}/todo.git` } },
+        },
+      ]);
+      await waitFor(() => pushes === 1, 10_000); // the new remote
+      handOff(running, productId);
+      await waitFor(() => pushes === 2, 10_000); // prd.applied
+      const store = running.store;
+      await waitFor(() => store.q.issuesByProduct(productId).length === 2, 10_000);
+      // The orchestrator landed docs/adr/1.md on main: one more push.
+      await waitFor(() => pushes >= 3, 10_000);
+      expect(pushes).toBe(3);
+    } finally {
+      await new Promise((done) => remote.close(done));
+    }
+  }, 30_000);
+
   it('without fake Docker the orchestrator run fails with the actionable reason; the server stays up', async () => {
     root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
     const config = {

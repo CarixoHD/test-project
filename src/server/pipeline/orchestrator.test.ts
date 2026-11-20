@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -92,6 +92,8 @@ type Harness = {
   run(script: FakeScript): Promise<void>;
   mainFiles(): Promise<string[]>;
   cursor(): number;
+  /** Product ids passed to the `onMainAdvanced` hook, in call order. */
+  mainAdvanced: ProductId[];
 };
 
 async function setup(
@@ -101,6 +103,8 @@ async function setup(
     models?: Record<string, { provider: string; model: string }>;
     log?: (line: string) => void;
     redactor?: Redactor;
+    /** Runs under the merge lock before the orchestrator merges (e.g. to move main). */
+    beforeMerge?: (git: Git) => Promise<void>;
   } = {},
 ): Promise<Harness> {
   const clock = new FakeClock(START);
@@ -128,6 +132,7 @@ async function setup(
       ? Promise.reject(new Error('docker build failed: apk: not found'))
       : realEnsure(p);
   let script: FakeScript = [];
+  const mainAdvanced: ProductId[] = [];
   const deps: OrchestratorDeps = {
     store,
     ids,
@@ -140,7 +145,11 @@ async function setup(
     get modelDeps() {
       return { getSecret: () => undefined, fake: { script } };
     },
-    withMergeLock: (_p, fn) => fn(),
+    withMergeLock: async (_p, fn) => {
+      await o.beforeMerge?.(git);
+      return fn();
+    },
+    onMainAdvanced: (productId) => mainAdvanced.push(productId),
     demo: true,
     ...(o.log === undefined ? {} : { log: o.log }),
   };
@@ -165,6 +174,7 @@ async function setup(
       }
     },
     cursor: () => store.q.product(P)?.orchestratorCursor ?? -1,
+    mainAdvanced,
   };
 }
 
@@ -333,6 +343,58 @@ describe('runOrchestrator: rejected runs leave main and the cursor unchanged', (
   it('rejects the run when the agent errors', async () => {
     const h = await setup();
     await expectRejected(h, [{ error: { status: 401 } }]);
+  });
+});
+
+describe('runOrchestrator: the main-advanced hook (remote push)', () => {
+  it('is called exactly once with the product id when a run lands setup files on main', async () => {
+    const h = await setup();
+    await h.run(setupScript());
+    expect(h.mainAdvanced).toEqual([P]);
+  });
+
+  it('is not called when the run lands no files', async () => {
+    const h = await setup();
+    await h.run([finish(THREE_ISSUES)]);
+    expect(h.store.q.issuesByProduct(P).length).toBe(3);
+    expect(h.mainAdvanced).toEqual([]);
+  });
+
+  it('is not called when checkPlan rejects the plan', async () => {
+    const h = await setup();
+    const bad: PlanResult = {
+      issueOps: [{ op: 'create', key: 'a', title: 'A', body: 'a', dependsOn: ['missing'] }],
+      questions: [],
+      summary: 'bad',
+    };
+    await h.run(setupScript(bad));
+    expect(h.cursor()).toBe(0);
+    expect(h.mainAdvanced).toEqual([]);
+  });
+
+  it('is not called when the setup files conflict with main', async () => {
+    const h = await setup({
+      // Someone else lands a different Dockerfile on main while the orchestrator ran.
+      beforeMerge: async (git) => {
+        const wt = await git.addWorktree(P, 'other');
+        try {
+          await writeFile(path.join(wt.dir, 'Dockerfile'), 'FROM alpine\n');
+          await git.commitAll(wt.dir, 'other Dockerfile');
+          if (wt.branch === null) throw new Error('no branch');
+          const r = await git.integrate(P, wt.branch, wt.baseSha, 'other Dockerfile');
+          if (r.kind !== 'fast') throw new Error(`unexpected ${r.kind}`);
+          await git.advanceMain(P, r.commitSha, wt.baseSha);
+        } finally {
+          await git.removeWorktree(wt.dir);
+        }
+      },
+    });
+    const mainBefore = await h.git.mainSha(P);
+    await h.run(setupScript());
+    expect(await h.git.mainSha(P)).not.toBe(mainBefore); // only the other commit moved it
+    expect(await h.git.readFileAtMain(P, 'Dockerfile')).toBe('FROM alpine\n');
+    expect(h.cursor()).toBe(0);
+    expect(h.mainAdvanced).toEqual([]);
   });
 });
 

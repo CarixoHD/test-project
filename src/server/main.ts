@@ -197,6 +197,11 @@ export async function start(
       return modelDeps();
     },
     withMergeLock: (productId, fn) => scheduler.withMergeLock(productId, fn),
+    // Setup files merged to main are pushed too; `pusher` is created below and read only
+    // during a run (the scheduler starts after it).
+    onMainAdvanced: (productId) => {
+      pusher.request(productId);
+    },
     demo: config.demo,
     ...(orchestratorBackoff === undefined ? {} : { backoff: orchestratorBackoff }),
   });
@@ -245,7 +250,8 @@ export async function start(
     });
   });
 
-  // Optional push of main to the product's git remote after merges and PRD commits (§6 flow 4).
+  // Optional push of main to the product's git remote after merges, PRD commits and orchestrator
+  // landings (§6 flow 4).
   const pusher = startRemotePusher({ store, ids, git, secrets, redactor });
   scheduler.start();
 
