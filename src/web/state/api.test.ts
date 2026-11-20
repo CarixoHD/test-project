@@ -109,6 +109,15 @@ describe('api', () => {
     expect(url).toBe('/api/products/p%201/handoff');
     expect(init.method).toBe('POST');
     expect(init.body).toBeUndefined();
+    // The server rejects non-JSON mutations (ADR 9), bodyless ones included.
+    expect(new Headers(init.headers).get('Content-Type')).toBe('application/json');
+  });
+
+  it('sends no Content-Type on GET', async () => {
+    const fetchFn = stubFetch(json({ state: emptyState, lastSeq: 0 }));
+    await getState();
+    const [, init] = fetchFn.mock.calls[0] as FetchArgs;
+    expect(new Headers(init.headers).has('Content-Type')).toBe(false);
   });
 
   it('addIssue POSTs the new issue to the product issues endpoint', async () => {

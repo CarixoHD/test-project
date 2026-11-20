@@ -150,7 +150,10 @@ describe('start (composition root)', () => {
       data: { kind: 'rate_limited' },
     });
 
-    const read = await fetch(`${base}/api/inbox/${inboxId}/read`, { method: 'POST' });
+    const read = await fetch(`${base}/api/inbox/${inboxId}/read`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
     expect(read.status).toBe(200);
     const after = StateResponseSchema.parse(await (await fetch(`${base}/api/state`)).json());
     expect(after.state.inbox[inboxId]?.read).toBe(true);
