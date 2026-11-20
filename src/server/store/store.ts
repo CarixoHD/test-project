@@ -43,9 +43,7 @@ function redactDeep(value: unknown, redact: (t: string) => string): unknown {
   if (typeof value === 'string') return redact(value);
   if (Array.isArray(value)) return value.map((v) => redactDeep(v, redact));
   if (typeof value === 'object' && value !== null) {
-    return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k, redactDeep(v, redact)]),
-    );
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactDeep(v, redact)]));
   }
   return value;
 }

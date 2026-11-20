@@ -77,7 +77,12 @@ function usageSnapshot(db: Db) {
 }
 
 export function lastSeq(db: Db): number {
-  return db.select({ seq: max(s.events.seq) }).from(s.events).get()?.seq ?? 0;
+  return (
+    db
+      .select({ seq: max(s.events.seq) })
+      .from(s.events)
+      .get()?.seq ?? 0
+  );
 }
 
 /** The full ClientState, built from the projection tables. */

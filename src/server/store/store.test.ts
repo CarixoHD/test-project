@@ -23,7 +23,15 @@ const productCreated = (name = 'Todo'): EventDraft => ({
   productId: P,
   entityId: null,
   v: 1,
-  data: { name, idea: 'A todo app', budgetUsd: 10, maxParallel: 3, maxAttempts: 3, models: {}, gitRemote: null },
+  data: {
+    name,
+    idea: 'A todo app',
+    budgetUsd: 10,
+    maxParallel: 3,
+    maxAttempts: 3,
+    models: {},
+    gitRemote: null,
+  },
 });
 
 const sparMessage = (id: string, text: string): EventDraft => ({
