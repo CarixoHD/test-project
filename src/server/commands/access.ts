@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { PasswordChangeRequestSchema, type PasswordChangeRequest } from '../../shared/dto.ts';
 import type { Clock } from '../../shared/ids.ts';
 import {
+  createRateLimiter,
   createSessions,
   hashPassword,
   newSessionKey,
@@ -17,16 +18,28 @@ import { writeSetting, type Store } from '../store/index.ts';
 // Setting or changing the password rotates the key, which ends every existing session.
 
 export const PASSWORD_HASH_SETTING = 'passwordHash';
+/** Password guesses (login, current password on change) allowed per client per window. */
+export const LOGIN_RATE_LIMIT = { limit: 5, windowMs: 60_000 } as const;
 
-export type PasswordChangeResult = { ok: true } | { ok: false; code: 'invalid'; reason: string };
+const RATE_LIMITED = 'Too many attempts; try again in a minute';
+
+export type PasswordChangeResult =
+  | { ok: true }
+  | { ok: false; code: 'invalid' | 'rate_limited'; reason: string };
+
+export type LoginResult =
+  | { ok: true; token: string }
+  | { ok: false; code: 'conflict' | 'unauthorized' | 'rate_limited'; reason: string };
 
 export interface Access {
   /** Read from the DB on every call: a password set by the CLI applies to a running server. */
   hasPassword(): boolean;
   /** False when no password is set. */
   checkPassword(password: string): Promise<boolean>;
-  /** HTTP: `current` must match once a password is set. */
-  changePassword(input: PasswordChangeRequest): Promise<PasswordChangeResult>;
+  /** Checks the password (rate-limited per `client`) and issues a session token. */
+  login(password: string, client: string): Promise<LoginResult>;
+  /** HTTP: `current` must match once a password is set (rate-limited per `client`). */
+  changePassword(input: PasswordChangeRequest, client: string): Promise<PasswordChangeResult>;
   /** The owner on the host (scripts/set-password.ts): sets the password without the old one. */
   resetPassword(next: string): Promise<PasswordChangeResult>;
   sessions: Sessions;
@@ -39,6 +52,7 @@ export interface AccessDeps {
 }
 
 export function createAccess({ store, secrets, clock }: AccessDeps): Access {
+  const limiter = createRateLimiter({ ...LOGIN_RATE_LIMIT, clock });
   const storedHash = (): string | undefined => {
     const raw = store.q.setting(PASSWORD_HASH_SETTING);
     if (raw === undefined) return undefined;
@@ -83,13 +97,28 @@ export function createAccess({ store, secrets, clock }: AccessDeps): Access {
     return { ok: true };
   };
 
+  const sessions = createSessions({ key: sessionKey, clock });
+
   return {
     hasPassword: () => storedHash() !== undefined,
     checkPassword,
-    async changePassword({ current, next }) {
+    async login(password, client) {
+      if (storedHash() === undefined) {
+        return { ok: false, code: 'conflict', reason: 'No password is set' };
+      }
+      if (!limiter.attempt(client)) return { ok: false, code: 'rate_limited', reason: RATE_LIMITED };
+      if (!(await checkPassword(password))) {
+        return { ok: false, code: 'unauthorized', reason: 'Wrong password' };
+      }
+      return { ok: true, token: sessions.issue() };
+    },
+    async changePassword({ current, next }, client) {
       if (storedHash() !== undefined) {
         if (current === undefined) {
           return { ok: false, code: 'invalid', reason: 'The current password is required' };
+        }
+        if (!limiter.attempt(client)) {
+          return { ok: false, code: 'rate_limited', reason: RATE_LIMITED };
         }
         if (!(await checkPassword(current))) {
           return { ok: false, code: 'invalid', reason: 'The current password is wrong' };
@@ -98,6 +127,6 @@ export function createAccess({ store, secrets, clock }: AccessDeps): Access {
       return setPassword(next);
     },
     resetPassword: setPassword,
-    sessions: createSessions({ key: sessionKey, clock }),
+    sessions,
   };
 }
