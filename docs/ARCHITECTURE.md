@@ -173,10 +173,15 @@ interface Store {
 ```ts
 interface Tx { q: Queries; db: Db }   // db: same connection, inside the transaction; write only tables without events (settings, secrets)
 interface Queries { product(id); issuesByProduct(productId) /* by number */; issue(id); attemptsByIssue(issueId) /* by n */;
-                    attempt(id); productUsage(productId); issueUsage(issueId) }   // ClientState shapes; usage zero when none
-createStore({db, clock, redactor}): Store;     // db from db/open(path) (':memory:' in tests; file created 0600; WAL pragmas; migrations applied)
+                    attempt(id); productUsage(productId); issueUsage(issueId); inboxItem(id) }   // ClientState shapes; usage zero when none
+type CommitHook = (committed: readonly Event[], tx: Tx) => EventDraft[];  // derived drafts, same transaction
+createStore({db, clock, redactor, hooks?: CommitHook[]}): Store;  // main passes hooks: [inboxHook({ids})]     // db from db/open(path) (':memory:' in tests; file created 0600; WAL pragmas; migrations applied)
 ```
 Commit order: `build(tx)` → for each draft: zod-validate, redact every string in `data`, re-validate, insert (seq = AUTOINCREMENT, ts = `clock.now()` once per commit), then **project** (`store/project*.ts`, the server twin of `reduce`). Commands do not write projection tables themselves: the projector derives them from the events, so they cannot drift. A throwing builder, an invalid draft or a projection constraint failure (e.g. FK to a missing product) rolls the whole commit back and notifies nobody. Subscribers run after the commit; nested `commit` inside a builder throws. Usage totals are running sums in `usage_totals`, updated per event with the shared `addUsage` (never SQL `SUM()`).
+Hooks run inside the transaction after the builder's drafts are appended and projected (so `tx.q` sees them); their drafts are appended next, in the same commit, and are not fed back into hooks. A throwing hook rolls back the whole commit.
+
+**notify/** (`inboxHook`, `inboxFor`, `markInboxRead`, `inboxRoutes`): `inboxFor(event, lookup, {timeZone?}) → InboxDraft|null` is pure. Rules: `question.asked` → question (issue link, or product link for orchestrator questions); `issue.failed` → failed; `budget.warned` → budget_warn; `product.paused{budget}` → budget_paused; `backend.limited` → rate_limited ("Claude Code rate limited until 14:05") or auth_required when `needsLogin` (global, link null); `product.phase_changed{complete}` → complete. Links are `/products/:id` or `/products/:id/issues/:issueId`. `inboxHook({ids})` is the store hook that turns them into `inbox.created`. `markInboxRead(store, id)` emits `inbox.read` once (idempotent) or returns `{ok:false, code:'not_found'}`; `inboxRoutes({store})` serves `POST /api/inbox/:id/read` for the HTTP app to mount.
+
 **Invariant (tested):** `events.reduce(reduce, emptyState)` equals `snapshot().state` after any command sequence. Tests call `expectSnapshotMatchesReplay(store)` from `store/testing.ts`.
 
 ### 4.3 server/http
