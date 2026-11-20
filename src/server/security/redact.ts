@@ -5,6 +5,8 @@ export const LAST4_MIN_LENGTH = 16;
 export const REDACTED = '[REDACTED]';
 
 const REGEX_SPECIAL = /[.*+?^${}()|[\]\\]/g;
+/** PEM armor such as `-----BEGIN PRIVATE KEY-----`: public boilerplate, not a secret on its own. */
+const PEM_ARMOR = /^-----(BEGIN|END) [A-Z0-9 ]+-----$/;
 
 function mask(secret: string): string {
   return secret.length >= LAST4_MIN_LENGTH ? `***${secret.slice(-4)}` : REDACTED;
@@ -24,12 +26,14 @@ export class Redactor {
   /**
    * Registers a secret. A multi-line value (LF or CRLF) also registers each of its lines,
    * because line-split streams never see the whole value; the whole value stays registered
-   * so whole-buffer redaction masks it as one piece.
+   * so whole-buffer redaction masks it as one piece. PEM armor lines are not registered
+   * on their own, so unrelated BEGIN/END markers in output stay readable.
    */
   register(value: string): void {
     if (value.includes('\n')) {
-      for (const line of value.split('\n')) {
-        this.#add(line.endsWith('\r') ? line.slice(0, -1) : line);
+      for (const raw of value.split('\n')) {
+        const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+        if (!PEM_ARMOR.test(line.trim())) this.#add(line);
       }
     }
     this.#add(value);

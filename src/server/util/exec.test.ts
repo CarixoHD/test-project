@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { redactor } from '../security/index.ts';
-import { exec, spawnStream } from './exec.ts';
+import {
+  exec,
+  killAllChildren,
+  liveChildCount,
+  spawnStream,
+  terminateAllChildren,
+} from './exec.ts';
 
 const NODE = process.execPath;
 /** argv for `node -e <script> -- ...args`; inside the script process.argv.slice(1) is args. */
@@ -324,5 +330,103 @@ describe('exec redaction', () => {
     expect(e.stack ?? '').not.toContain(SECRET);
     expect(JSON.stringify(e, Object.getOwnPropertyNames(e))).not.toContain(SECRET);
     expect(e.cause).toBeUndefined();
+  });
+});
+
+describe('terminateAllChildren', () => {
+  /** Polls until `probe` holds or `ms` passes; returns the last probe result. */
+  async function eventually(probe: () => boolean, ms = 3_000): Promise<boolean> {
+    const until = performance.now() + ms;
+    while (!probe() && performance.now() < until) {
+      await new Promise((done) => setTimeout(done, 20));
+    }
+    return probe();
+  }
+  const isGone = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'ESRCH';
+    }
+  };
+
+  it.skipIf(process.platform === 'win32')(
+    'kills every live process group, grandchildren included, and resolves the runs with a signal',
+    async () => {
+      // The child prints its own pid and its grandchild's, then idles; the grandchild holds the pipes.
+      const script = `const g = require('node:child_process').spawn(process.execPath, ['-e', '${FOREVER}'], { stdio: 'inherit' }); console.log(process.pid + ' ' + g.pid); ${FOREVER}`;
+      const pids: number[][] = [];
+      let ready: () => void = () => {};
+      const bothReady = new Promise<void>((done) => (ready = done));
+      const start = () =>
+        spawnStream(NODE, nodeArgs(script), {
+          timeoutMs: 60_000,
+          onLine: (line) => {
+            pids.push(line.split(' ').map(Number));
+            if (pids.length === 2) ready();
+          },
+        });
+      const runs = [start(), start()];
+      await bothReady;
+      expect(liveChildCount()).toBe(2);
+
+      await terminateAllChildren({ graceMs: 2_000 });
+
+      for (const r of await Promise.all(runs)) {
+        expect(r).toMatchObject({ code: null, signal: 'SIGTERM', timedOut: false, aborted: false });
+      }
+      for (const [pid = 0, grandchild = 0] of pids) {
+        expect(await eventually(() => isGone(-pid))).toBe(true);
+        expect(await eventually(() => isGone(grandchild))).toBe(true);
+      }
+      expect(liveChildCount()).toBe(0);
+    },
+  );
+
+  it('uses each child’s killSignal, then SIGKILL once the grace has passed', async () => {
+    const script =
+      "process.on('SIGINT', () => {}); console.log('ready'); setInterval(() => {}, 1000)";
+    let ready: () => void = () => {};
+    const isReady = new Promise<void>((done) => (ready = done));
+    const run = spawnStream(NODE, nodeArgs(script), {
+      timeoutMs: 60_000,
+      killSignal: 'SIGINT',
+      onLine: (line) => {
+        if (line === 'ready') ready();
+      },
+    });
+    await isReady;
+    const started = performance.now();
+    await terminateAllChildren({ graceMs: 200 });
+    expect(await run).toMatchObject({ code: null, signal: 'SIGKILL' });
+    expect(performance.now() - started).toBeLessThan(3_000);
+  });
+
+  it('removes finished children from the registry', async () => {
+    const r = await exec(NODE, nodeArgs('process.exit(0)'), { timeoutMs: 10_000 });
+    expect(r.code).toBe(0);
+    expect(liveChildCount()).toBe(0);
+    const failed = await exec(join(dir, 'missing-bin'), [], { timeoutMs: 10_000 }).catch(
+      (e: unknown) => e,
+    );
+    expect(failed).toBeInstanceOf(Error);
+    expect(liveChildCount()).toBe(0);
+    const started = performance.now();
+    await terminateAllChildren();
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+
+  it('killAllChildren sends SIGKILL to every live group at once', async () => {
+    let ready: () => void = () => {};
+    const isReady = new Promise<void>((done) => (ready = done));
+    const run = spawnStream(NODE, nodeArgs("console.log('ready'); " + FOREVER), {
+      timeoutMs: 60_000,
+      onLine: () => ready(),
+    });
+    await isReady;
+    killAllChildren();
+    expect(await run).toMatchObject({ code: null, signal: 'SIGKILL' });
+    expect(liveChildCount()).toBe(0);
   });
 });

@@ -8,6 +8,7 @@ import { AgentIdSchema, InboxIdSchema, ProductIdSchema } from '../shared/ids.ts'
 import { parseConfig } from './config.ts';
 import { EventEmitter } from 'node:events';
 import { closeOnSignals, start, type Running } from './main.ts';
+import { liveChildCount, spawnStream, type RunOutcome } from './util/exec.ts';
 
 describe('start (composition root)', () => {
   let root: string | undefined;
@@ -318,7 +319,7 @@ describe('closeOnSignals (graceful shutdown)', () => {
       emitter,
       exits,
       proc: {
-        once: (signal: 'SIGINT' | 'SIGTERM', fn: () => void) => emitter.once(signal, fn),
+        on: (signal: 'SIGINT' | 'SIGTERM', fn: () => void) => emitter.on(signal, fn),
         exit: (code: number) => {
           exits.push(code);
         },
@@ -326,16 +327,73 @@ describe('closeOnSignals (graceful shutdown)', () => {
     };
   }
 
+  /** A real long-running child started through util/exec, once it is up (wrapped: not awaited). */
+  async function startChild(): Promise<{ run: Promise<RunOutcome> }> {
+    let ready: () => void = () => {};
+    const isReady = new Promise<void>((done) => (ready = done));
+    const run = spawnStream(
+      process.execPath,
+      ['-e', "console.log('ready'); setInterval(() => {}, 1000)"],
+      { timeoutMs: 60_000, onLine: () => ready() },
+    );
+    await isReady;
+    return { run };
+  }
+
   it.each(['SIGINT', 'SIGTERM'] as const)('on %s: closes once, then exits 0', async (signal) => {
     const { emitter, exits, proc } = fakeProcess();
     let closes = 0;
     closeOnSignals({ close: () => Promise.resolve(void (closes += 1)) }, proc, () => {});
     emitter.emit(signal);
-    emitter.emit(signal === 'SIGINT' ? 'SIGTERM' : 'SIGINT');
-    await new Promise((done) => setTimeout(done, 0));
+    await waitFor(() => exits.length > 0);
     expect(closes).toBe(1);
     expect(exits).toEqual([0]);
   });
+
+  it('closes the server, then terminates running children, then exits', async () => {
+    const { emitter, exits, proc } = fakeProcess();
+    const steps: string[] = [];
+    const { run: child } = await startChild();
+    void child.then(() => steps.push('child ended'));
+    closeOnSignals(
+      {
+        close: async () => {
+          steps.push(`close (children: ${String(liveChildCount())})`);
+          await new Promise((done) => setTimeout(done, 50));
+        },
+      },
+      { ...proc, exit: (code) => (steps.push(`exit ${String(code)}`), proc.exit(code)) },
+      () => {},
+    );
+    emitter.emit('SIGTERM');
+    await waitFor(() => exits.length > 0);
+    expect(steps).toEqual(['close (children: 1)', 'child ended', 'exit 0']);
+    expect(await child).toMatchObject({ code: null, signal: 'SIGTERM' });
+    expect(liveChildCount()).toBe(0);
+  });
+
+  it.each([
+    ['SIGINT', 'SIGTERM', 143],
+    ['SIGTERM', 'SIGINT', 130],
+    ['SIGINT', 'SIGINT', 130],
+    ['SIGTERM', 'SIGTERM', 143],
+  ] as const)(
+    'a second signal during shutdown (%s then %s) SIGKILLs children and exits %i',
+    async (first, second, code) => {
+      const { emitter, exits, proc } = fakeProcess();
+      const { run: child } = await startChild();
+      // close() never settles: a stuck shutdown.
+      closeOnSignals({ close: () => new Promise<void>(() => {}) }, proc, () => {});
+      emitter.emit(first);
+      await new Promise((done) => setTimeout(done, 20));
+      expect(exits).toEqual([]);
+      emitter.emit(second);
+      expect(exits).toEqual([code]);
+      expect(await child).toMatchObject({ code: null, signal: 'SIGKILL' });
+      emitter.emit(first);
+      expect(exits).toEqual([code]);
+    },
+  );
 
   it('exits 1 and logs when close fails', async () => {
     const { emitter, exits, proc } = fakeProcess();
@@ -344,7 +402,7 @@ describe('closeOnSignals (graceful shutdown)', () => {
       logged.push(line),
     );
     emitter.emit('SIGTERM');
-    await new Promise((done) => setTimeout(done, 0));
+    await waitFor(() => exits.length > 0);
     expect(exits).toEqual([1]);
     expect(logged.join('\n')).toContain('db busy');
   });

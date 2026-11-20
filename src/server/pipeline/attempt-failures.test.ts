@@ -207,8 +207,10 @@ describe('runAttempt: counted failures', () => {
     unsubscribe();
 
     const [attempt] = attemptsOf(h.store, id);
+    // An interruption (ADR 7), never an error: no error inbox item for a stop or restart.
     expect(attempt).toMatchObject({
-      status: 'error',
+      status: 'interrupted',
+      interruptReason: 'shutdown',
       counted: false,
       step: onMerge ? 'merge' : 'check',
     });

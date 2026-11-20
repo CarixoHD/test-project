@@ -2,6 +2,7 @@ import { and, asc, eq, max } from 'drizzle-orm';
 import {
   AgentViewSchema,
   AttemptStateSchema,
+  BackendLimitSchema,
   ClientStateSchema,
   EMPTY_USAGE_TOTALS,
   InboxItemSchema,
@@ -11,6 +12,7 @@ import {
   SparMessageSchema,
   type AgentView,
   type AttemptState,
+  type BackendLimit,
   type ClientState,
   type InboxItem,
   type IssueState,
@@ -177,6 +179,8 @@ export interface Queries {
   prdVersionMarkdown(productId: ProductId, version: number): string | null;
   /** Raw JSON value of a `settings` row (unvalidated; callers parse it), undefined when unset. */
   setting(key: string): unknown;
+  /** The account-wide limit on `backend` (backend.limited), null when it is not limited. */
+  backendLimit(backend: string): BackendLimit | null;
 }
 
 export function createQueries(db: Db): Queries {
@@ -256,6 +260,10 @@ export function createQueries(db: Db): Queries {
     },
     setting(key) {
       return db.select().from(s.settings).where(eq(s.settings.key, key)).get()?.value;
+    },
+    backendLimit(backend) {
+      const r = db.select().from(s.backendLimits).where(eq(s.backendLimits.backend, backend)).get();
+      return r === undefined ? null : BackendLimitSchema.parse(r);
     },
   };
 }

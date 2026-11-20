@@ -27,6 +27,7 @@ import { createPreviews, selectRuntime } from './sandbox/index.ts';
 import { assertBindAllowed, createSecrets, redactor } from './security/index.ts';
 import { createStore, type Store } from './store/index.ts';
 import { systemClock, type Clock } from './util/clock.ts';
+import { killAllChildren, terminateAllChildren } from './util/exec.ts';
 import { createIdGen } from './util/id-gen.ts';
 
 const DEFAULT_WEB_ROOT = resolve(import.meta.dirname, '../../dist/web');
@@ -261,14 +262,20 @@ export async function start(
 
 /** The parts of `process` that graceful shutdown uses (tests pass a fake). */
 export interface SignalTarget {
-  once(signal: 'SIGINT' | 'SIGTERM', fn: () => void): unknown;
+  on(signal: ShutdownSignal, fn: () => void): unknown;
   exit(code: number): void;
 }
 
+type ShutdownSignal = 'SIGINT' | 'SIGTERM';
+
+/** Conventional exit codes for a process ended by a signal: 128 + signal number. */
+const FORCE_QUIT_CODE: Record<ShutdownSignal, number> = { SIGINT: 130, SIGTERM: 143 };
+
 /**
- * Graceful shutdown: the first SIGINT or SIGTERM closes the server once (scheduler first, see
- * `close`), then exits 0, or 1 when closing failed. Listeners are `once`, so repeating the same
- * signal gets Node's default handling and force-quits a stuck shutdown.
+ * Graceful shutdown: the first SIGINT or SIGTERM closes the server (scheduler first, see
+ * `close`), then terminates the child process groups still running (they are detached, so the
+ * signal does not reach them), then exits 0, or 1 when closing failed. A second signal of either
+ * kind during shutdown force-quits: SIGKILL to every child group, then exit 130 / 143.
  */
 export function closeOnSignals(
   running: Pick<Running, 'close'>,
@@ -276,21 +283,40 @@ export function closeOnSignals(
   log: (line: string) => void = console.error,
 ): void {
   let closing = false;
-  const onSignal = () => {
-    if (closing) return;
-    closing = true;
-    running.close().then(
-      () => {
-        proc.exit(0);
-      },
-      (err: unknown) => {
-        log(redactor.redact(`shutdown failed: ${String(err)}`));
-        proc.exit(1);
-      },
-    );
+  let exited = false;
+  const exit = (code: number): void => {
+    if (exited) return;
+    exited = true;
+    proc.exit(code);
   };
-  proc.once('SIGINT', onSignal);
-  proc.once('SIGTERM', onSignal);
+  const onSignal = (signal: ShutdownSignal): void => {
+    if (exited) return;
+    if (closing) {
+      killAllChildren();
+      exit(FORCE_QUIT_CODE[signal]);
+      return;
+    }
+    closing = true;
+    void running
+      .close()
+      .then(
+        () => 0,
+        (err: unknown) => {
+          log(redactor.redact(`shutdown failed: ${String(err)}`));
+          return 1;
+        },
+      )
+      .then(async (code) => {
+        await terminateAllChildren();
+        exit(code);
+      });
+  };
+  proc.on('SIGINT', () => {
+    onSignal('SIGINT');
+  });
+  proc.on('SIGTERM', () => {
+    onSignal('SIGTERM');
+  });
 }
 
 if (import.meta.main) {
