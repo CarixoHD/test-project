@@ -187,7 +187,7 @@ describe('ProductPage', () => {
     };
     expect(panelOf('Build')).toBeVisible();
     expect(panelOf('Build')).toHaveTextContent(/board/);
-    expect(panelOf('Spec')).toHaveTextContent(/PRD editor/);
+    expect(panelOf('Spec')).toHaveTextContent(/PRD draft/);
     expect(panelOf('Settings')).toHaveTextContent('Settings for Todo app');
   });
 });

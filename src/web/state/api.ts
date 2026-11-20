@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import {
   CreateProductResponseSchema,
+  OkResponseSchema,
   StateResponseSchema,
   type CreateProductRequest,
   type CreateProductResponse,
+  type OkResponse,
   type StateResponse,
 } from '../../shared/dto.ts';
 
@@ -110,6 +112,34 @@ export function createProduct(
     method: 'POST',
     body,
     schema: CreateProductResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Sends the owner's message to the sparring agent; the reply arrives later as an event. */
+export function sendSparMessage(
+  productId: string,
+  message: string,
+  signal?: AbortSignal,
+): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/spar`, {
+    method: 'POST',
+    body: { message },
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Stores the owner's edited PRD draft. */
+export function savePrdDraft(
+  productId: string,
+  markdown: string,
+  signal?: AbortSignal,
+): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/prd-draft`, {
+    method: 'PUT',
+    body: { markdown },
+    schema: OkResponseSchema,
     ...(signal ? { signal } : {}),
   });
 }

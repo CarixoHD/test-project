@@ -1,9 +1,10 @@
-import type { ButtonHTMLAttributes } from 'react';
+import type { ButtonHTMLAttributes, Ref } from 'react';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'danger';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
+  ref?: Ref<HTMLButtonElement>;
 }
 
 /** A native button that defaults to `type="button"` so it never submits a form by accident. */
