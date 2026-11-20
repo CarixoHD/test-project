@@ -15,12 +15,8 @@ import type { Git, Worktree } from '../git/index.ts';
 import { capabilities, type ModelDeps } from '../llm/index.ts';
 import type { ContainerRuntime, Sandbox } from '../sandbox/index.ts';
 import type { RunHandle } from '../scheduler/index.ts';
-import {
-  limitDrafts,
-  limitOf,
-  LOGIN_RETRY_DELAY_MS,
-  type BackendLimitDraft,
-} from './backend-limit.ts';
+import { backendLimitDrafts } from './attempt-events.ts';
+import { limitOf, LOGIN_RETRY_DELAY_MS, type BackendLimitDraft } from './backend-limit.ts';
 import { OrchestratorBackoff } from './orchestrator-backoff.ts';
 import { orchestratorPrompt } from './orchestrator-prompt.ts';
 import { readRepoFile } from './repo-file.ts';
@@ -129,7 +125,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       if (outcome.kind === 'failed') recordFailure(productId, consumedSeq, outcome.reason);
       if (outcome.kind === 'limited') {
         const { limit } = outcome;
-        deps.store.commit((tx) => limitDrafts(tx, limit));
+        deps.store.commit((tx) => backendLimitDrafts(tx, limit));
         backoff.waitUntil(productId, outcome.retryAt);
       }
     },

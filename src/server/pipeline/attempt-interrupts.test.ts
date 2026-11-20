@@ -17,6 +17,11 @@ import {
   type Harness,
   type HarnessOptions,
 } from './attempt-testing.ts';
+import {
+  backendLimitDrafts,
+  LIMIT_DEDUPE_TOLERANCE_MS,
+  type BackendLimitDraft,
+} from './attempt-events.ts';
 
 // Attempt interruptions (ARCHITECTURE §6 flows 4.7, 5 and 7; ADR 7): pause, stop, rate limits,
 // logins and owner edits interrupt an attempt without counting it; an owner cancel discards it.
@@ -135,6 +140,99 @@ describe('runAttempt: rate limits and logins', () => {
     expect(eventsOf(h.store, 'backend.limited').map((e) => e.data.until)).toEqual([
       START + 60_000,
       START + 300_000,
+    ]);
+  });
+
+  it('the same 429 hit a few ms apart (until differs by ms) commits one event and one inbox item', async () => {
+    const h = await setup({
+      inbox: true,
+      script: (a) => (a.role === 'implementer' ? rateLimited(60) : undefined),
+    });
+    const one = h.addIssue('One');
+    const two = h.addIssue('Two');
+
+    await h.run(one);
+    h.clock.advance(7);
+    await h.run(two);
+
+    expect(eventsOf(h.store, 'backend.limited').map((e) => e.data.until)).toEqual([START + 60_000]);
+    expect(inboxItems(h.store).map((i) => i.kind)).toEqual(['rate_limited']);
+    expect(h.store.q.backendLimit('fake')).toMatchObject({ until: START + 60_000 });
+    expectSnapshotMatchesReplay(h.store);
+  });
+
+  it('a later hit with an earlier until does not shorten the active limit', async () => {
+    let retry = 300;
+    const h = await setup({
+      script: (a) => (a.role === 'implementer' ? rateLimited(retry) : undefined),
+    });
+    const id = h.addIssue('Scaffold');
+
+    await h.run(id);
+    h.clock.advance(1_000);
+    retry = 30;
+    await h.run(id);
+
+    expect(eventsOf(h.store, 'backend.limited')).toHaveLength(1);
+    expect(h.store.q.backendLimit('fake')).toMatchObject({ until: START + 300_000 });
+  });
+
+  it('a hit whose until is beyond the tolerance extends the limit with one new event', async () => {
+    const h = await setup({
+      script: (a) => (a.role === 'implementer' ? rateLimited(60) : undefined),
+    });
+    const id = h.addIssue('Scaffold');
+
+    await h.run(id);
+    h.clock.advance(LIMIT_DEDUPE_TOLERANCE_MS + 1);
+    await h.run(id);
+
+    const extended = START + LIMIT_DEDUPE_TOLERANCE_MS + 1 + 60_000;
+    expect(eventsOf(h.store, 'backend.limited').map((e) => e.data.until)).toEqual([
+      START + 60_000,
+      extended,
+    ]);
+    expect(h.store.q.backendLimit('fake')).toMatchObject({ until: extended });
+  });
+
+  it('after the limit has cleared, a new hit records backend.limited again', async () => {
+    const h = await setup({
+      inbox: true,
+      script: (a) => (a.role === 'implementer' ? rateLimited(60) : undefined),
+    });
+    const id = h.addIssue('Scaffold');
+
+    await h.run(id);
+    h.clock.advance(1_000);
+    h.store.commit(() => [
+      { type: 'backend.cleared', productId: null, entityId: null, v: 1, data: { backend: 'fake' } },
+    ]);
+    await h.run(id);
+
+    expect(eventsOf(h.store, 'backend.limited').map((e) => e.data.until)).toEqual([
+      START + 60_000,
+      START + 61_000,
+    ]);
+    expect(h.store.q.backendLimit('fake')).toMatchObject({ until: START + 61_000 });
+    expectSnapshotMatchesReplay(h.store);
+  });
+
+  it('needs-login transitions are always recorded; a repeated needs-login is not', async () => {
+    const h = await setup();
+    const record = (limit: BackendLimitDraft) =>
+      h.store.commit((tx) => backendLimitDrafts(tx, limit));
+    const rate = { backend: 'fake', until: START + 600_000, needsLogin: false, reason: 'r' };
+    const login = { backend: 'fake', until: null, needsLogin: true, reason: 'l' };
+
+    record(rate);
+    record(login);
+    record(login);
+    record(rate);
+
+    expect(eventsOf(h.store, 'backend.limited').map((e) => e.data.needsLogin)).toEqual([
+      false,
+      true,
+      false,
     ]);
   });
 
