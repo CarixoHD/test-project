@@ -1,7 +1,5 @@
-import { z } from 'zod';
 import {
   PlanResultSchema,
-  ProjectConfigSchema,
   type PlanResult,
   type ProjectConfig,
 } from '../../shared/agent-results.ts';
@@ -19,6 +17,7 @@ import { backendLimitDrafts } from './attempt-events.ts';
 import { limitOf, LOGIN_RETRY_DELAY_MS, type BackendLimitDraft } from './backend-limit.ts';
 import { OrchestratorBackoff } from './orchestrator-backoff.ts';
 import { orchestratorPrompt } from './orchestrator-prompt.ts';
+import { projectConfigChanged, readProjectConfig } from './project-config.ts';
 import { readRepoFile } from './repo-file.ts';
 import { resolveModel } from './resolve-model.ts';
 import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
@@ -32,7 +31,6 @@ import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
 // and the next run waits for the limit instead of counting toward the give-up limit.
 
 export const DEFAULT_ORCHESTRATOR_LIMITS: AgentLimits = { maxSteps: 80, wallClockMs: 45 * 60_000 };
-const PROJECT_FILE = '.vibecode/project.json';
 
 /** Paths the orchestrator may change: Dockerfile, .dockerignore, .vibecode/** and docs/**. */
 export function isAllowedOrchestratorPath(p: string): boolean {
@@ -299,8 +297,7 @@ function planOptions(
     0,
     ...triggers.flatMap((e) => (e.type === 'prd.applied' ? [e.data.version] : [])),
   );
-  const projectChanged =
-    project !== null && JSON.stringify(project) !== JSON.stringify(product.project);
+  const projectChanged = project !== null && projectConfigChanged(product.project, project);
   return {
     ...(projectChanged ? { project } : {}),
     ...(replanVersion > 1 ? { replan: { version: replanVersion, summary: plan.summary } } : {}),
@@ -338,20 +335,4 @@ async function mergeToMain(
 function firstLine(text: string): string {
   const line = text.trim().split('\n')[0] ?? '';
   return line.length <= 72 ? line : `${line.slice(0, 71)}…`;
-}
-
-/** `.vibecode/project.json` validated with ProjectConfig; null when the file does not exist. */
-async function readProjectConfig(dir: string): Promise<Check<ProjectConfig | null>> {
-  const file = await readRepoFile(dir, PROJECT_FILE);
-  if (!file.ok) return file.missing === true ? { ok: true, value: null } : file;
-  let json: unknown;
-  try {
-    json = JSON.parse(file.value);
-  } catch {
-    return { ok: false, reason: `${PROJECT_FILE} is not valid JSON` };
-  }
-  const parsed = ProjectConfigSchema.safeParse(json);
-  return parsed.success
-    ? { ok: true, value: parsed.data }
-    : { ok: false, reason: `invalid ${PROJECT_FILE}: ${z.prettifyError(parsed.error)}` };
 }
