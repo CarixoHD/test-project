@@ -7,8 +7,10 @@ import type { Store } from '../store/index.ts';
 
 // Optional push of main to the product's git remote (PRD 'Code location', ARCHITECTURE §6
 // flow 4 step 7). A store subscriber: after a merge (issue.completed), a PRD commit
-// (prd.applied) or a newly configured remote it pushes asynchronously, outside the merge lock,
-// one push at a time per product (requests during a push coalesce into one more push). A
+// (prd.applied) or a newly configured remote it pushes asynchronously, outside the merge lock.
+// An orchestrator run that lands setup files on main commits no such event, so it calls
+// `request` directly (the orchestrator's `onMainAdvanced` hook, wired in main.ts). Pushes run
+// one at a time per product (requests during a push coalesce into one more push). A
 // failure never touches the issue; it becomes an inbox error the owner can act on.
 
 export interface RemotePusherDeps {
