@@ -76,6 +76,7 @@ src/
     recovery/        recover.ts (boot reconciliation)
     notify/          inbox rules (event → inbox item)
     util/exec.ts     the ONLY child_process wrapper (argv only, timeout, redaction)
+    util/clock.ts, util/id-gen.ts  systemClock/FakeClock, monotonic ULID createIdGen(clock)/FakeIdGen
   web/
     main.tsx, App.tsx, routes/
     state/           store.ts (snapshot + EventSource + reduce), api.ts (typed fetch)
@@ -169,7 +170,14 @@ interface Store {
   q: Queries;                                         // typed read helpers (issues, attempts, usage totals …)
 }
 ```
-**Invariant (tested):** `events.reduce(reduce, emptyState)` equals `snapshot().state` after any command sequence.
+```ts
+interface Tx { q: Queries; db: Db }   // db: same connection, inside the transaction; write only tables without events (settings, secrets)
+interface Queries { product(id); issuesByProduct(productId) /* by number */; issue(id); attemptsByIssue(issueId) /* by n */;
+                    attempt(id); productUsage(productId); issueUsage(issueId) }   // ClientState shapes; usage zero when none
+createStore({db, clock, redactor}): Store;     // db from db/open(path) (':memory:' in tests; file created 0600; WAL pragmas; migrations applied)
+```
+Commit order: `build(tx)` → for each draft: zod-validate, redact every string in `data`, re-validate, insert (seq = AUTOINCREMENT, ts = `clock.now()` once per commit), then **project** (`store/project*.ts`, the server twin of `reduce`). Commands do not write projection tables themselves: the projector derives them from the events, so they cannot drift. A throwing builder, an invalid draft or a projection constraint failure (e.g. FK to a missing product) rolls the whole commit back and notifies nobody. Subscribers run after the commit; nested `commit` inside a builder throws. Usage totals are running sums in `usage_totals`, updated per event with the shared `addUsage` (never SQL `SUM()`).
+**Invariant (tested):** `events.reduce(reduce, emptyState)` equals `snapshot().state` after any command sequence. Tests call `expectSnapshotMatchesReplay(store)` from `store/testing.ts`.
 
 ### 4.3 server/http
 These are thin routes. Each one validates with zod, calls a command, and returns `{ok}` or a typed error.
@@ -356,15 +364,16 @@ products(id PK, name, idea, phase 'sparring'|'building'|'complete', paused INT, 
          prd_version INT=0, orchestrator_cursor INT=0, project JSON NULL /* last valid .vibecode/project.json */, created_at)
 prd_versions(product_id, version, markdown, summary NULL, created_at)  PK(product_id, version)
 prd_drafts(product_id PK, markdown, base_version, updated_at)
-spar_messages(id PK, product_id, role 'owner'|'agent', text, created_at)
+spar_messages(id PK, product_id, role 'owner'|'agent', text, created_at, seq /* event seq: arrival order */)
 issues(id PK, product_id, number, title, body, status, rev, priority, origin 'orchestrator'|'owner', prd_version,
-       attempt_count, held_question_id NULL, run_after INT, merged_order INT NULL, merge_sha NULL, failure_reason NULL, created_at, updated_at)
-issue_deps(issue_id, depends_on_id)  PK(issue_id, depends_on_id)
+       attempt_count, held_question_id NULL, run_after INT, merged_order INT NULL, merge_sha NULL, failure_reason NULL,
+       cancel_reason NULL /* server-only */, created_at, updated_at)
+issue_deps(issue_id, depends_on_id, position /* order of dependsOn */)  PK(issue_id, depends_on_id)
 attempts(id PK, issue_id, product_id, n, issue_rev, base_sha, branch, head_sha NULL,
          status 'running'|'merged'|'check_failed'|'rejected'|'conflict'|'error'|'interrupted'|'discarded',
-         counted INT, step 'implement'|'check'|'review'|'merge', feedback NULL, review JSON NULL, check_exit NULL, started_at, ended_at NULL)
+         counted INT, step 'implement'|'check'|'review'|'merge', feedback NULL, review JSON NULL, check_exit NULL, interrupt_reason NULL, started_at, ended_at NULL)
 agents(id PK, product_id, role, provider, model, issue_id NULL, attempt_id NULL,
-       state 'working'|'waiting_owner'|'rate_limited'|'exited', until INT NULL, started_at, ended_at NULL)
+       state 'working'|'waiting_owner'|'rate_limited'|'exited', until INT NULL, last_activity NULL, started_at, ended_at NULL)
 usage(id PK, product_id, issue_id NULL, attempt_id NULL, agent_id, role, provider, model, billing 'api'|'subscription',
       input, output, cache_read, cache_write, reasoning, web_searches, calls, cost_usd REAL NULL, unpriced INT,
       est_cost_usd REAL NULL, source 'computed'|'provider'|'cli', ts)
@@ -372,6 +381,8 @@ questions(id PK, product_id, issue_id NULL, agent_id NULL, target 'orchestrator'
 inbox(id PK, product_id NULL, kind 'question'|'failed'|'budget_warn'|'budget_paused'|'rate_limited'|'auth_required'|'replan'|'complete'|'error',
       title, body, link, read_at NULL, created_at)
 backend_limits(backend PK /* e.g. 'claude-code', 'anthropic' */, until INT NULL, needs_login INT, reason)
+usage_totals(scope 'product'|'issue', scope_id, api_usd REAL, api_unpriced INT, sub_input, sub_output, sub_cache_read, sub_cache_write,
+             sub_reasoning, sub_calls)  PK(scope, scope_id)   -- running totals, added in commit order (snapshot ≡ replay)
 previews(product_id PK, container, url, started_at)
 settings(key PK, value JSON)      -- host-independent prefs, role defaults, provider configs (no secrets), price overrides, password_hash
 secrets(key PK, value, updated_at) -- api keys, git tokens, session HMAC key; never in events, never sent to the client in full
