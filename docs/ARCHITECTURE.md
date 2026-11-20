@@ -128,7 +128,8 @@ function slotsFree(running:number, maxParallel:number): number;    // max(0, max
 // triggers.ts
 function pendingTriggers(events: Event[], cursor: number,
   opts?: {productId?: ProductId; questions?: Map|Record<QuestionId, {target}>}): Event[];
-//   seq > cursor, seq order; TRIGGER_TYPES = product.handed_off, prd.applied, issue.failed, question.answered.
+//   seq > cursor, seq order; TRIGGER_TYPES = product.handed_off, prd.applied, issue.failed, question.answered, issue.cancelled.
+//   issue.cancelled counts only with a non-empty data.stranded (owner cancel of an issue unfinished issues depend on).
 //   An answer counts only for an orchestrator question; the target comes from a question.asked in
 //   `events`, else from `opts.questions` (e.g. ClientState.questions); unknown target → not a trigger.
 // budget.ts
@@ -307,7 +308,7 @@ addIssue(deps, productId, {title, body, dependsOn, priority?}) → {ok; events; 
 //   origin owner, next number, prdVersion; a complete product → product.phase_changed{building} in the same commit
 editIssue(deps, issueId, {title?, body?, dependsOn?, rev}) → {ok; events; rev}
 //   open|failed|in_progress|in_review only (else conflict); rev ≠ current → conflict; rev+1; no cycles
-cancelIssue(deps, issueId) → {ok; events}   // via transition(); completed/cancelled → conflict; by:'owner'; + question.withdrawn per open question of the issue (withdrawIssueQuestions)
+cancelIssue(deps, issueId) → {ok; events}   // via transition(); completed/cancelled → conflict; by:'owner'; + question.withdrawn per open question of the issue (withdrawIssueQuestions); data.stranded = unfinished dependents (omitted when none), which makes it an orchestrator trigger
 // codes: invalid → 400, not_found → 404, conflict → 409
 createSparring({store, ids, sparTurn: SparTurnRunner, onError}): Sparring;   // flow 1, any phase
 //   sendSparMessage(productId, {message}) → {ok; events; done} | 400/404/409: commits spar.message{owner}
