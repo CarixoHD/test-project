@@ -1,5 +1,7 @@
 Playwright browser tests (`npm run test:e2e`). Install the browser first with `npx playwright install --with-deps chromium`; `global-setup.ts` stops the run with that hint when Chromium cannot start.
 
-`playwright.config.ts` builds the SPA and runs `node src/server/main.ts` in demo mode (`VIBECODE_DEMO=1`, `VIBECODE_FAKE_DOCKER=1`) on a fresh temp `VIBECODE_DATA_DIR`: no API keys, no Docker. Specs are typechecked with `tsconfig.e2e.json` (DOM lib).
+`playwright.config.ts` builds the SPA and runs `node src/server/main.ts` in demo mode (`VIBECODE_DEMO=1`, `VIBECODE_FAKE_DOCKER=1`) on a fresh temp `VIBECODE_DATA_DIR`: no API keys, no Docker. A second server (port 4328, its own temp data dir) serves the `settings` project, so account settings and the owner password set there never reach the other specs. Specs are typechecked with `tsconfig.e2e.json` (DOM lib).
 
 - `board.spec.ts`: serial; the first test creates the product the others continue with. Covers create → spar → handoff → issues Completed without reload, add/edit/cancel, an SSE outage caught up by a snapshot reload, and the inbox.
+- `scene.spec.ts`: Scene3D smoke. Sets the `vibecode.debug.sceneStats` localStorage flag so the production build exposes `window.__vibecodeScene`, runs a product through the demo pipeline and asserts the canvas is present, draw calls stay under 60, and collapsing hides the canvas and stops frames.
+- `settings.spec.ts` (`settings` project, serial): API key shown only as its last 4, role defaults, product budget and max parallel agents, and the password flow (set → logout → Login page → wrong password → login → logout). The password test runs last.
