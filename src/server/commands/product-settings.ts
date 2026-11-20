@@ -5,7 +5,7 @@ import {
 } from '../../shared/dto.ts';
 import type { Event } from '../../shared/events.ts';
 import type { ProductId } from '../../shared/ids.ts';
-import type { RoleModels } from '../../shared/models.ts';
+import { ROLES, type RoleModels } from '../../shared/models.ts';
 import type { CommandDeps } from './apply-plan.ts';
 
 // Owner command: change a product's budget, parallelism, attempts, model overrides or git
@@ -20,14 +20,11 @@ type SettingsChange = Partial<ProductSettings>;
 function mergeModels(
   current: RoleModels,
   patch: NonNullable<ProductSettingsUpdateRequest['models']>,
-) {
-  const next: RoleModels = { ...current };
-  for (const [role, ref] of Object.entries(patch) as [
-    keyof RoleModels,
-    (typeof patch)[keyof RoleModels],
-  ][]) {
-    if (ref === null || ref === undefined) delete next[role];
-    else next[role] = { ...ref };
+): RoleModels {
+  const next: RoleModels = {};
+  for (const role of ROLES) {
+    const ref = role in patch ? patch[role] : current[role];
+    if (ref !== null && ref !== undefined) next[role] = { ...ref };
   }
   return next;
 }

@@ -47,7 +47,4 @@ export {
   type SparringCommandDeps,
   type SparTurnRunner,
 } from './spar.ts';
-export {
-  updateProductSettings,
-  type UpdateProductSettingsResult,
-} from './product-settings.ts';
+export { updateProductSettings, type UpdateProductSettingsResult } from './product-settings.ts';
