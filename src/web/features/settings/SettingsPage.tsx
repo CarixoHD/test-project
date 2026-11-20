@@ -1,9 +1,34 @@
-/** `/settings`: providers, keys and defaults. Placeholder until the settings feature lands. */
+import { ClaudeCodeSection } from './ClaudeCodeSection.tsx';
+import { ModelsSection } from './ModelsSection.tsx';
+import { PasswordSection } from './PasswordSection.tsx';
+import { PriceOverridesSection } from './PriceOverridesSection.tsx';
+import { ProvidersSection } from './ProvidersSection.tsx';
+import { useAccountSettings } from './use-account-settings.ts';
+
+/** `/settings`: providers and keys, models per role, price overrides, Claude Code, password. */
 export function SettingsPage() {
+  const { settings, error, replace } = useAccountSettings();
   return (
     <>
       <h1>Settings</h1>
-      <p>Model providers, API keys and default models will appear here.</p>
+      {error !== null ? (
+        <p role="alert" className="ui-field__error">
+          {error}
+        </p>
+      ) : null}
+      {settings === null ? (
+        error === null ? (
+          <p role="status">Loading settings…</p>
+        ) : null
+      ) : (
+        <div className="settings">
+          <ProvidersSection settings={settings} onSaved={replace} />
+          <ModelsSection settings={settings} onSaved={replace} />
+          <PriceOverridesSection settings={settings} onSaved={replace} />
+        </div>
+      )}
+      <ClaudeCodeSection />
+      <PasswordSection />
     </>
   );
 }
