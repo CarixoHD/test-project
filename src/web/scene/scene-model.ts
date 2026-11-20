@@ -1,3 +1,5 @@
+import type { AgentId } from '../../shared/ids.ts';
+import { roleLabel } from '../features/agents/index.ts';
 import type {
   Figure,
   PieceType,
@@ -71,6 +73,11 @@ export const FIGURE_LOOKS: Record<Figure, FigureLook> = {
   drafter: { body: '#7a5aa6', hat: 'beret', hatColor: '#2b2b33' },
 };
 
+/** The small label shown while hovering a figure; the agent list uses the same wording. */
+export function workerName(worker: SceneWorker): string {
+  return roleLabel(worker.role);
+}
+
 export interface WorkerPlacement {
   worker: SceneWorker;
   look: FigureLook;
@@ -142,4 +149,9 @@ export interface Scene3DProps {
   frameloop: Frameloop;
   /** prefers-reduced-motion: no placement, walk or work animations. */
   reducedMotion: boolean;
+  /**
+   * A worker figure was clicked: the panel opens that agent's AgentPanel. The only thing the
+   * scene can do; it never controls agents (ADR 8). Must keep its identity across renders.
+   */
+  onPickWorker?: ((agentId: AgentId) => void) | undefined;
 }

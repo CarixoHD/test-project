@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthContext, type Auth } from '../auth/index.ts';
@@ -41,6 +41,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount while the fake network is still in place.
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -64,7 +66,7 @@ describe('PasswordSection', () => {
   });
 
   it('sets the first password: new and confirm, no current password', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     const auth = renderSection();
     await user.type(await screen.findByLabelText('New password'), NEXT);
     expect(screen.queryByLabelText('Current password')).toBeNull();
@@ -80,7 +82,7 @@ describe('PasswordSection', () => {
   });
 
   it('validates before sending: length and matching confirmation', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     renderSection();
     await user.type(await screen.findByLabelText('New password'), 'short');
     await user.type(screen.getByLabelText('Confirm new password'), 'short');
@@ -100,7 +102,7 @@ describe('PasswordSection', () => {
   });
 
   it('changes the password: requires the current one and shows a wrong one on its field', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     server.password = OLD;
     const auth = renderSection();
     const current = await screen.findByLabelText('Current password');
@@ -127,7 +129,7 @@ describe('PasswordSection', () => {
   });
 
   it('explains the rate limit', async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     server.password = OLD;
     server.rateLimited = true;
     renderSection();

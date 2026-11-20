@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import type { IdGen, ProductId } from '../../shared/ids.ts';
-import type { Access, AccountSettings, Sparring } from '../commands/index.ts';
+import type { Access, AccountSettings, GitTokens, Sparring } from '../commands/index.ts';
 import type { Git } from '../git/index.ts';
 import type { ClaudeLoginSource, Previews } from '../sandbox/index.ts';
 import type { Store } from '../store/index.ts';
@@ -20,6 +20,8 @@ export interface AppDeps {
   clientKey?: ((c: Context) => string) | undefined;
   /** Account settings (GET|PUT /api/settings); those routes exist only when given. */
   settings?: AccountSettings | undefined;
+  /** Product git remote tokens (GET|PUT /api/products/:id/git-token); routes exist only when given. */
+  gitTokens?: GitTokens | undefined;
   /** The scheduler's per-product merge lock; apply-prd commits docs/PRD.md under it. */
   withMergeLock?: (<T>(productId: ProductId, fn: () => Promise<T>) => Promise<T>) | undefined;
   /** Sparring turns (POST /spar). Optional until main.ts wires the pipeline; absent → 500. */

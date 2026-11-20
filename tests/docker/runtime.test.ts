@@ -12,6 +12,8 @@ import {
   type SandboxNetwork,
   type SandboxSpec,
 } from '../../src/server/sandbox/index.ts';
+import { exec } from '../../src/server/util/exec.ts';
+import { EGRESS_PROBE, openInterfaces } from './net-probes.ts';
 
 const uid = process.getuid?.() ?? 1000;
 const gid = process.getgid?.() ?? 1000;
@@ -90,17 +92,30 @@ describe('DockerCliRuntime against a real Docker daemon', () => {
     expect(await readFile(path.join(s.worktree, '.git'), 'utf8')).toBe(GIT_POINTER);
   });
 
-  it('blocks all egress on network none', async () => {
-    const s = await spec();
-    const probe =
-      "require('net').connect({host:'1.1.1.1',port:53,timeout:5000})" +
-      ".on('connect',()=>process.exit(0)).on('error',()=>process.exit(3))" +
-      ".on('timeout',()=>process.exit(4))";
-    const r = await rt.runOnce(s, ['node', '-e', probe], T);
-    expect(r.code).not.toBe(0);
-    const ifaces = await rt.runOnce({ ...s, runId: `${s.runId}b` }, ['cat', '/proc/net/dev'], T);
-    expect(ifaces.stdout).toContain('lo:');
-    expect(ifaces.stdout).not.toMatch(/eth\d+:/);
+  it('gives network-none containers no interface but loopback (needs no internet)', async () => {
+    const r = await rt.runOnce(await spec(), ['cat', '/proc/net/dev'], T);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('lo:');
+    expect(openInterfaces(r.stdout)).toEqual([]);
+  });
+
+  it('blocks egress on network none where a bridge-network control connects', async (ctx) => {
+    const blocked = await rt.runOnce(await spec(), ['node', '-e', EGRESS_PROBE], T);
+    expect(blocked.code).not.toBe(0);
+    // Positive control: the same probe on Docker's default bridge. If that cannot connect
+    // either, this host has no egress and the failure above proves nothing.
+    const control = await exec(
+      'docker',
+      ['run', '--rm', '--network', 'bridge', image, 'node', '-e', EGRESS_PROBE],
+      T,
+    );
+    const egressVerifiable = control.code === 0;
+    ctx.skip(
+      !egressVerifiable,
+      `egress NOT verified: the bridge-network control could not reach 1.1.1.1:53 (exit ${String(control.code)}), ` +
+        'so this host has no egress; only the structural no-interface test counts',
+    );
+    await ctx.annotate('bridge control connected to 1.1.1.1:53; network none blocked it');
   });
 
   it('writes files into the worktree owned by the host uid', async () => {

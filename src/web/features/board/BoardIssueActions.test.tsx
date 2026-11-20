@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -112,7 +112,7 @@ async function renderBoard(history: (() => Event)[]) {
     </MemoryRouter>,
   );
   await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
-  return userEvent.setup();
+  return userEvent.setup({ delay: null });
 }
 
 function push(...events: Event[]): void {
@@ -130,6 +130,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unmount while the fake network is still in place.
+  cleanup();
   vi.unstubAllGlobals();
 });
 
