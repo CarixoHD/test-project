@@ -1,7 +1,7 @@
 import type { ReviewResult } from '../../shared/agent-results.ts';
 import type { AttemptStep, InterruptReason } from '../../shared/domain.ts';
 import type { EventDraft, EventOf } from '../../shared/events.ts';
-import type { AttemptId, IssueId, ProductId } from '../../shared/ids.ts';
+import type { AgentId, AttemptId, IssueId, ProductId, QuestionId } from '../../shared/ids.ts';
 import { transition, type IssueTransitionEvent } from '../../shared/issues.ts';
 import type { IssueState } from '../../shared/state.ts';
 import type { Store, Tx } from '../store/index.ts';
@@ -166,22 +166,28 @@ export type BackendLimitDraft = {
   reason: string;
 };
 
+/** An implementer's question to the owner (flow 4.3); it holds the issue until answered. */
+export type QuestionDraft = { id: QuestionId; agentId: AgentId; text: string };
+
 /**
  * attempt.ended{interrupted, interruptReason}, uncounted (ADR 7), and the issue back to open
  * (not before `runAfter`) when it is still in progress or in review. `limit` also commits
  * backend.limited, but only when it changes the backend's projected limit, so parallel attempts
- * hitting the same limit record it (and its inbox item) once.
+ * hitting the same limit record it (and its inbox item) once. `question` also commits
+ * question.asked{target:'issue'} and issue.held, so the scheduler skips the issue until the
+ * owner answers.
  */
 export function interruptAttempt(
   ref: AttemptRef,
   reason: InterruptReason,
   feedback: string,
   outcome: AttemptOutcome,
-  o: { runAfter?: number; limit?: BackendLimitDraft } = {},
+  o: { runAfter?: number; limit?: BackendLimitDraft; question?: QuestionDraft } = {},
 ): void {
   ref.store.commit((tx) => {
-    const { limit, runAfter } = o;
+    const { limit, runAfter, question } = o;
     const limited = limit !== undefined && limitChanged(tx, limit) ? [limitedDraft(limit)] : [];
+    const asked = question === undefined ? [] : questionDrafts(ref, question);
     return [
       endedDraft(ref, 'interrupted', feedback, outcome, false, reason),
       ...reopenDrafts(tx, ref, {
@@ -190,8 +196,28 @@ export function interruptAttempt(
         ...(runAfter === undefined ? {} : { runAfter }),
       }),
       ...limited,
+      ...asked,
     ];
   });
+}
+
+function questionDrafts(ref: AttemptRef, q: QuestionDraft): EventDraft[] {
+  return [
+    {
+      type: 'question.asked',
+      productId: ref.productId,
+      entityId: q.id,
+      v: 1,
+      data: { target: 'issue', issueId: ref.issueId, agentId: q.agentId, text: q.text },
+    },
+    {
+      type: 'issue.held',
+      productId: ref.productId,
+      entityId: ref.issueId,
+      v: 1,
+      data: { questionId: q.id },
+    },
+  ];
 }
 
 /** attempt.ended{discarded}, uncounted: the issue was cancelled, so its work is thrown away. */

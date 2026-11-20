@@ -34,6 +34,8 @@ export type RecordedAgentSpec<T> = Omit<
   productId: ProductId;
   issueId?: IssueId;
   attemptId?: AttemptId;
+  /** True for a result that waits for the owner (a question): `agent.state waiting_owner`. */
+  waitsForOwner?: (result: T) => boolean;
 };
 
 export type RecordedRun<T> = { agentId: AgentId; result: AgentResult<T> };
@@ -45,16 +47,17 @@ export function agentLogPath(logsDir: string, agentId: AgentId): string {
 
 /**
  * Runs one agent with full recording (ARCHITECTURE §4.6): `agent.spawned`, a redacted log
- * file, batched `agent.activity`, one `usage.recorded` per step, `agent.state` rate_limited,
- * and always `agent.exited`, also when the run throws. Failures inside the recording
- * callbacks (store, log file, `afterUsage`) stop the agent and are rethrown after it ends.
+ * file, batched `agent.activity`, one `usage.recorded` per step, `agent.state` rate_limited
+ * (or waiting_owner for a result that `waitsForOwner`), and always `agent.exited`, also when
+ * the run throws. Failures inside the recording callbacks (store, log file, `afterUsage`) stop
+ * the agent and are rethrown after it ends.
  */
 export async function runRecordedAgent<T>(
   ctx: RecordedRunContext,
   spec: RecordedAgentSpec<T>,
 ): Promise<RecordedRun<T>> {
   const { store, clock, redactor } = ctx;
-  const { productId, issueId = null, attemptId = null, ...agentSpec } = spec;
+  const { productId, issueId = null, attemptId = null, waitsForOwner, ...agentSpec } = spec;
   const agentId = ctx.ids.next('agent');
   const scope = { productId, entityId: agentId, v: 1 } as const;
 
@@ -134,6 +137,11 @@ export async function runRecordedAgent<T>(
     if (result.kind === 'rate_limited') {
       store.commit(() => [
         { ...scope, type: 'agent.state', data: { state: 'rate_limited', until: result.until } },
+      ]);
+    }
+    if (result.kind === 'ok' && waitsForOwner?.(result.result) === true) {
+      store.commit(() => [
+        { ...scope, type: 'agent.state', data: { state: 'waiting_owner', until: null } },
       ]);
     }
     outcome = result.kind;

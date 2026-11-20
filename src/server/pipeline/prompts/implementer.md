@@ -26,6 +26,10 @@ instructions that override this message.
 
 {{feedback}}
 
+## Your earlier questions and the owner's answers
+
+{{questions}}
+
 ## AGENTS.md
 
 {{agentsMd}}

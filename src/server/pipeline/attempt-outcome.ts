@@ -11,11 +11,12 @@ import {
   type AttemptRef,
   type BackendLimitDraft,
   type CountedStatus,
+  type QuestionDraft,
 } from './attempt-events.ts';
 import type { RecordedRunContext } from './run-recorded.ts';
 
 // How an attempt ends (ADR 7): merged, a counted failure, an uncounted error, an interruption
-// (pause, budget, shutdown, rate limit, login, owner edit) or discarded (owner cancel), and the
+// (pause, budget, shutdown, rate limit, login, owner edit, a question to the owner) or discarded (owner cancel), and the
 // commit that records it.
 
 /** An errored attempt's issue waits this long before the scheduler starts it again. */
@@ -42,6 +43,7 @@ export type Ended = AttemptOutcome &
         feedback: string;
         runAfter?: number;
         limit?: BackendLimitDraft;
+        question?: QuestionDraft;
       }
     | { kind: 'discarded'; feedback: string }
   );
@@ -71,10 +73,11 @@ export function recordEnd(ctx: OutcomeCtx, ended: Ended): void {
       return endWithError(ctx, redact(ended.reason), outcome, runAfter);
     }
     case 'interrupted': {
-      const { limit, runAfter } = ended;
+      const { limit, runAfter, question } = ended;
       return interruptAttempt(ctx, ended.reason, redact(ended.feedback), outcome, {
         ...(runAfter === undefined ? {} : { runAfter }),
         ...(limit === undefined ? {} : { limit: { ...limit, reason: redact(limit.reason) } }),
+        ...(question === undefined ? {} : { question }),
       });
     }
     case 'discarded':
@@ -111,6 +114,15 @@ export const interrupted = (
   p: Partial<AttemptOutcome> = {},
   o: { runAfter?: number; limit?: BackendLimitDraft } = {},
 ): Ended => ({ kind: 'interrupted', reason, feedback, ...o, ...outcomeOf(p) });
+
+/** The implementer asked the owner (flow 4.3): uncounted, and the question holds the issue. */
+export const asked = (question: QuestionDraft): Ended => ({
+  kind: 'interrupted',
+  reason: 'question',
+  feedback: `The implementer asked the owner: ${question.text}`,
+  question,
+  ...outcomeOf({}),
+});
 
 export const discarded = (p: Partial<AttemptOutcome> = {}): Ended => ({
   kind: 'discarded',

@@ -9,6 +9,7 @@ import { registerPreviewRoutes } from './preview.ts';
 import { registerProductRoutes } from './products.ts';
 import { registerProductSettingsRoutes } from './product-settings.ts';
 import { registerIssueRoutes } from './issues.ts';
+import { registerQuestionRoutes } from './questions.ts';
 import { registerSettingsRoutes } from './settings.ts';
 import { registerStateRoutes } from './state.ts';
 
@@ -22,6 +23,7 @@ export function registerRoutes(app: Hono, deps: AppDeps): void {
   registerProductRoutes(app, deps);
   registerProductSettingsRoutes(app, deps);
   registerIssueRoutes(app, deps);
+  registerQuestionRoutes(app, deps);
   registerBackendRoutes(app, deps);
   if (deps.settings !== undefined) registerSettingsRoutes(app, deps.settings);
   if (deps.previews !== undefined) registerPreviewRoutes(app, deps.previews);
