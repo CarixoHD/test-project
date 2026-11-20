@@ -127,8 +127,7 @@ describe('remote push after merges', () => {
     secrets.set(gitTokenSecret(P), TOKEN);
     const redactor = new Redactor();
     redactor.register(TOKEN);
-    pushImpl = () =>
-      Promise.reject(new GitError(`fatal: Authentication failed (token ${TOKEN})`));
+    pushImpl = () => Promise.reject(new GitError(`fatal: Authentication failed (token ${TOKEN})`));
     const p = start(redactor);
     const id = h.addIssue('Scaffold');
 
@@ -151,7 +150,8 @@ describe('remote push after merges', () => {
   it('repeats an identical failure only after a push succeeded in between', async () => {
     setRemote(URL);
     let fail = true;
-    pushImpl = () => (fail ? Promise.reject(new GitError('remote unreachable')) : Promise.resolve());
+    pushImpl = () =>
+      fail ? Promise.reject(new GitError('remote unreachable')) : Promise.resolve();
     const p = start();
     const push = async () => {
       p.request(P);
