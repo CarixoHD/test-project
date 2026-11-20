@@ -42,4 +42,4 @@ export {
   DockerCliRuntime,
   type DockerCliRuntimeOptions,
 } from './docker-cli.ts';
-export { DOCKER_UNAVAILABLE_REASON, selectRuntime } from './select-runtime.ts';
+export { selectRuntime } from './select-runtime.ts';

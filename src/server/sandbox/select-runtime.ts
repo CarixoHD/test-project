@@ -1,31 +1,29 @@
 // Picks the ContainerRuntime for the running server (ARCHITECTURE §4.8, ADR 6): the in-memory
-// FakeContainerRuntime with VIBECODE_FAKE_DOCKER=1. The docker CLI runtime (#42) replaces the
-// unavailable placeholder below.
+// FakeContainerRuntime with VIBECODE_FAKE_DOCKER=1, otherwise the docker CLI runtime.
+import { DockerCliRuntime } from './docker-cli.ts';
 import { FakeContainerRuntime, type FakeRunRule } from './fake.ts';
 import type { ContainerRuntime } from './types.ts';
 
-export const DOCKER_UNAVAILABLE_REASON =
-  'Docker runtime not available yet: set VIBECODE_FAKE_DOCKER=1';
+const FALLBACK_ID = 1000;
 
-/** A runtime whose every container operation fails with DOCKER_UNAVAILABLE_REASON. */
-function unavailableRuntime(): ContainerRuntime {
-  const reject = () => Promise.reject(new Error(DOCKER_UNAVAILABLE_REASON));
-  return {
-    available: () => Promise.resolve(false),
-    ensureImage: reject,
-    open: reject,
-    runOnce: reject,
-    listManaged: reject,
-    remove: reject,
-  };
-}
-
-/** `o.script` answers non-file-op commands in the fake runtime (demo mode: the check). */
+/**
+ * `o.script` answers non-file-op commands in the fake runtime (demo mode: the check).
+ * `o.docker` overrides the docker CLI binary (tests point it at a missing one).
+ */
 export function selectRuntime(
   config: { fakeDocker: boolean; dataDir: string },
-  o: { script?: readonly FakeRunRule[] } = {},
+  o: { script?: readonly FakeRunRule[]; docker?: string } = {},
 ): ContainerRuntime {
-  return config.fakeDocker
-    ? new FakeContainerRuntime({ dataDir: config.dataDir, ...o })
-    : unavailableRuntime();
+  if (config.fakeDocker) {
+    return new FakeContainerRuntime({
+      dataDir: config.dataDir,
+      ...(o.script === undefined ? {} : { script: o.script }),
+    });
+  }
+  return new DockerCliRuntime({
+    dataDir: config.dataDir,
+    uid: process.getuid?.() ?? FALLBACK_ID,
+    gid: process.getgid?.() ?? FALLBACK_ID,
+    docker: o.docker,
+  });
 }
