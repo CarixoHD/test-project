@@ -515,7 +515,7 @@ describe('hardening', () => {
     await expect(g.commitFilesOnMain('p1', { 'a.txt': 'a' }, 'm', { signal })).rejects.toThrow(
       GitError,
     );
-    await expect(g.listRepos({ signal })).resolves.toEqual(['p1']);
+    await expect(g.listRepos({ signal })).rejects.toThrow(GitError);
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.every((s) => s === signal)).toBe(true);
     expect(await commitCount('p1')).toBe('1');
@@ -558,7 +558,8 @@ describe('hardening', () => {
     expect(err).toBeInstanceOf(GitError);
     expect(String(err)).toMatch(/truncat/i);
     await expect(g.mainSha('p1')).rejects.toThrow(/truncat/i);
-    const fake: typeof exec = () => Promise.resolve(okResult('git version 2.40.0', { truncated: true }));
+    const fake: typeof exec = () =>
+      Promise.resolve(okResult('git version 2.40.0', { truncated: true }));
     await expect(createGit({ dataDir, exec: fake }).mainSha('p1')).rejects.toThrow(/truncat/i);
   });
 
