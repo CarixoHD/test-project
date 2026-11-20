@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   FakeContainerRuntime,
   type ExecOpts,
@@ -35,6 +35,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await rm(base, { recursive: true, force: true });
 });
 
@@ -272,57 +273,38 @@ describe('run', () => {
   });
 
   it('reports a timeout', async () => {
-    const { sb } = await open();
-    const timedOut: Sandbox = {
-      name: sb.name,
-      close: () => sb.close(),
-      exec: () =>
-        Promise.resolve({
-          code: null,
-          stdout: 'partial',
-          stderr: '',
-          timedOut: true,
-          aborted: false,
-          truncated: false,
-        }),
-    };
-    const out = await tool('run').execute({ command: 'sleep 999', timeoutMs: 1000 }, timedOut);
+    vi.useFakeTimers();
+    const { sb } = await open([
+      {
+        match: ['bash', '-lc'],
+        result: { code: 0, stdout: 'done' },
+        durationMs: 999_000,
+        partial: { stdout: 'partial' },
+      },
+    ]);
+    const pending = tool('run').execute({ command: 'sleep 999', timeoutMs: 1000 }, sb);
+    await vi.advanceTimersByTimeAsync(1000);
+    const out = await pending;
     expect(out).toMatch(/timed out after 1000 ms/);
     expect(out).toContain('partial');
   });
 
-  /** A fake sandbox whose commands run until their timeout or until `signal` aborts. */
-  function slow(sb: Sandbox): Sandbox {
-    return {
-      name: sb.name,
-      close: () => sb.close(),
-      exec: (argv, o) =>
-        new Promise((resolve, reject) => {
-          const timer = setTimeout(() => {
-            sb.exec(argv, o).then(resolve, reject);
-          }, o.timeoutMs);
-          o.signal?.addEventListener('abort', () => {
-            clearTimeout(timer);
-            // The FakeContainerRuntime reports an aborted result for an aborted signal.
-            sb.exec(argv, o).then(resolve, reject);
-          });
-        }),
-    };
-  }
-
   it('returns promptly with an aborted result when the signal aborts during a long run', async () => {
-    const { sb } = await open([{ match: ['bash', '-lc'], result: { code: 0, stdout: 'done' } }]);
-    const controller = new AbortController();
-    const pending = tool('run').execute({ command: 'sleep 600', timeoutMs: 600_000 }, slow(sb), {
-      signal: controller.signal,
-    });
-    setTimeout(() => {
-      controller.abort();
-    }, 10);
-    const out = await Promise.race([
-      pending,
-      new Promise<string>((resolve) => setTimeout(() => resolve('still running'), 2_000)),
+    vi.useFakeTimers();
+    const { sb } = await open([
+      { match: ['bash', '-lc'], result: { code: 0, stdout: 'done' }, durationMs: 600_000 },
     ]);
+    const controller = new AbortController();
+    let out: string | undefined;
+    void tool('run')
+      .execute({ command: 'sleep 600', timeoutMs: 600_000 }, sb, { signal: controller.signal })
+      .then((o) => {
+        out = o;
+      });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(out).toBeUndefined();
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
     expect(out).toMatch(/aborted/);
     expect(out).not.toContain('done');
   });
