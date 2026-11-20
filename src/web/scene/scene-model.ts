@@ -1,4 +1,5 @@
 import type { AgentId } from '../../shared/ids.ts';
+import { roleLabel } from '../features/agents/index.ts';
 import type {
   Figure,
   PieceType,
@@ -76,6 +77,11 @@ export const FIGURE_LOOKS: Record<Figure, FigureLook> = {
   inspector: { body: '#4d8a4a', hat: 'helmet', hatColor: '#e04848' },
   drafter: { body: '#7a5aa6', hat: 'beret', hatColor: '#2b2b33' },
 };
+
+/** The small label shown while hovering a figure; the agent list uses the same wording. */
+export function workerName(worker: SceneWorker): string {
+  return roleLabel(worker.role);
+}
 
 export interface WorkerPlacement {
   worker: SceneWorker;
