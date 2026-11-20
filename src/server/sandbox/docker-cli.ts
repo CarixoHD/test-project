@@ -121,7 +121,7 @@ export type DockerCliRuntimeOptions = {
  * Tag of the fallback image (ADR 6): `vibecode/base:<sha256[:12]>` over base.Dockerfile and every
  * build-context file or directory it COPYs or ADDs (`--from` stages excluded). Editing any of them
  * yields a new tag, so ensureImage builds it instead of reusing a stale image on the host. The
- * runtime, FakeContainerRuntime, the login commands and `npm run docker:images` all use this.
+ * runtime, FakeContainerRuntime, the login commands and `npm run -s docker:images` all use this.
  */
 export async function baseImageTag(imageDir: string): Promise<string> {
   const dockerfile = await readFile(path.join(imageDir, BASE_DOCKERFILE));
