@@ -60,7 +60,7 @@ describe('checkBudget', () => {
     expect(t.store.q.product(TEST_PRODUCT)?.budgetWarned).toBe(true);
 
     t.spend(0.5);
-    expect(t.check().events).toEqual([]);
+    expect(t.check()).toMatchObject({ ok: true, events: [] });
     t.check();
     expect(t.ofType('budget.warned')).toHaveLength(1);
     expect(t.store.q.product(TEST_PRODUCT)?.paused).toBe(false);

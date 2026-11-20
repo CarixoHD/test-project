@@ -6,7 +6,12 @@ import { createGit } from './git/index.ts';
 import { createApp } from './http/index.ts';
 import { inboxHook } from './notify/index.ts';
 import { createScheduler, type Runners } from './scheduler/index.ts';
-import { createAccountSettings, createSparring, type SparTurnRunner } from './commands/index.ts';
+import {
+  budgetAfterUsage,
+  createAccountSettings,
+  createSparring,
+  type SparTurnRunner,
+} from './commands/index.ts';
 import type { FakeScript } from './llm/index.ts';
 import { createOrchestrator, sparTurn, type OrchestratorDeps } from './pipeline/index.ts';
 import { selectRuntime } from './sandbox/index.ts';
@@ -62,6 +67,8 @@ export async function start(
     orchestratorBackoff,
   } = options;
   const logsDir = join(config.dataDir, 'logs');
+  // Every agent run checks the budget after each usage step (§6 flow 5).
+  const afterUsage = budgetAfterUsage({ store, ids });
   const modelDeps = () => ({
     ...settings.modelDeps(),
     ...(fakeScript === undefined ? {} : { fake: { script: fakeScript } }),
@@ -77,6 +84,7 @@ export async function start(
           clock: systemClock,
           redactor,
           logsDir,
+          afterUsage,
           modelDeps: modelDeps(),
           demo: config.demo,
         },
@@ -98,6 +106,7 @@ export async function start(
     clock: systemClock,
     redactor,
     logsDir,
+    afterUsage,
     git,
     runtime,
     // A getter: every run reads the settings again (provider config and keys at call time).

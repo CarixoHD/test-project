@@ -53,26 +53,20 @@ export function clearsBudgetWarning(
 
 /** Run after every usage.recorded and after settings changes. */
 export function checkBudget(deps: CommandDeps, productId: ProductId): CheckBudgetResult {
-  let result: CheckBudgetResult = {
-    ok: false,
-    code: 'not_found',
-    reason: `No product ${productId}`,
-  };
+  const seen: { level: BudgetLevel; spentUsd: number; unpriced: boolean }[] = [];
   const events = deps.store.commit((tx) => {
     const product = tx.q.product(productId);
     if (product === null) return [];
     const { apiUsd, apiUnpriced } = tx.q.productUsage(productId);
     const { budgetUsd } = product.settings;
-    result = {
-      ok: true,
-      level: budgetLevel(apiUsd, budgetUsd),
-      spentUsd: apiUsd,
-      unpriced: apiUnpriced,
-      events: [],
-    };
+    seen.push({ level: budgetLevel(apiUsd, budgetUsd), spentUsd: apiUsd, unpriced: apiUnpriced });
     return budgetDrafts({ ...product, budgetUsd }, apiUsd);
   });
-  return result.ok ? { ...result, events } : result;
+  const [checked] = seen;
+  if (checked === undefined) {
+    return { ok: false, code: 'not_found', reason: `No product ${productId}` };
+  }
+  return { ok: true, ...checked, events };
 }
 
 /** The agent-run `afterUsage` hook: checks the budget of the usage event's product. */
