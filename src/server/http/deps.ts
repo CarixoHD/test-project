@@ -1,4 +1,5 @@
 import type { IdGen } from '../../shared/ids.ts';
+import type { Sparring } from '../commands/index.ts';
 import type { Git } from '../git/index.ts';
 import type { Store } from '../store/index.ts';
 
@@ -8,6 +9,8 @@ export interface AppDeps {
   ids: IdGen;
   git: Git;
   redactor: { redact(text: string): string };
+  /** Sparring turns (POST /spar). Optional until main.ts wires the pipeline; absent → 500. */
+  sparring?: Sparring | undefined;
   /** Directory with the built SPA. Served only when it exists. */
   webRoot?: string | undefined;
   /** SSE heartbeat interval; defaults to HEARTBEAT_MS. Tests shorten it. */

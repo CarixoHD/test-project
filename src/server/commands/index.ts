@@ -22,3 +22,13 @@ export {
   type EditIssueResult,
   type IssueCommandFailure,
 } from './issues.ts';
+export {
+  createSparring,
+  nextSparMessageId,
+  savePrdDraft,
+  type SavePrdDraftResult,
+  type SendSparMessageResult,
+  type Sparring,
+  type SparringCommandDeps,
+  type SparTurnRunner,
+} from './spar.ts';
