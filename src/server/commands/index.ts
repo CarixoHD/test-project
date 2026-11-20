@@ -5,3 +5,9 @@ export {
   resolveDependsOn,
   type DependsOnContext,
 } from './issue-graph.ts';
+export {
+  createProduct,
+  DEFAULT_PRODUCT_SETTINGS,
+  type CreateProductDeps,
+  type CreateProductResult,
+} from './create-product.ts';

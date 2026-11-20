@@ -89,7 +89,7 @@ function setup(opts: { heartbeatMs?: number } = {}) {
       };
     },
   };
-  const app = createApp({ store, redactor: deps.redactor, heartbeatMs: opts.heartbeatMs });
+  const app = createApp({ ...deps, store, heartbeatMs: opts.heartbeatMs });
   return { ...deps, store, app, unsubscribed };
 }
 

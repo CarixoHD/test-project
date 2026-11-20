@@ -2,10 +2,12 @@ import { resolve } from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
 import { ensureDataDir, parseConfig, type Config } from './config.ts';
 import { open } from './db/index.ts';
+import { createGit } from './git/index.ts';
 import { createApp } from './http/index.ts';
 import { redactor } from './security/index.ts';
 import { createStore } from './store/index.ts';
 import { systemClock } from './util/clock.ts';
+import { createIdGen } from './util/id-gen.ts';
 
 const DEFAULT_WEB_ROOT = resolve(import.meta.dirname, '../../dist/web');
 
@@ -20,7 +22,9 @@ export async function start(config: Config, webRoot = DEFAULT_WEB_ROOT): Promise
   ensureDataDir(config.dataDir);
   const db = open(config.dbPath);
   const store = createStore({ db, clock: systemClock, redactor });
-  const app = createApp({ store, redactor, webRoot });
+  const git = createGit({ dataDir: config.dataDir });
+  const ids = createIdGen(systemClock);
+  const app = createApp({ store, ids, git, redactor, webRoot });
 
   const { server, address } = await new Promise<{
     server: ServerType;
