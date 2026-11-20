@@ -33,8 +33,8 @@ export interface PreviewDeps {
   /** The data dir: preview worktrees live in `<dataDir>/worktrees/<runId>`. */
   dataDir: string;
   fetch?: PreviewFetch;
-  /** Waits between polls; tests advance a fake clock instead. */
-  sleep?: (ms: number) => Promise<void>;
+  /** Waits between polls (resolving early when `signal` aborts); tests advance a fake clock. */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** Warnings (cleanup failures), already redacted; default console.warn. */
   log?: (line: string) => void;
 }
@@ -47,18 +47,27 @@ export interface Previews {
   startPreview(productId: ProductId): Promise<StartPreviewResult>;
   stopPreview(productId: ProductId): Promise<StopPreviewResult>;
   /**
-   * Shutdown: waits for queued and in-flight starts and stops, then stops every preview this
-   * process started. Starts requested from then on are refused.
+   * Shutdown: aborts in-flight starts (their containers and worktrees are removed and nothing is
+   * committed), waits for queued starts and stops, then stops every preview this process
+   * started. Starts requested from then on are refused.
    */
   stopAll(): Promise<void>;
 }
 
 type Running = { container: string; worktree: string };
 
-const defaultSleep = (ms: number) =>
+const defaultSleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener('abort', done);
   });
+
+const SHUTTING_DOWN = 'Vibecode is shutting down; start the preview again after the restart.';
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -67,6 +76,8 @@ export function createPreviews(deps: PreviewDeps): Previews {
   const sleep = deps.sleep ?? defaultSleep;
   const log = deps.log ?? ((line: string) => console.warn(line));
   let closing = false;
+  /** Aborted by stopAll: in-flight starts stop polling and clean up. */
+  const shutdown = new AbortController();
   const worktreesDir = path.join(deps.dataDir, 'worktrees');
   const running = new Map<ProductId, Running>();
   /** Per-product chain: start and stop of one product never interleave. */
@@ -101,18 +112,32 @@ export function createPreviews(deps: PreviewDeps): Previews {
     };
   }
 
-  /** Failure cleanup: a container that cannot be removed is logged, the worktree still goes. */
-  async function cleanUp(r: Running): Promise<void> {
+  /**
+   * Failure cleanup: never throws, so the original outcome is what gets reported. A container or
+   * worktree that cannot be removed is logged (the startup recovery sweep removes it later).
+   */
+  async function cleanUp(productId: ProductId, r: Running): Promise<void> {
     try {
       await deps.runtime.remove(r.container);
     } catch (err) {
       log(
         deps.redactor.redact(
-          `Could not remove preview container ${r.container}: ${errorText(err)}`,
+          `Could not remove preview container ${r.container} of product ${productId}: ` +
+            errorText(err),
         ),
       );
     }
-    if (r.worktree !== '') await deps.git.removeWorktree(r.worktree);
+    if (r.worktree === '') return;
+    try {
+      await deps.git.removeWorktree(r.worktree);
+    } catch (err) {
+      log(
+        deps.redactor.redact(
+          `Could not remove preview worktree ${r.worktree} of product ${productId}: ` +
+            errorText(err),
+        ),
+      );
+    }
   }
 
   async function teardown(r: Running): Promise<void> {
@@ -129,12 +154,12 @@ export function createPreviews(deps: PreviewDeps): Previews {
    */
   async function stopRunning(
     productId: ProductId,
-    remove: (r: Running) => Promise<void> = teardown,
+    remove: (productId: ProductId, r: Running) => Promise<void> = (_, r) => teardown(r),
   ): Promise<boolean> {
     const r = current(productId);
     if (r === null) return false;
     running.delete(productId);
-    await remove(r);
+    await remove(productId, r);
     deps.store.commit((tx) =>
       tx.q.product(productId) === null
         ? []
@@ -143,18 +168,25 @@ export function createPreviews(deps: PreviewDeps): Previews {
     return true;
   }
 
-  /** GET / until any HTTP answer below 500, or until the timeout. */
-  async function waitUntilServing(url: string): Promise<boolean> {
+  /** GET / until any HTTP answer below 500, the timeout, or shutdown. */
+  async function waitUntilServing(url: string): Promise<'up' | 'timeout' | 'aborted'> {
     const deadline = deps.clock.now() + PREVIEW_TIMEOUT_MS;
     for (;;) {
+      if (shutdown.signal.aborted) return 'aborted';
       try {
-        const res = await fetchFn(url, { signal: AbortSignal.timeout(POLL_REQUEST_TIMEOUT_MS) });
-        if (res.status < 500) return true;
+        const signal = AbortSignal.any([
+          AbortSignal.timeout(POLL_REQUEST_TIMEOUT_MS),
+          shutdown.signal,
+        ]);
+        const res = await fetchFn(url, { signal });
+        if (shutdown.signal.aborted) return 'aborted';
+        if (res.status < 500) return 'up';
       } catch {
-        // Not listening yet.
+        // Not listening yet (or aborted: checked at the top of the loop).
       }
-      if (deps.clock.now() >= deadline) return false;
-      await sleep(PREVIEW_POLL_MS);
+      if (shutdown.signal.aborted) return 'aborted';
+      if (deps.clock.now() >= deadline) return 'timeout';
+      await sleep(PREVIEW_POLL_MS, shutdown.signal);
     }
   }
 
@@ -183,6 +215,7 @@ export function createPreviews(deps: PreviewDeps): Previews {
     const wt = await deps.git.addWorktree(productId, runId, 'main', { detached: true });
     // Docker may create the container even when `run` fails, so cleanup always removes it.
     const created: Running = { container: containerName(runId), worktree: wt.dir };
+    let outcome: 'up' | 'timeout' | 'aborted';
     try {
       const image = await deps.runtime.ensureImage({ productId, contextDir: wt.dir });
       const started = await deps.runtime.runDetached(
@@ -201,7 +234,8 @@ export function createPreviews(deps: PreviewDeps): Previews {
       created.container = started.name;
       const hostPort = await deps.runtime.publishedPort(started.name, config.port);
       const url = `http://127.0.0.1:${String(hostPort)}/`;
-      if (await waitUntilServing(url)) {
+      outcome = await waitUntilServing(url);
+      if (outcome === 'up') {
         running.set(productId, created);
         deps.store.commit(() => [
           {
@@ -216,10 +250,11 @@ export function createPreviews(deps: PreviewDeps): Previews {
       }
     } catch (err) {
       running.delete(productId);
-      await cleanUp(created);
+      await cleanUp(productId, created);
       return fail(`The preview could not start: ${errorText(err)}`);
     }
-    await cleanUp(created);
+    await cleanUp(productId, created);
+    if (outcome === 'aborted') return fail(SHUTTING_DOWN);
     return fail(
       `The preview did not answer on port ${String(config.port)} within ` +
         `${String(PREVIEW_TIMEOUT_MS / 1000)} s. Check that \`${config.command.join(' ')}\` ` +
@@ -244,13 +279,14 @@ export function createPreviews(deps: PreviewDeps): Previews {
         ? Promise.resolve({
             ok: false,
             code: 'conflict',
-            reason: 'Vibecode is shutting down; start the preview again after the restart.',
+            reason: SHUTTING_DOWN,
           })
         : serially(productId, () => start(productId)),
     stopPreview: (productId) => serially(productId, () => stop(productId)),
     async stopAll() {
       closing = true;
-      // Queued products include starts still waiting or polling: stop after they settle.
+      // In-flight starts stop polling and clean up; queued work settles before the stop below.
+      shutdown.abort();
       const products = new Set([...queues.keys(), ...running.keys()]);
       await Promise.all(
         [...products].map((productId) =>

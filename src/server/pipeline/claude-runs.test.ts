@@ -60,8 +60,11 @@ function claudeRuns(runtime: FakeContainerRuntime) {
   );
 }
 
-function expectClaudeContainer(runArgs: readonly string[], image: string): void {
-  expect(runArgs.at(-1)).toBe(image);
+/** The fake runtime's Claude image over vibecode/base: content-hashed like the docker one. */
+const CLAUDE_TAG = /^vibecode\/claude-code:[0-9a-f]{64}$/;
+
+function expectClaudeContainer(runArgs: readonly string[], image: RegExp): void {
+  expect(runArgs.at(-1)).toMatch(image);
   expect(runArgs).toContain(CONFIG_MOUNT);
   expect(runArgs[runArgs.indexOf('--network') + 1]).toBe('vibecode-egress');
   expect(runArgs.filter((a) => /ANTHROPIC_/.test(a))).toEqual([]);
@@ -104,7 +107,7 @@ describe('runAttempt with claude-code roles', () => {
     const runs = claudeRuns(h.runtime);
     expect(runs).toHaveLength(2);
     for (const run of runs) {
-      expectClaudeContainer(run.runArgs, 'vibecode/claude-code');
+      expectClaudeContainer(run.runArgs, CLAUDE_TAG);
       expectNoAnthropicEnv(run.argv);
     }
     // The reviewer stays read-only.
@@ -165,7 +168,7 @@ describe('runOrchestrator with claude-code', () => {
     expect(store.q.issuesByProduct(P).map((i) => i.title)).toEqual(['Scaffold']);
     const runs = claudeRuns(runtime);
     expect(runs).toHaveLength(1);
-    expectClaudeContainer(runs[0]?.runArgs ?? [], 'vibecode/claude-code');
+    expectClaudeContainer(runs[0]?.runArgs ?? [], CLAUDE_TAG);
     expectNoAnthropicEnv(runs[0]?.argv ?? []);
     expect(runs[0]?.argv.join(' ')).toContain('WebSearch');
   });
@@ -237,7 +240,7 @@ describe('sparTurn with claude-code', () => {
     expect(runs).toHaveLength(1);
     expectNoAnthropicEnv(runs[0]?.argv ?? []);
     const runArgs = seen[0] ?? [];
-    expectClaudeContainer(runArgs, 'vibecode/claude-code');
+    expectClaudeContainer(runArgs, CLAUDE_TAG);
     const workspace = runArgs.find((a) => a.endsWith('dst=/workspace,readonly')) ?? '';
     const scratch = /src=([^,]+)/.exec(workspace)?.[1] ?? '';
     expect(path.dirname(scratch)).toBe(path.join(dataDir, 'worktrees'));

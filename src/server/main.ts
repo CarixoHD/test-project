@@ -171,6 +171,7 @@ export async function start(
     settings,
     sparring,
     previews,
+    claudeLogin: runtime,
     logsDir,
     artifactsDir,
     // apply-prd commits docs/PRD.md under the merge lock; `scheduler` is created below and read
