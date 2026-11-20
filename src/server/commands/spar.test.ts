@@ -14,7 +14,7 @@ import { createStore } from '../store/index.ts';
 import { expectSnapshotMatchesReplay } from '../store/testing.ts';
 import { FakeClock } from '../util/clock.ts';
 import { FakeIdGen } from '../util/id-gen.ts';
-import { createSparring, savePrdDraft, type SparTurnRunner } from './index.ts';
+import { createSparring, nextSparMessageId, savePrdDraft, type SparTurnRunner } from './index.ts';
 
 const P = ProductIdSchema.parse('product-1');
 const MISSING = ProductIdSchema.parse('product-404');
@@ -226,6 +226,12 @@ describe('sendSparMessage', () => {
     );
     expect(missing.status).toBe(404);
     expect(events).toEqual([]);
+  });
+});
+
+describe('nextSparMessageId', () => {
+  it("draws spar message ids from IdGen's 'spar' kind", () => {
+    expect(nextSparMessageId({ store: setup([]).store, ids: new FakeIdGen() })).toMatch(/^spar-/);
   });
 });
 
