@@ -1,4 +1,4 @@
-import type { Role } from '../../../shared/domain.ts';
+import type { Role } from '../../../shared/models.ts';
 import type { AgentView } from '../../../shared/state.ts';
 
 // Words for agents, shared by the agent list, the agent panel and the 3D view, so every place
