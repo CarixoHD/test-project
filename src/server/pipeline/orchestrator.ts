@@ -1,5 +1,3 @@
-import { lstat, readFile } from 'node:fs/promises';
-import path from 'node:path';
 import { z } from 'zod';
 import {
   PlanResultSchema,
@@ -19,6 +17,7 @@ import type { ContainerRuntime, Sandbox } from '../sandbox/index.ts';
 import type { RunHandle } from '../scheduler/index.ts';
 import { OrchestratorBackoff } from './orchestrator-backoff.ts';
 import { orchestratorPrompt } from './orchestrator-prompt.ts';
+import { readRepoFile } from './repo-file.ts';
 import { resolveModel } from './resolve-model.ts';
 import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
 
@@ -30,7 +29,6 @@ import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
 
 export const DEFAULT_ORCHESTRATOR_LIMITS: AgentLimits = { maxSteps: 80, wallClockMs: 45 * 60_000 };
 const PROJECT_FILE = '.vibecode/project.json';
-const MAX_READ_BYTES = 1_000_000;
 
 /** Paths the orchestrator may change: Dockerfile, .dockerignore, .vibecode/** and docs/**. */
 export function isAllowedOrchestratorPath(p: string): boolean {
@@ -289,22 +287,6 @@ async function mergeToMain(
 function firstLine(text: string): string {
   const line = text.trim().split('\n')[0] ?? '';
   return line.length <= 72 ? line : `${line.slice(0, 71)}…`;
-}
-
-/** A regular file of the worktree (never a symlink: worktree content is untrusted). */
-async function readRepoFile(dir: string, rel: string): Promise<Check<string> & { missing?: true }> {
-  const file = path.join(dir, rel);
-  try {
-    const st = await lstat(file);
-    if (!st.isFile()) return { ok: false, reason: `${rel} is not a regular file` };
-    if (st.size > MAX_READ_BYTES) return { ok: false, reason: `${rel} is too large` };
-  } catch (err) {
-    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
-      return { ok: false, reason: `${rel} is missing`, missing: true };
-    }
-    throw new Error(`Cannot read ${rel}`, { cause: err });
-  }
-  return { ok: true, value: await readFile(file, 'utf8') };
 }
 
 /** `.vibecode/project.json` validated with ProjectConfig; null when the file does not exist. */
