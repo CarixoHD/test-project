@@ -74,6 +74,10 @@ export type EditIssueResponse = z.infer<typeof EditIssueResponseSchema>;
 export const OkResponseSchema = z.object({ ok: z.literal(true) });
 export type OkResponse = z.infer<typeof OkResponseSchema>;
 
+/** `POST /api/products/:id/preview`: the running preview's URL (127.0.0.1). */
+export const StartPreviewResponseSchema = z.object({ url: z.url() });
+export type StartPreviewResponse = z.infer<typeof StartPreviewResponseSchema>;
+
 // ---- product settings (PATCH /api/products/:id/settings) ---------------------------------
 
 export const MAX_PARALLEL_LIMIT = 10;
