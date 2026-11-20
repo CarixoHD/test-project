@@ -1,4 +1,5 @@
 import { runApiBackend } from './api-backend.ts';
+import { runClaudeCodeBackend } from './claude-code-backend.ts';
 import type { AgentResult, AgentSpec } from './types.ts';
 
 /**
@@ -8,7 +9,7 @@ import type { AgentResult, AgentSpec } from './types.ts';
 export async function runAgent<T>(spec: AgentSpec<T>): Promise<AgentResult<T>> {
   switch (spec.model.provider) {
     case 'claude-code':
-      return { kind: 'error', message: 'Claude Code backend not available yet', transient: false };
+      return runClaudeCodeBackend(spec);
     case 'anthropic':
     case 'openai':
     case 'google':

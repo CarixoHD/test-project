@@ -390,6 +390,8 @@ interface ContainerRuntime {
 interface Sandbox { name: string; exec(argv: string[], o: ExecOpts): Promise<ExecResult>; close(): Promise<void>; }
 type SandboxSpec = {runId; productId; role:'agent'|'check'|'preview'; image; worktree: string; readOnly: boolean;
                     network:'none'|'egress'|'preview'; claude?: boolean; publishPort?: number};
+type ExecOpts = {stdin?; timeoutMs; signal?: AbortSignal; killSignal?: 'SIGINT'|'SIGTERM' /* sent on abort, default SIGTERM */;
+                 onLine?(line, stream)};
 function buildRunArgs(spec: SandboxSpec, host: {uid:number; gid:number; dataDir:string}): string[];  // pure, unit-tested
 ```
 `buildRunArgs` always emits these flags:
