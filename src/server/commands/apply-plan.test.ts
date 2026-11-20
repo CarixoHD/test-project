@@ -415,11 +415,14 @@ describe('applyPlan options: project config and replan summary', () => {
 
   it('stores the project config and posts the replan inbox item in the same commit', () => {
     const { store, deps } = setup();
+    store.commit(() => [
+      draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null }),
+    ]);
     const before = store.snapshot().lastSeq;
 
     const r = applyPlan(deps, P, plan([create('x')]), 3, {
       project: PROJECT,
-      replanSummary: 'Added dark mode issues',
+      replan: { version: 2, summary: 'Added dark mode issues' },
     });
 
     expect(r.ok).toBe(true);
@@ -427,15 +430,19 @@ describe('applyPlan options: project config and replan summary', () => {
     expect(r.events.map((e) => e.type)).toEqual([
       'issue.created',
       'product.settings_changed',
+      'prd.summarized',
       'inbox.created',
       'orchestrator.cursor_advanced',
     ]);
-    expect(r.events.map((e) => e.seq)).toEqual([1, 2, 3, 4].map((n) => before + n));
+    expect(r.events.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5].map((n) => before + n));
     const { state } = store.snapshot();
     expect(state.products[P]?.project).toEqual(PROJECT);
     expect(Object.values(state.inbox)).toMatchObject([
       { productId: P, kind: 'replan', body: 'Added dark mode issues', link: `/products/${P}` },
     ]);
+    expect(state.prdVersions[P]?.find((v) => v.version === 2)?.summary).toBe(
+      'Added dark mode issues',
+    );
     expectSnapshotMatchesReplay(store);
   });
 
@@ -453,7 +460,7 @@ describe('applyPlan options: project config and replan summary', () => {
     expectNothingCommitted(deps, () =>
       applyPlan(deps, P, plan([create('x', ['missing'])]), 3, {
         project: PROJECT,
-        replanSummary: 'summary',
+        replan: { version: 2, summary: 'summary' },
       }),
     );
     const { state } = store.snapshot();
