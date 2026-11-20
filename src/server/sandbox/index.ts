@@ -1,5 +1,6 @@
 export type {
   ContainerRuntime,
+  DetachedContainer,
   ExecOpts,
   ExecResult,
   HostIdentity,
@@ -43,3 +44,13 @@ export {
   type DockerCliRuntimeOptions,
 } from './docker-cli.ts';
 export { selectRuntime } from './select-runtime.ts';
+export {
+  createPreviews,
+  PREVIEW_POLL_MS,
+  PREVIEW_TIMEOUT_MS,
+  type PreviewDeps,
+  type PreviewFetch,
+  type Previews,
+  type StartPreviewResult,
+  type StopPreviewResult,
+} from './preview.ts';

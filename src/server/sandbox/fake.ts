@@ -4,6 +4,8 @@
 // the same mount policy as the docker runtime.
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { redactor } from '../security/index.ts';
 import { applyFileOp, type FsResult } from './fake-fs.ts';
@@ -11,6 +13,7 @@ import { parseFileOp } from './file-ops.ts';
 import { buildRunArgs, containerName, managedLabels } from './run-args.ts';
 import type {
   ContainerRuntime,
+  DetachedContainer,
   ExecOpts,
   ExecResult,
   HostIdentity,
@@ -29,6 +32,7 @@ export type FakeRunRule = {
 
 export type FakeCall =
   | { kind: 'exec' | 'runOnce'; name: string; argv: string[]; stdin?: string }
+  | { kind: 'runDetached'; name: string; argv: string[] }
   | { kind: 'open' | 'close' | 'remove'; name: string }
   | { kind: 'ensureImage'; productId: string; contextDir: string };
 
@@ -43,6 +47,11 @@ export type FakeContainerRuntimeOptions = {
 const DEFAULT_ID = 1000;
 const NOT_FOUND = 127;
 const BASE_IMAGE = 'vibecode/base';
+/** What a fake detached (preview) container serves on its published 127.0.0.1 port. */
+const PREVIEW_PAGE =
+  '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Vibecode preview</title>' +
+  '</head><body><h1>Vibecode demo preview</h1><p>This page stands in for the product ' +
+  'running from main (fake container runtime).</p></body></html>';
 
 export class FakeContainerRuntime implements ContainerRuntime {
   /** Every call, in order, for assertions. */
@@ -51,6 +60,8 @@ export class FakeContainerRuntime implements ContainerRuntime {
   readonly #script: readonly FakeRunRule[];
   readonly #isAvailable: boolean;
   readonly #open = new Map<string, SandboxSpec>();
+  /** Local page servers of detached containers, closed on remove. */
+  readonly #servers = new Map<string, Server>();
 
   constructor(o: FakeContainerRuntimeOptions) {
     this.#host = { dataDir: o.dataDir, uid: o.uid ?? DEFAULT_ID, gid: o.gid ?? DEFAULT_ID };
@@ -107,16 +118,52 @@ export class FakeContainerRuntime implements ContainerRuntime {
     return this.#run(spec, argv, o);
   }
 
+  /** Runs nothing: serves PREVIEW_PAGE on an ephemeral 127.0.0.1 port, as docker would publish. */
+  async runDetached(spec: SandboxSpec, argv: readonly string[]): Promise<DetachedContainer> {
+    await Promise.resolve();
+    buildRunArgs(spec, this.#host);
+    const name = containerName(spec.runId);
+    if (this.#open.has(name)) throw new Error(`Container name ${name} is already in use`);
+    this.#open.set(name, spec);
+    this.calls.push({ kind: 'runDetached', name, argv: [...argv] });
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(PREVIEW_PAGE);
+    });
+    this.#servers.set(name, server);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          resolve();
+        });
+      });
+    } catch (err) {
+      this.#servers.delete(name);
+      this.#open.delete(name);
+      throw err;
+    }
+    return { name, hostPort: (server.address() as AddressInfo).port };
+  }
+
   listManaged(): Promise<ManagedContainer[]> {
     return Promise.resolve(
       [...this.#open].map(([name, spec]) => ({ name, labels: managedLabels(spec) })),
     );
   }
 
-  remove(name: string): Promise<void> {
+  async remove(name: string): Promise<void> {
     this.calls.push({ kind: 'remove', name });
     this.#open.delete(name);
-    return Promise.resolve();
+    const server = this.#servers.get(name);
+    if (server === undefined) return;
+    this.#servers.delete(name);
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      server.close(() => {
+        resolve();
+      });
+    });
   }
 
   async #run(spec: SandboxSpec, argv: readonly string[], o: ExecOpts): Promise<ExecResult> {

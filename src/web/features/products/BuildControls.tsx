@@ -1,7 +1,8 @@
 import { useId, useState } from 'react';
-import type { ProductState } from '../../../shared/state.ts';
+import type { PreviewState, ProductState } from '../../../shared/state.ts';
 import { ApiError, pauseProduct, resumeProduct } from '../../state/api.ts';
 import { Button, StatusBadge, type BadgeTone } from '../../ui/index.ts';
+import { PreviewControls } from './PreviewControls.tsx';
 
 /** The build's run state in words; colour only backs it up. */
 export function pauseStatus(product: ProductState): { text: string; tone: BadgeTone } {
@@ -14,8 +15,15 @@ export function pauseStatus(product: ProductState): { text: string; tone: BadgeT
  * Pause / Resume for the product's build (ARCHITECTURE §6 flow 5). The new state arrives as
  * events (product.paused / product.resumed), so the button label follows the store, not the
  * request. A refused request (e.g. resuming while the budget is exhausted) shows the reason.
+ * Below them: the preview of main (`preview` is the product's running preview, if any).
  */
-export function BuildControls({ product }: { product: ProductState }) {
+export function BuildControls({
+  product,
+  preview,
+}: {
+  product: ProductState;
+  preview?: PreviewState | undefined;
+}) {
   const [isSending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const statusId = useId();
@@ -53,6 +61,7 @@ export function BuildControls({ product }: { product: ProductState }) {
           {error}
         </p>
       ) : null}
+      <PreviewControls product={product} preview={preview} />
     </section>
   );
 }
