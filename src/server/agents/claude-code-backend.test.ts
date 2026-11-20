@@ -1,10 +1,22 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { Ajv } from 'ajv';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import {
+  ImplResultSchema,
+  PlanResultSchema,
+  ReviewResultSchema,
+  SparResultSchema,
+} from '../../shared/agent-results.ts';
 import type { ExecOpts, ExecResult, Sandbox } from '../sandbox/index.ts';
 import { FakeClock } from '../util/clock.ts';
-import { buildClaudeArgv, claudeExecArgv, runClaudeCodeBackend } from './claude-code-backend.ts';
+import {
+  buildClaudeArgv,
+  claudeExecArgv,
+  cliJsonSchema,
+  runClaudeCodeBackend,
+} from './claude-code-backend.ts';
 import { runAgent, type AgentSpec, type StepUsage } from './index.ts';
 
 const START = 1_700_000_000_000;
@@ -79,7 +91,7 @@ function spec(
   };
 }
 
-const SCHEMA_JSON = JSON.stringify(z.toJSONSchema(ResultSchema));
+const SCHEMA_JSON = cliJsonSchema(ResultSchema);
 
 function expectedArgv(tools: string): string[] {
   return [
@@ -103,6 +115,61 @@ function expectedArgv(tools: string): string[] {
     'sonnet',
   ];
 }
+
+// Every agent result schema the backend is asked to emit, each with a known-valid sample.
+const AGENT_RESULT_SAMPLES: { name: string; schema: z.ZodType; sample: unknown }[] = [
+  { name: 'SparResult', schema: SparResultSchema, sample: { reply: 'Hi', prdMarkdown: '# PRD' } },
+  {
+    name: 'PlanResult',
+    schema: PlanResultSchema,
+    sample: {
+      issueOps: [
+        { op: 'create', key: 'a', title: 'T', body: 'B', dependsOn: [], priority: 1 },
+        { op: 'edit', id: '01X', title: 'T2' },
+        { op: 'cancel', id: '01Y', reason: 'dup' },
+        { op: 'rewrite', id: '01Z', body: 'B2' },
+      ],
+      questions: [],
+      summary: 'Planned',
+      project: {
+        check: ['npm', 'test'],
+        imageInputs: ['package-lock.json'],
+        preview: { command: ['npm', 'start'], port: 3000 },
+      },
+    },
+  },
+  { name: 'ImplResult', schema: ImplResultSchema, sample: { summary: 'Done', question: 'Why?' } },
+  { name: 'ReviewResult', schema: ReviewResultSchema, sample: { approve: true, findings: [] } },
+];
+
+describe('cliJsonSchema', () => {
+  it.each(AGENT_RESULT_SAMPLES)(
+    'emits $name as draft-07 the CLI validator (Ajv 8 defaults) compiles',
+    ({ schema, sample }) => {
+      const parsed = JSON.parse(cliJsonSchema(schema)) as Record<string, unknown>;
+
+      expect(parsed).not.toHaveProperty('$schema');
+      const validate = new Ajv().compile(parsed);
+      expect(validate(sample)).toBe(true);
+      expect(validate({})).toBe(false);
+    },
+  );
+
+  it('fixes the regression: the default 2020-12 output is rejected by Ajv 8 defaults', () => {
+    const old = z.toJSONSchema(ImplResultSchema);
+
+    expect(old.$schema).toBe('https://json-schema.org/draft/2020-12/schema');
+    expect(() => new Ajv().compile(old)).toThrow(/2020-12/);
+  });
+
+  it('is what buildClaudeArgv passes to --json-schema', () => {
+    const { spec: s } = spec(undefined);
+    const argv = buildClaudeArgv(s).argv;
+
+    expect(argv[argv.indexOf('--json-schema') + 1]).toBe(cliJsonSchema(ResultSchema));
+    expect(argv.join(' ')).not.toContain('$schema');
+  });
+});
 
 describe('buildClaudeArgv', () => {
   it('emits the exact flag set for an implementer', () => {

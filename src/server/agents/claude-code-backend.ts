@@ -34,6 +34,15 @@ export type ClaudeInvocation = { argv: string[]; env: Record<string, string> };
 
 type ArgvSpec = Pick<AgentSpec<unknown>, 'role' | 'model' | 'limits'> & { schema: z.ZodType };
 
+/**
+ * The `--json-schema` value: draft-07 with no top-level `$schema`. The CLI validates the flag with
+ * Ajv's default (draft-07) meta-schema and rejects zod's default draft 2020-12 `$schema` URI.
+ */
+export function cliJsonSchema(schema: z.ZodType): string {
+  const { $schema: _metaSchema, ...json } = z.toJSONSchema(schema, { target: 'draft-07' });
+  return JSON.stringify(json);
+}
+
 /** The CLI command and environment for one run. Pure; see ADR 4 for the exact flag set. */
 export function buildClaudeArgv(spec: ArgvSpec): ClaudeInvocation {
   const inv: ClaudeInvocation = {
@@ -53,7 +62,7 @@ export function buildClaudeArgv(spec: ArgvSpec): ClaudeInvocation {
       '--max-turns',
       String(spec.limits.maxSteps),
       '--json-schema',
-      JSON.stringify(z.toJSONSchema(spec.schema)),
+      cliJsonSchema(spec.schema),
       '--model',
       spec.model.model,
     ],
