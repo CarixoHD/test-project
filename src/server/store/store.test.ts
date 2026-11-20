@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Event, EventDraft } from '../../shared/events.ts';
 import { AgentIdSchema, ProductIdSchema } from '../../shared/ids.ts';
 import { open, schema } from '../db/index.ts';
@@ -128,6 +128,51 @@ describe('store.commit', () => {
       [1, 2],
       [2, 2],
     ]);
+  });
+
+  it('isolates a throwing subscriber: commit returns, events persist, later subscribers still run', () => {
+    const db = open(':memory:');
+    const reported: Array<{ err: unknown; event: Event }> = [];
+    const store = createStore({
+      db,
+      clock: new FakeClock(1),
+      redactor: new Redactor(),
+      onSubscriberError: (err, event) => reported.push({ err, event }),
+    });
+    const boom = new Error('subscriber failed');
+    store.subscribe(() => {
+      throw boom;
+    });
+    const seen: number[] = [];
+    store.subscribe((e) => seen.push(e.seq));
+
+    const committed = store.commit(() => [productCreated(), sparMessage('m1', 'a')]);
+
+    expect(committed.map((e) => e.seq)).toEqual([1, 2]);
+    expect(rowCount(db, 'events')).toBe(2);
+    expect(seen).toEqual([1, 2]);
+    expect(reported.map((r) => [r.err, r.event.seq])).toEqual([
+      [boom, 1],
+      [boom, 2],
+    ]);
+  });
+
+  it('reports subscriber errors to console.error, redacted, by default', () => {
+    const { store, redactor } = setup();
+    redactor.register(SECRET);
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      store.subscribe(() => {
+        throw new Error(`leaked ${SECRET}`);
+      });
+      expect(() => store.commit(() => [productCreated()])).not.toThrow();
+      expect(spy).toHaveBeenCalledTimes(1);
+      const logged = spy.mock.calls.flat().map(String).join(' ');
+      expect(logged).toContain('leaked');
+      expect(logged).not.toContain(SECRET);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('refuses a nested commit from inside a builder', () => {
