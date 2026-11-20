@@ -229,10 +229,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const issues = Object.values(state.issues).filter((i) => i.productId === p.id);
     // Flow 9: nothing left to run or plan. The commit re-enters kick(), which coalesces.
     if (mine.length === 0 && allIssuesDone(issues)) {
-      // A paused product completes after it is resumed: its backlog is never read while paused.
-      const pending =
-        events === null ? !p.paused && hasPendingTriggers(p, triggersFrom) : triggers.length > 0;
-      if (!p.paused && !pending && completeProduct(store, p.id)) return;
+      // Paused or not (§4.4). Outside the event window the backlog is read once per change.
+      const pending = events === null ? hasPendingTriggers(p, triggersFrom) : triggers.length > 0;
+      if (!pending && completeProduct(store, p.id)) return;
     }
     if (p.paused || budgetExhausted(state, p)) return;
     let liveCount = mine.length;

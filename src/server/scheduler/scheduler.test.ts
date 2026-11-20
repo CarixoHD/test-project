@@ -731,7 +731,8 @@ describe('scheduler: tick robustness (logging and ineligible products)', () => {
     expect(lines[0]).not.toContain(secret);
   });
 
-  it('a paused product with all issues done and pending triggers never reads its backlog', () => {
+  /** A paused building product whose only issue is completed; optionally a pending trigger. */
+  function pausedAllDone(withTrigger: boolean) {
     const db = open(':memory:');
     const clock = new FakeClock();
     const inner = createStore({ db, clock, redactor: new Redactor() });
@@ -772,7 +773,9 @@ describe('scheduler: tick robustness (logging and ineligible products)', () => {
         mergeSha: 'c'.repeat(40),
       }),
       draft('product.paused', P, null, { reason: 'owner' }),
-      draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null }),
+      ...(withTrigger
+        ? [draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null })]
+        : []),
     ]);
     const timer = new FakeTimer();
     const scheduler = createScheduler({
@@ -783,11 +786,24 @@ describe('scheduler: tick robustness (logging and ineligible products)', () => {
       timer,
       isBackendBlocked: () => false,
     });
-    scheduler.start();
-    timer.fire();
-    timer.fire();
-    expect(cursors).toEqual([]);
-    expect(inner.q.product(P)?.phase).toBe('building');
+    return { inner, cursors, timer, scheduler };
+  }
+
+  it('a paused product with all issues done and pending triggers reads its backlog at most once', () => {
+    const t = pausedAllDone(true);
+    t.scheduler.start();
+    t.timer.fire();
+    t.timer.fire();
+    expect(t.cursors.length).toBeLessThanOrEqual(1);
+    expect(t.inner.q.product(P)?.phase).toBe('building');
+  });
+
+  it('a paused product with all issues done and nothing pending still completes (paused or not)', () => {
+    const t = pausedAllDone(false);
+    t.scheduler.start();
+    t.timer.fire();
+    t.timer.fire();
+    expect(t.inner.q.product(P)?.phase).toBe('complete');
   });
 
   it('a backed-off product with all issues done re-reads its backlog only when something changed', () => {
