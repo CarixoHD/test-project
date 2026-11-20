@@ -57,3 +57,4 @@ export {
   clearsBudgetWarning,
   type CheckBudgetResult,
 } from './budget.ts';
+export { clearBackendLimit, type ClearBackendLimitResult } from './backend-limits.ts';
