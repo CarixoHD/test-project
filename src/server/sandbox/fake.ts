@@ -8,10 +8,18 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { redactor } from '../security/index.ts';
+import {
+  BASE_IMAGE,
+  DEFAULT_BASE_IMAGE_DIR,
+  claudeImageTag,
+  claudeLoginCommands,
+} from './docker-cli.ts';
 import { applyFileOp } from './fake-fs.ts';
 import { parseFileOp } from './file-ops.ts';
 import { buildRunArgs, containerName, managedLabels } from './run-args.ts';
 import type {
+  ClaudeLoginCommands,
+  ClaudeLoginSource,
   ContainerRuntime,
   DetachedContainer,
   EnsureImageParams,
@@ -51,24 +59,25 @@ export type FakeContainerRuntimeOptions = {
   gid?: number;
   script?: readonly FakeRunRule[];
   isAvailable?: boolean;
+  /** Where claude-code.Dockerfile (and base.Dockerfile) are read for the Claude tag; default docker/. */
+  baseImageDir?: string;
 };
 
 const DEFAULT_ID = 1000;
 const NOT_FOUND = 127;
-const BASE_IMAGE = 'vibecode/base';
-const CLAUDE_IMAGE = 'vibecode/claude-code';
 /** What a fake detached (preview) container serves on its published 127.0.0.1 port. */
 const PREVIEW_PAGE =
   '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Vibecode preview</title>' +
   '</head><body><h1>Vibecode demo preview</h1><p>This page stands in for the product ' +
   'running from main (fake container runtime).</p></body></html>';
 
-export class FakeContainerRuntime implements ContainerRuntime {
+export class FakeContainerRuntime implements ContainerRuntime, ClaudeLoginSource {
   /** Every call, in order, for assertions. */
   readonly calls: FakeCall[] = [];
   readonly #host: HostIdentity;
   readonly #script: readonly FakeRunRule[];
   readonly #isAvailable: boolean;
+  readonly #imageDir: string;
   readonly #open = new Map<string, SandboxSpec>();
   /** `docker run` args (buildRunArgs) of every container started, by name. */
   readonly #runArgs = new Map<string, string[]>();
@@ -79,6 +88,7 @@ export class FakeContainerRuntime implements ContainerRuntime {
     this.#host = { dataDir: o.dataDir, uid: o.uid ?? DEFAULT_ID, gid: o.gid ?? DEFAULT_ID };
     this.#script = o.script ?? [];
     this.#isAvailable = o.isAvailable ?? true;
+    this.#imageDir = o.baseImageDir ?? DEFAULT_BASE_IMAGE_DIR;
   }
 
   available(): Promise<boolean> {
@@ -87,7 +97,8 @@ export class FakeContainerRuntime implements ContainerRuntime {
 
   /**
    * `vibecode/p-<id>:<sha256(Dockerfile)[:12]>`, or vibecode/base when there is no Dockerfile.
-   * With `claude`: vibecode/claude-code over the base, else `vibecode/p-<id>-claude:<same hash>`.
+   * With `claude`, the docker runtime's claudeImageTag of that image: `vibecode/claude-code:<hash>`
+   * over the base, else `vibecode/p-<id>-claude:<hash>`. Nothing is built.
    */
   async ensureImage(p: EnsureImageParams): Promise<string> {
     const claude = p.claude === true;
@@ -97,17 +108,15 @@ export class FakeContainerRuntime implements ContainerRuntime {
       contextDir: p.contextDir,
       ...(claude ? { claude } : {}),
     });
-    let dockerfile: Buffer;
-    try {
-      dockerfile = await readFile(path.join(p.contextDir, 'Dockerfile'));
-    } catch (err) {
-      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
-        return claude ? CLAUDE_IMAGE : BASE_IMAGE;
-      }
-      throw err;
-    }
-    const hash = createHash('sha256').update(dockerfile).digest('hex').slice(0, 12);
-    return `vibecode/p-${p.productId}${claude ? '-claude' : ''}:${hash}`;
+    const product = await productImage(p);
+    return claude ? claudeImageTag(this.#imageDir, p.productId, product) : product;
+  }
+
+  /** The same commands as the docker runtime, for this fake host's uid:gid. */
+  async claudeLoginCommands(): Promise<ClaudeLoginCommands> {
+    const claudeTag = await claudeImageTag(this.#imageDir, '', BASE_IMAGE);
+    const { uid, gid } = this.#host;
+    return claudeLoginCommands({ imageDir: this.#imageDir, claudeTag, uid, gid });
   }
 
   /** The `docker run` args the real runtime would use for container `name` (tests assert on them). */
@@ -236,6 +245,18 @@ export class FakeContainerRuntime implements ContainerRuntime {
         : rule.result;
     return finish({ code: res.code, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }, o);
   }
+}
+
+async function productImage(p: EnsureImageParams): Promise<string> {
+  let dockerfile: Buffer;
+  try {
+    dockerfile = await readFile(path.join(p.contextDir, 'Dockerfile'));
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return BASE_IMAGE;
+    throw err;
+  }
+  const hash = createHash('sha256').update(dockerfile).digest('hex').slice(0, 12);
+  return `vibecode/p-${p.productId}:${hash}`;
 }
 
 const ABORTED: ExecResult = {
