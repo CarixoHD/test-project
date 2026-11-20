@@ -10,11 +10,11 @@ import { patch, without } from './state-records.ts';
 
 // Reducers for accounting and account-wide events: usage totals, questions, inbox and
 // backend limits.
-type UsageRecorded = EventOf<'usage.recorded'>['data'];
+export type UsageRecorded = EventOf<'usage.recorded'>['data'];
 
 const ZERO_TOKENS: TokenCounts = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
 
-const EMPTY_USAGE_TOTALS: UsageTotals = {
+export const EMPTY_USAGE_TOTALS: UsageTotals = {
   apiUsd: 0,
   apiUnpriced: false,
   subscriptionTokens: ZERO_TOKENS,
@@ -34,9 +34,10 @@ function addTokens(a: TokenCounts, b: TokenCounts): TokenCounts {
 /**
  * Adds one usage row to running totals. API usage adds USD (or sets `apiUnpriced` when the
  * price is unknown, never counting it as $0); subscription usage adds tokens and calls only,
- * its `estCostUsd` is informational and never counted.
+ * its `estCostUsd` is informational and never counted. Exported so the server's running
+ * totals use exactly this arithmetic (snapshot ≡ replay, bit for bit).
  */
-function addUsage(t: UsageTotals | undefined, u: UsageRecorded): UsageTotals {
+export function addUsage(t: UsageTotals | undefined, u: UsageRecorded): UsageTotals {
   const cur = t ?? EMPTY_USAGE_TOTALS;
   if (u.billing === 'api') {
     return {
