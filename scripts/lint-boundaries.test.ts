@@ -1,5 +1,5 @@
 import { ESLint } from 'eslint';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 // Proves the module-boundary rules in eslint.config.js (CODING_STANDARDS.md §4).
 const eslint = new ESLint({ cwd: new URL('..', import.meta.url).pathname });
@@ -8,6 +8,14 @@ async function restrictedRuleIds(filePath: string, code: string): Promise<string
   const [result] = await eslint.lintText(code, { filePath });
   return (result?.messages ?? []).map((m) => m.ruleId ?? 'fatal');
 }
+
+// Loading the config, parser and plugins cold can exceed the 5s per-test timeout
+// when the full suite runs in parallel, so pay that cost once here.
+const WARM_UP_TIMEOUT_MS = 60_000;
+
+beforeAll(async () => {
+  await eslint.lintText('export {};\n', { filePath: 'src/shared/warm-up.ts' });
+}, WARM_UP_TIMEOUT_MS);
 
 describe('module boundaries', () => {
   it.each([
