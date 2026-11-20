@@ -1,8 +1,8 @@
-import { existsSync } from 'node:fs';
+import { cpSync, existsSync, rmSync } from 'node:fs';
 import { mkdtemp, readdir, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Event, EventDraft } from '../../shared/events.ts';
 import type { IssueId, ProductId } from '../../shared/ids.ts';
 import { addIssue } from '../commands/index.ts';
@@ -35,14 +35,69 @@ const APPROVE: FakeScript = [
 ];
 const HANG: FakeScript = [{ hang: true }];
 
+const draft = (product: ProductId, type: string, data: object) =>
+  ({ type, productId: product, entityId: null, v: 1, data }) as EventDraft;
+
 let dataDir: string;
 const dbs: Db[] = [];
+
+// The "given" of every test: a migrated DB with a product in building (one open issue) and its
+// initialised repo. Built once and copied per test, so no test pays for the migrations, the
+// first-use warm-up of the store, or the git spawns of initRepo.
+let templateDir: string;
+let productId: ProductId;
+let issueId: IssueId;
+beforeAll(async () => {
+  templateDir = await realpath(await mkdtemp(path.join(tmpdir(), 'vibecode-restart-template-')));
+  const clock = new FakeClock(START);
+  const db = open(path.join(templateDir, 'vibecode.db'));
+  try {
+    const store = createStore({ db, clock, redactor: new Redactor() });
+    const ids = createIdGen(clock);
+    productId = ids.next('product');
+    await createGit({ dataDir: templateDir }).initRepo(productId);
+    store.commit(() => [
+      draft(productId, 'product.created', {
+        name: 'Todo',
+        idea: 'todos',
+        budgetUsd: null,
+        maxParallel: 1,
+        maxAttempts: 2,
+        models: {},
+        gitRemote: null,
+      }),
+      draft(productId, 'product.settings_changed', { project: PROJECT }),
+      draft(productId, 'prd.applied', { version: 1, markdown: '# v1', summary: null }),
+      draft(productId, 'product.handed_off', { prdVersion: 1 }),
+    ]);
+    const added = addIssue({ store, ids }, productId, {
+      title: 'Feature',
+      body: 'Build it.',
+      dependsOn: [],
+    });
+    if (!added.ok) throw new Error(added.reason);
+    issueId = added.issueId;
+    // The orchestrator planned this issue and consumed the hand-off (as applyPlan records it),
+    // so no orchestrator trigger is pending and each scheduler tick re-reads only newer events.
+    const consumed = store.snapshot().lastSeq;
+    store.commit(() => [draft(productId, 'orchestrator.cursor_advanced', { cursor: consumed })]);
+  } finally {
+    // Closing checkpoints the WAL, so the copied DB file is complete on its own.
+    db.$client.close();
+  }
+});
+afterAll(async () => {
+  await rm(templateDir, { recursive: true, force: true });
+});
 beforeEach(async () => {
   dataDir = await realpath(await mkdtemp(path.join(tmpdir(), 'vibecode-restart-')));
+  // Synchronous on purpose (here and in afterEach): ~25 small files, and the async variants queue
+  // every stat/copy/unlink on the libuv pool, which took 70-190 ms per hook under full-suite load.
+  cpSync(templateDir, dataDir, { recursive: true });
 });
-afterEach(async () => {
+afterEach(() => {
   for (const db of dbs.splice(0)) db.$client.close();
-  await rm(dataDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true });
 });
 
 /** One server process: its own DB connection, store, ids and git on the shared data dir. */
@@ -52,6 +107,11 @@ function boot(runtime: FakeContainerRuntime, clock: FakeClock) {
   const store = createStore({ db, clock, redactor: new Redactor() });
   const ids = createIdGen(clock);
   const git = createGit({ dataDir });
+  // Role of the latest agent this process spawned, tracked from the bus (no event-log re-reads).
+  let lastSpawnedRole = 'none';
+  store.subscribe((e) => {
+    if (e.type === 'agent.spawned') lastSpawnedRole = e.data.role;
+  });
   const deps = (script: (role: string) => FakeScript): AttemptDeps => ({
     store,
     ids,
@@ -66,19 +126,13 @@ function boot(runtime: FakeContainerRuntime, clock: FakeClock) {
       getSecret: () => undefined,
       // Read when an agent's model is created, right after its agent.spawned.
       get fake() {
-        return { script: script(lastSpawnedRole(store)) };
+        return { script: script(lastSpawnedRole) };
       },
     },
     withMergeLock: (_p, fn) => fn(),
     demo: true,
   });
   return { db, store, ids, git, deps };
-}
-
-function lastSpawnedRole(store: Store): string {
-  const spawned = store.eventsSince(0).filter((e) => e.type === 'agent.spawned');
-  const last = spawned.at(-1);
-  return last?.type === 'agent.spawned' ? last.data.role : 'none';
 }
 
 /** Resolves with the first committed event that matches. */
@@ -92,42 +146,18 @@ function waitFor(store: Store, match: (e: Event) => boolean): Promise<Event> {
   });
 }
 
-const draft = (productId: ProductId, type: string, data: object) =>
-  ({ type, productId, entityId: null, v: 1, data }) as EventDraft;
-
 describe('restart recovery (integration)', () => {
   it('a crash mid-attempt is recovered and the issue then completes on the new process', async () => {
-    const clock = new FakeClock(START);
+    // Later than the template's events, so time and ULIDs keep increasing across the boots.
+    const clock = new FakeClock(START + 1_000);
     const runtime = new FakeContainerRuntime({
       dataDir,
       script: [{ match: ['npm', 'test'], result: { code: 0, stdout: 'ok\n' } }],
     });
 
-    // ---- process 1: a product in building, one issue, an attempt that never finishes ----
+    // ---- process 1: the template's product and issue, an attempt that never finishes ----
     const p1 = boot(runtime, clock);
-    const productId = p1.ids.next('product');
-    await p1.git.initRepo(productId);
-    p1.store.commit(() => [
-      draft(productId, 'product.created', {
-        name: 'Todo',
-        idea: 'todos',
-        budgetUsd: null,
-        maxParallel: 1,
-        maxAttempts: 2,
-        models: {},
-        gitRemote: null,
-      }),
-      draft(productId, 'product.settings_changed', { project: PROJECT }),
-      draft(productId, 'prd.applied', { version: 1, markdown: '# v1', summary: null }),
-      draft(productId, 'product.handed_off', { prdVersion: 1 }),
-    ]);
-    const added = addIssue({ store: p1.store, ids: p1.ids }, productId, {
-      title: 'Feature',
-      body: 'Build it.',
-      dependsOn: [],
-    });
-    if (!added.ok) throw new Error(added.reason);
-    const issueId: IssueId = added.issueId;
+    expect(p1.store.q.issue(issueId)?.status).toBe('open');
     const implementing = waitFor(p1.store, (e) => e.type === 'agent.spawned');
     const handle: RunHandle = {
       runId: p1.ids.next('run'),
@@ -163,14 +193,21 @@ describe('restart recovery (integration)', () => {
       p2.store,
       (e) => e.type === 'attempt.ended' && e.data.status === 'merged',
     );
+    let orchestratorRuns = 0;
     const scheduler = createScheduler({
       store: p2.store,
       clock,
       ids: p2.ids,
       timer: { setInterval: () => 0, clearInterval: () => {} },
-      orchestratorNotBefore: () => Number.POSITIVE_INFINITY,
+      // The product has no per-role models, so the default check (a full snapshot per call) is
+      // always false; skipping it keeps the per-event ticks cheap.
+      isBackendBlocked: () => false,
       runners: {
-        runOrchestrator: () => Promise.resolve(),
+        // Nothing is pending for the orchestrator (see the template): it must not be started.
+        runOrchestrator: () => {
+          orchestratorRuns += 1;
+          return Promise.resolve();
+        },
         runAttempt: (id, run) =>
           runAttempt(
             p2.deps((role) => (role === 'reviewer' ? APPROVE : IMPLEMENT)),
@@ -182,6 +219,7 @@ describe('restart recovery (integration)', () => {
     scheduler.start();
     await completed;
     await scheduler.stop();
+    expect(orchestratorRuns).toBe(0);
 
     const issue = p2.store.q.issue(issueId);
     expect(issue).toMatchObject({ status: 'completed', attemptCount: 0 });
