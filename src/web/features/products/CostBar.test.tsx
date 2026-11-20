@@ -25,7 +25,15 @@ const P = ProductIdSchema.parse('p1');
 let seq = 0;
 const event = (type: string, entityId: string | null, data: unknown): Event => {
   seq += 1;
-  return EventSchema.parse({ seq, ts: 1_700_000_000_000 + seq, type, productId: P, entityId, v: 1, data });
+  return EventSchema.parse({
+    seq,
+    ts: 1_700_000_000_000 + seq,
+    type,
+    productId: P,
+    entityId,
+    v: 1,
+    data,
+  });
 };
 
 const ZERO_TOKENS = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
@@ -144,7 +152,9 @@ describe('CostBar', () => {
       ),
     );
     expect(region).toHaveTextContent('US$0.00 spent, no budget set');
-    expect(within(region).getByText('Subscription usage: 2,234 tokens in 3 calls')).toBeInTheDocument();
+    expect(
+      within(region).getByText('Subscription usage: 2,234 tokens in 3 calls'),
+    ).toBeInTheDocument();
     expect(region).not.toHaveTextContent('3.33');
     expect(within(region).queryByText(/unpriced/i)).not.toBeInTheDocument();
   });

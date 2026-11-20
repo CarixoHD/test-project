@@ -19,8 +19,7 @@ export function CostBar({ product }: { product: ProductState }) {
   return (
     <section className="build-tab__slot cost-bar" aria-label="Costs">
       <p className="cost-bar__line">
-        <span id={labelId}>API spend</span>{' '}
-        <span className="cost-bar__amount">{summary.text}</span>
+        <span id={labelId}>API spend</span> <span className="cost-bar__amount">{summary.text}</span>
         {summary.percent !== null && <span> ({percentText})</span>}
       </p>
       {summary.percent !== null && (
@@ -48,11 +47,13 @@ export function CostBar({ product }: { product: ProductState }) {
       )}
       {totals.apiUnpriced && (
         <p className="cost-bar__note">
-          Includes unpriced usage: some calls used a model without a known price, so actual spend
-          is higher.
+          Includes unpriced usage: some calls used a model without a known price, so actual spend is
+          higher.
         </p>
       )}
-      {subscription !== null && <p className="cost-bar__note">Subscription usage: {subscription}</p>}
+      {subscription !== null && (
+        <p className="cost-bar__note">Subscription usage: {subscription}</p>
+      )}
     </section>
   );
 }
