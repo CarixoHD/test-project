@@ -17,11 +17,14 @@ export type {
 export {
   AGENT_HOME,
   CLAUDE_CONFIG_VOLUME,
+  CONTAINER_LIMITS,
   MANAGED_LABEL,
   NETWORKS,
+  TMP_TMPFS,
   WORKSPACE,
   buildRunArgs,
   containerName,
+  limitArgs,
   managedLabels,
 } from './run-args.ts';
 export {
