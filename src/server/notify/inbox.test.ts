@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { IssueView } from '../../shared/domain.ts';
+import type { AttemptStatus, IssueView } from '../../shared/domain.ts';
 import type { EventDraft } from '../../shared/events.ts';
 import {
+  AttemptIdSchema,
   InboxIdSchema,
   IssueIdSchema,
   ProductIdSchema,
@@ -18,19 +19,21 @@ import { inboxHook, inboxRoutes, markInboxRead } from './index.ts';
 const P = ProductIdSchema.parse('product-1');
 const I = IssueIdSchema.parse('issue-1');
 const Q = QuestionIdSchema.parse('question-1');
+const AT = AttemptIdSchema.parse('attempt-1');
 const T0 = 1_700_000_000_000;
 
 function setup() {
   const db = open(':memory:');
   const clock = new FakeClock(T0);
   const ids = new FakeIdGen();
+  const redactor = new Redactor();
   const store = createStore({
     db,
     clock,
-    redactor: new Redactor(),
+    redactor,
     hooks: [inboxHook({ ids, timeZone: 'UTC' })],
   });
-  return { db, clock, store };
+  return { db, clock, redactor, store };
 }
 
 const productCreated: EventDraft = {
@@ -82,6 +85,44 @@ function seeded() {
       data: { from: 'open', to: 'in_progress', attemptCount: 0, runAfter: 0 },
     },
   ]);
+  return ctx;
+}
+
+const attemptStarted: EventDraft = {
+  type: 'attempt.started',
+  productId: P,
+  entityId: AT,
+  v: 1,
+  data: { issueId: I, n: 1, issueRev: 1, baseSha: 'a'.repeat(40), branch: 'vibecode/issue-1' },
+};
+
+function attemptEnded(
+  status: Exclude<AttemptStatus, 'running'>,
+  feedback: string | null,
+  counted = false,
+): EventDraft {
+  return {
+    type: 'attempt.ended',
+    productId: P,
+    entityId: AT,
+    v: 1,
+    data: {
+      issueId: I,
+      status,
+      counted,
+      headSha: null,
+      feedback,
+      review: null,
+      checkExit: null,
+      interruptReason: status === 'interrupted' ? 'issue_changed' : null,
+    },
+  };
+}
+
+/** `seeded()` plus a running attempt on the issue. */
+function withAttempt() {
+  const ctx = seeded();
+  ctx.store.commit(() => [attemptStarted]);
   return ctx;
 }
 
@@ -214,6 +255,48 @@ describe('inbox hook in store.commit', () => {
     expect(store.snapshot().lastSeq).toBe(before);
     expect(db.$client.prepare('SELECT count(*) FROM inbox').pluck().get()).toBe(0);
     expect(db.$client.prepare('SELECT count(*) FROM questions').pluck().get()).toBe(0);
+  });
+});
+
+describe('inbox hook for attempt.ended', () => {
+  it('creates one error item linking the issue with the redacted message', () => {
+    const { store, redactor } = withAttempt();
+    redactor.register('sk-secret-123456');
+    const committed = store.commit(() => [
+      attemptEnded('error', 'docker run failed: token sk-secret-123456 rejected'),
+    ]);
+
+    expect(committed.map((e) => e.type)).toEqual(['attempt.ended', 'inbox.created']);
+    const items = Object.values(store.snapshot().state.inbox);
+    expect(items).toHaveLength(1);
+    const [item] = items;
+    expect(item).toMatchObject({
+      productId: P,
+      kind: 'error',
+      title: 'Attempt on #1 Login form hit an error',
+      link: `/products/${P}/issues/${I}`,
+      read: false,
+    });
+    expect(item?.body).toContain('docker run failed: token');
+    expect(item?.body).not.toContain('sk-secret-123456');
+    expectSnapshotMatchesReplay(store);
+  });
+
+  it.each([
+    { status: 'merged', counted: false },
+    { status: 'check_failed', counted: true },
+    { status: 'rejected', counted: true },
+    { status: 'conflict', counted: true },
+    { status: 'interrupted', counted: false },
+    { status: 'discarded', counted: false },
+    { status: 'error', counted: true },
+  ] as const)('creates no item for status $status (counted: $counted)', ({ status, counted }) => {
+    const { store } = withAttempt();
+    const committed = store.commit(() => [attemptEnded(status, 'why', counted)]);
+
+    expect(committed.map((e) => e.type)).toEqual(['attempt.ended']);
+    expect(store.snapshot().state.inbox).toEqual({});
+    expectSnapshotMatchesReplay(store);
   });
 });
 
