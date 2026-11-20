@@ -1055,3 +1055,33 @@ a {
   font-family: ui-monospace, monospace;
   overflow-wrap: anywhere;
 }
+
+/* ---- login ---- */
+
+.login {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: var(--space-6);
+}
+
+.login__card {
+  display: grid;
+  gap: var(--space-3);
+  width: min(100%, 24rem);
+}
+
+.login__alert:empty {
+  display: none;
+}
+
+.app-header__logout {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.app-header__logout p {
+  margin: 0;
+}

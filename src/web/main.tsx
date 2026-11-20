@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter } from 'react-router';
 import { App } from './App.tsx';
+import { AuthGate } from './features/auth/index.ts';
 import { routes } from './routes.tsx';
 import { createAppStore } from './state/store.ts';
 import './styles.css';
@@ -14,6 +15,8 @@ const router = createBrowserRouter(routes);
 
 createRoot(container).render(
   <StrictMode>
-    <App store={store} router={router} />
+    <AuthGate>
+      <App store={store} router={router} />
+    </AuthGate>
   </StrictMode>,
 );
