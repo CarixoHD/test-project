@@ -1,13 +1,14 @@
-// ClaudeCodeBackend (ADR 4, docs/ARCHITECTURE.md §4.6): drives the official, unmodified `claude`
-// CLI headless inside the agent sandbox under the owner's own subscription login. Vibecode never
-// reads, copies or stores the login (the CLI config volume), never sets
-// ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN for these runs and never passes `--bare` (bare mode
-// ignores the subscription login). Flag names verified against the docs for the pinned CLI
+// ClaudeCodeBackend (ADR 4 and 13, docs/ARCHITECTURE.md §4.6): drives the official, unmodified
+// `claude` CLI headless inside the agent sandbox under the owner's own subscription. Login: the
+// owner's `claude setup-token` token when set in Settings (CLAUDE_CODE_OAUTH_TOKEN through the
+// exec env, never argv), else the CLI config volume. Vibecode never reads, copies or stores the
+// volume login, never sets ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN for these runs and never
+// passes `--bare` (bare mode ignores the subscription login). Flag names verified against the docs for the pinned CLI
 // (docs/research/how-can-the-platform-drive-the-official-claude-cod.md).
 import { z } from 'zod';
 import type { Role } from '../../shared/models.ts';
 import { AGENT_HOME } from '../sandbox/index.ts';
-import { redactor } from '../security/index.ts';
+import { CLAUDE_CODE_TOKEN_SECRET, redactor } from '../security/index.ts';
 import { newStreamState, parseStreamLine, resultUsage, streamOutcome } from './claude-stream.ts';
 import { truncateMiddle } from './tools.ts';
 import type { AgentResult, AgentSpec } from './types.ts';
@@ -17,6 +18,8 @@ export const CLAUDE_CONFIG_DIR = `${AGENT_HOME}/.claude`;
 export const CLAUDE_STOP_POLL_MS = 250;
 const ACTIVITY_LINE_LIMIT = 500;
 const FORBIDDEN_ENV = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const;
+/** The CLI's documented variable for a `claude setup-token` token (ADR 13). */
+const CLAUDE_OAUTH_TOKEN_ENV = 'CLAUDE_CODE_OAUTH_TOKEN';
 
 const READ_ONLY_TOOLS = ['Read', 'Glob', 'Grep'] as const;
 const WRITE_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'] as const;
@@ -98,6 +101,20 @@ function assertSubscriptionSafe(inv: ClaudeInvocation): void {
   }
 }
 
+/**
+ * The exec env carrying the owner's subscription token, or undefined to use the volume login.
+ * Exec env, not ClaudeInvocation.env: claudeExecArgv turns that into argv, visible in `ps`.
+ */
+function subscriptionTokenEnv(
+  getSecret: (key: string) => string | undefined,
+): Record<string, string> | undefined {
+  const token = getSecret(CLAUDE_CODE_TOKEN_SECRET)?.trim();
+  if (!token) return undefined;
+  // Secrets registers stored values already; this also covers a getter not backed by it.
+  redactor.register(token);
+  return { [CLAUDE_OAUTH_TOKEN_ENV]: token };
+}
+
 /** Runs one agent through the Claude Code CLI. Never throws for CLI or limit failures. */
 export async function runClaudeCodeBackend<T>(spec: AgentSpec<T>): Promise<AgentResult<T>> {
   const sandbox = spec.sandbox;
@@ -111,6 +128,7 @@ export async function runClaudeCodeBackend<T>(spec: AgentSpec<T>): Promise<Agent
   if (spec.shouldStop()) return { kind: 'stopped' };
 
   const argv = claudeExecArgv(buildClaudeArgv(spec));
+  const env = subscriptionTokenEnv(spec.modelDeps.getSecret);
   const state = newStreamState();
   const controller = new AbortController();
   const checkStop = (): void => {
@@ -127,6 +145,7 @@ export async function runClaudeCodeBackend<T>(spec: AgentSpec<T>): Promise<Agent
       timeoutMs: spec.limits.wallClockMs,
       signal: controller.signal,
       killSignal: 'SIGINT',
+      ...(env === undefined ? {} : { env }),
       onLine: (line, stream) => {
         if (stream === 'stdout') for (const a of parseStreamLine(state, line)) activity(a);
         checkStop();

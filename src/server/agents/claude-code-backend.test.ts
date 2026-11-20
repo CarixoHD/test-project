@@ -1,4 +1,5 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Ajv } from 'ajv';
 import { describe, expect, it } from 'vitest';
@@ -9,7 +10,13 @@ import {
   ReviewResultSchema,
   SparResultSchema,
 } from '../../shared/agent-results.ts';
-import type { ExecOpts, ExecResult, Sandbox } from '../sandbox/index.ts';
+import {
+  FakeContainerRuntime,
+  type ExecOpts,
+  type ExecResult,
+  type Sandbox,
+} from '../sandbox/index.ts';
+import { CLAUDE_CODE_TOKEN_SECRET } from '../security/index.ts';
 import { FakeClock } from '../util/clock.ts';
 import {
   buildClaudeArgv,
@@ -434,6 +441,106 @@ describe('runClaudeCodeBackend', () => {
       message: 'The Claude Code backend needs a sandbox, but none was given',
       transient: false,
     });
+  });
+});
+
+describe('subscription token (ADR 13)', () => {
+  const TOKEN = 'sk-ant-oat01-OwnerSetupTokenForTests-Qr7s';
+  const withToken = (key: string) => (key === CLAUDE_CODE_TOKEN_SECRET ? TOKEN : undefined);
+
+  it('passes CLAUDE_CODE_OAUTH_TOKEN through the exec env, never through argv', async () => {
+    const { sandbox, calls } = playbackSandbox(await fixture('success.ndjson'));
+    const { spec: s } = spec(sandbox, { modelDeps: { getSecret: withToken } });
+
+    expect(await runClaudeCodeBackend(s)).toMatchObject({ kind: 'ok' });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.o.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: TOKEN });
+    expect(calls[0]?.argv.join('\n')).not.toContain(TOKEN);
+    expect(calls[0]?.o.stdin).not.toContain(TOKEN);
+    // Same argv as without a token: the API variables stay unset, no --bare.
+    expect(calls[0]?.argv).toEqual(claudeExecArgv(buildClaudeArgv(s)));
+    expect(calls[0]?.argv.slice(0, 5)).toEqual([
+      'env',
+      '-u',
+      'ANTHROPIC_API_KEY',
+      '-u',
+      'ANTHROPIC_AUTH_TOKEN',
+    ]);
+    expect(calls[0]?.argv).not.toContain('--bare');
+  });
+
+  it('records only the env name on the fake runtime', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'vibecode-claude-token-'));
+    try {
+      const worktree = path.join(dataDir, 'worktrees', '01RUN');
+      await mkdir(worktree, { recursive: true });
+      const runtime = new FakeContainerRuntime({ dataDir });
+      const sandbox = await runtime.open({
+        runId: '01RUN',
+        productId: '01PROD',
+        role: 'agent',
+        image: 'vibecode/claude-code:test',
+        worktree,
+        readOnly: false,
+        network: 'egress',
+        claude: true,
+      });
+      const { spec: s } = spec(sandbox, { modelDeps: { getSecret: withToken } });
+
+      await runClaudeCodeBackend(s);
+
+      const exec = runtime.calls.find((c) => c.kind === 'exec');
+      expect(exec).toMatchObject({ kind: 'exec', env: ['CLAUDE_CODE_OAUTH_TOKEN'] });
+      expect(JSON.stringify(runtime.calls)).not.toContain(TOKEN);
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('without a token, passes no exec env (the volume login)', async () => {
+    const { sandbox, calls } = playbackSandbox(await fixture('success.ndjson'));
+    const { spec: s } = spec(sandbox);
+
+    await runClaudeCodeBackend(s);
+
+    expect(calls[0]?.o.env).toBeUndefined();
+    expect(calls[0]?.argv).toEqual(claudeExecArgv(buildClaudeArgv(s)));
+  });
+
+  it('redacts the token from activity lines and error messages when the CLI echoes it', async () => {
+    const echoed = JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: 'msg_x',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-sonnet-4-6',
+        content: [{ type: 'text', text: `My token is ${TOKEN} ok` }],
+        stop_reason: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+      parent_tool_use_id: null,
+      session_id: 's',
+      uuid: 'u-x',
+    });
+    const { sandbox } = playbackSandbox([echoed], { code: 1, stderr: `auth ${TOKEN}\n` });
+    const { spec: s, rec } = spec(sandbox, { modelDeps: { getSecret: withToken } });
+
+    const r = await runClaudeCodeBackend(s);
+
+    expect(rec.activity.length).toBeGreaterThan(0);
+    expect(rec.activity.join('\n')).toContain('My token is');
+    expect(rec.activity.join('\n')).not.toContain(TOKEN);
+    expect(JSON.stringify(r)).not.toContain(TOKEN);
+  });
+
+  it('refuses ANTHROPIC_* even when a token is set', () => {
+    const inv = buildClaudeArgv(spec(undefined, { modelDeps: { getSecret: withToken } }).spec);
+    expect(inv.env).not.toHaveProperty('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(() =>
+      claudeExecArgv({ ...inv, env: { ...inv.env, ANTHROPIC_API_KEY: 'sk-ant-x' } }),
+    ).toThrow(/ANTHROPIC_API_KEY/);
   });
 });
 
