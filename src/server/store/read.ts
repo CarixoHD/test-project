@@ -160,6 +160,8 @@ export interface Queries {
   productUsage(productId: ProductId): UsageTotals;
   issueUsage(issueId: IssueId): UsageTotals;
   inboxItem(id: InboxId): InboxItem | null;
+  /** Raw JSON value of a `settings` row (unvalidated; callers parse it), undefined when unset. */
+  setting(key: string): unknown;
 }
 
 export function createQueries(db: Db): Queries {
@@ -207,6 +209,9 @@ export function createQueries(db: Db): Queries {
     inboxItem(id) {
       const r = db.select().from(s.inbox).where(eq(s.inbox.id, id)).get();
       return r === undefined ? null : InboxItemSchema.parse(inboxView(r));
+    },
+    setting(key) {
+      return db.select().from(s.settings).where(eq(s.settings.key, key)).get()?.value;
     },
   };
 }

@@ -26,6 +26,8 @@ export type IdByKind = {
   question: QuestionId;
   inbox: InboxId;
   run: RunId;
+  /** usage.recorded rows (unbranded: the event's entityId is plain text). */
+  usage: string;
 };
 export type IdKind = keyof IdByKind;
 

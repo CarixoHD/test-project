@@ -177,7 +177,8 @@ interface Store {
 ```ts
 interface Tx { q: Queries; db: Db }   // db: same connection, inside the transaction; write only tables without events (settings, secrets)
 interface Queries { product(id); issuesByProduct(productId) /* by number */; issue(id); attemptsByIssue(issueId) /* by n */;
-                    attempt(id); productUsage(productId); issueUsage(issueId); inboxItem(id) }   // ClientState shapes; usage zero when none
+                    attempt(id); productUsage(productId); issueUsage(issueId); inboxItem(id);
+                    setting(key) /* raw JSON or undefined; callers validate */ }   // ClientState shapes; usage zero when none
 type CommitHook = (committed: readonly Event[], tx: Tx) => EventDraft[];  // derived drafts, same transaction
 createStore({db, clock, redactor, hooks?: CommitHook[]}): Store;  // main passes hooks: [inboxHook({ids})]     // db from db/open(path) (':memory:' in tests; file created 0600; WAL pragmas; migrations applied)
 ```
@@ -267,6 +268,21 @@ createProduct({store, ids, git}, {name, idea}): Promise<{ok:true; id: ProductId}
 The result schemas above are defined in `src/shared/agent-results.ts`. The pipeline imports them from there and does not redefine them.
 
 Prompts live in `src/server/pipeline/prompts/<role>.md`. They are plain markdown templates with `{{var}}` substitution.
+
+Pipeline helpers every agent run uses (`pipeline/index.ts`):
+```ts
+renderPrompt(name, vars: Record<string,string>, {dir?}): string  // prompts/<name>.md; single-pass {{var}} (values never re-expanded); missing var → throw
+resolveModel(store, productId, role, {demo?}): {ok:true; model} | {ok:false; reason:'Choose a model in Settings'}
+  // product.models[role] → settings roleDefaults[role] → settings defaultModel → {provider:'fake', model:'fake'} in demo mode
+SETTING_KEYS = {roleDefaults, defaultModel, priceOverrides}; readRoleDefaults/readDefaultModel/readPriceOverrides(store)  // zod-validated; malformed → throw
+runRecordedAgent<T>(ctx: {store, ids, clock, redactor, logsDir, setTimer?, afterUsage?: (e: usage.recorded) => void},
+                    spec: Omit<AgentSpec<T>, 'agentId'|'clock'|'onActivity'|'onUsage'> & {productId, issueId?, attemptId?})
+  : Promise<{agentId; result: AgentResult<T>}>
+usageCost(model, stepUsage, priceOverrides): billing/tokens/webSearches/calls/costUsd/unpriced/estCostUsd/source
+```
+- `runRecordedAgent` commits `agent.spawned`, appends every activity line to `logs/<agentId>.ndjson` (`{ts, line}`, redacted, file 0600) and ends it with `exited <outcome>[: message]`, emits `agent.activity` through `ActivityBatcher` (≤ 1 per 250 ms of `clock` time, last 5 held lines; a timer flushes held lines when the window ends; lines still held at exit stay in the log only), commits one `usage.recorded` per step (entity id from `IdGen` kind `usage`) then calls `afterUsage`, commits `agent.state{rate_limited, until}` on a rate-limited result, and always commits `agent.exited` in `finally` (outcome = result kind, or `error` when the run throws).
+- A throwing recording callback (store, log file, `afterUsage`) stops the agent via `shouldStop` and is rethrown after the run; it is never turned into a model error.
+- Usage: billing `api` uses OpenRouter's reported cost (`source:'provider'`) when present, else `priceUsage(price(model, overrides))` (`computed`; unknown → `unpriced`, costUsd null). Billing `subscription` (`capabilities(ref).subscription`, i.e. claude-code): `costUsd` null, `estCostUsd` = the same computation as an estimate (null when unknown), `source:'cli'`. `calls` = 1 per step.
 
 ### 4.6 server/agents
 ```ts
