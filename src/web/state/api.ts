@@ -1,10 +1,16 @@
 import { z } from 'zod';
 import {
+  AddIssueResponseSchema,
   CreateProductResponseSchema,
+  EditIssueResponseSchema,
   OkResponseSchema,
   StateResponseSchema,
+  type AddIssueRequest,
+  type AddIssueResponse,
   type CreateProductRequest,
   type CreateProductResponse,
+  type EditIssueRequest,
+  type EditIssueResponse,
   type OkResponse,
   type StateResponse,
 } from '../../shared/dto.ts';
@@ -147,6 +153,43 @@ export function savePrdDraft(
 /** Hands the PRD draft to the orchestrator; the phase change arrives as events. */
 export function handoffProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
   return request(`/api/products/${encodeURIComponent(productId)}/handoff`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Adds an owner issue to the product; the card arrives later as `issue.created`. */
+export function addIssue(
+  productId: string,
+  body: AddIssueRequest,
+  signal?: AbortSignal,
+): Promise<AddIssueResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/issues`, {
+    method: 'POST',
+    body,
+    schema: AddIssueResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Edits an issue based on revision `body.rev`; a stale rev is an ApiError with status 409. */
+export function editIssue(
+  issueId: string,
+  body: EditIssueRequest,
+  signal?: AbortSignal,
+): Promise<EditIssueResponse> {
+  return request(`/api/issues/${encodeURIComponent(issueId)}`, {
+    method: 'PATCH',
+    body,
+    schema: EditIssueResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Cancels an issue; the status change arrives as `issue.cancelled`. */
+export function cancelIssue(issueId: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/issues/${encodeURIComponent(issueId)}/cancel`, {
     method: 'POST',
     schema: OkResponseSchema,
     ...(signal ? { signal } : {}),
