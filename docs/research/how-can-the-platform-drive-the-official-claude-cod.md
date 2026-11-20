@@ -124,3 +124,21 @@ Sources: code.claude.com "Legal and compliance" page, current as of 2026-11, and
 - [Agent SDK TypeScript reference (SDKResultMessage, SDKRateLimitEvent, ModelUsage)](https://code.claude.com/docs/en/agent-sdk/typescript)
 - [Claude Code docs – Errors (usage limits messages)](https://code.claude.com/docs/en/errors)
 - [Anthropic Consumer Terms of Service](https://www.anthropic.com/legal/consumer-terms)
+
+## Addendum (2026-11-20, issue #41): flag verification and fixture provenance
+
+Pinned CLI: `@anthropic-ai/claude-code` 2.1.329 (ADR 4). The backend (`src/server/agents/claude-code-backend.ts`) uses only these flags. Each was checked against the docs listed below, not yet against a live binary:
+
+| Flag / field | Source | Status |
+|---|---|---|
+| `-p`, `--output-format stream-json`, `--verbose` (required for stream-json in `-p`) | [headless](https://code.claude.com/docs/en/headless), [CLI reference](https://code.claude.com/docs/en/cli-reference) | documented |
+| `--permission-mode acceptEdits`, `--allowedTools` (comma-separated, one argument) | [CLI reference](https://code.claude.com/docs/en/cli-reference), [permissions](https://code.claude.com/docs/en/iam) | documented |
+| `--permission-prompts none` | [CLI reference](https://code.claude.com/docs/en/cli-reference) (v2.1.259+) | documented |
+| `--strict-mcp-config`, `--max-turns`, `--model` | [CLI reference](https://code.claude.com/docs/en/cli-reference) | documented |
+| `--json-schema <schema>` → `result.structured_output`; subtype `error_max_structured_output_retries` | [headless](https://code.claude.com/docs/en/headless), [Agent SDK TS reference](https://code.claude.com/docs/en/agent-sdk/typescript) | documented; whether the CLI accepts a draft-2020-12 schema from `z.toJSONSchema` still needs a live check |
+| `rate_limit_event.rate_limit_info.resetsAt` | [Agent SDK TS reference](https://code.claude.com/docs/en/agent-sdk/typescript) | unit not documented. The parser reads values < 1e12 as epoch seconds and larger values as epoch ms, so either unit works |
+| `system/api_retry.error` (`rate_limit`, `authentication_failed`, …), assistant `error` | [Agent SDK TS reference](https://code.claude.com/docs/en/agent-sdk/typescript) | documented |
+| "resets 3:45pm" / "Login expired" texts | [errors](https://code.claude.com/docs/en/errors), [authentication](https://code.claude.com/docs/en/authentication) | documented. Reset times are wall-clock times in the CLI's time zone, and the parser reads them in server local time |
+| `result.modelUsage`, `total_cost_usd`, `num_turns` | [Agent SDK TS reference](https://code.claude.com/docs/en/agent-sdk/typescript), [costs](https://code.claude.com/docs/en/costs) | documented; `total_cost_usd` is stored only as an estimate |
+
+The fixtures in `src/server/agents/fixtures/*.ndjson` (success with structured output, rate limited, rate limited via text fallback, login expired, error_max_turns) were written by hand from these documented shapes. A later HITL issue records real streams from the pinned binary to replace them and to confirm the `resetsAt` unit and the `--json-schema` behaviour.
