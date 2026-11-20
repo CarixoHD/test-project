@@ -1,63 +1,34 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createApp, readListenConfig } from './main.ts';
+import { StateResponseSchema } from '../shared/dto.ts';
+import { parseConfig } from './config.ts';
+import { start, type Running } from './main.ts';
 
-describe('GET /api/health', () => {
-  it('returns {ok:true}', async () => {
-    const res = await createApp().request('/api/health');
+describe('start (composition root)', () => {
+  let root: string | undefined;
+  let running: Running | undefined;
+  afterEach(async () => {
+    await running?.close();
+    running = undefined;
+    if (root !== undefined) rmSync(root, { recursive: true, force: true });
+    root = undefined;
+  });
+
+  it('binds 127.0.0.1 by default, creates the data dir and DB, and serves /api/state', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const dataDir = join(root, 'data');
+    const config = { ...parseConfig({ VIBECODE_DATA_DIR: dataDir }), port: 0 };
+    expect(config.host).toBe('127.0.0.1');
+
+    running = await start(config, join(root, 'no-web'));
+    expect(running.address.host).toBe('127.0.0.1');
+    expect(existsSync(join(dataDir, 'vibecode.db'))).toBe(true);
+    expect(existsSync(join(dataDir, 'empty'))).toBe(true);
+
+    const res = await fetch(`http://127.0.0.1:${String(running.address.port)}/api/state`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-  });
-});
-
-describe('static web root', () => {
-  let dir: string | undefined;
-  afterEach(() => {
-    if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
-    dir = undefined;
-  });
-
-  function makeWebRoot(): string {
-    dir = mkdtempSync(join(tmpdir(), 'vibecode-web-'));
-    writeFileSync(join(dir, 'index.html'), '<h1>Vibecode</h1>');
-    writeFileSync(join(dir, 'app.js'), 'console.log(1)');
-    return dir;
-  }
-
-  it('serves built files and falls back to index.html for client routes', async () => {
-    const app = createApp({ webRoot: makeWebRoot() });
-    expect(await (await app.request('/app.js')).text()).toBe('console.log(1)');
-    expect(await (await app.request('/')).text()).toContain('Vibecode');
-    expect(await (await app.request('/products/abc')).text()).toContain('Vibecode');
-  });
-
-  it('keeps unknown /api paths as 404 and health working', async () => {
-    const app = createApp({ webRoot: makeWebRoot() });
-    expect((await app.request('/api/nope')).status).toBe(404);
-    expect(await (await app.request('/api/health')).json()).toEqual({ ok: true });
-  });
-
-  it('serves nothing statically when the web root does not exist', async () => {
-    const app = createApp({ webRoot: join(tmpdir(), 'vibecode-missing-web-root') });
-    expect((await app.request('/')).status).toBe(404);
-  });
-});
-
-describe('readListenConfig', () => {
-  it('defaults to 127.0.0.1:4317', () => {
-    expect(readListenConfig({})).toEqual({ host: '127.0.0.1', port: 4317 });
-  });
-
-  it('reads VIBECODE_HOST and VIBECODE_PORT', () => {
-    expect(readListenConfig({ VIBECODE_HOST: '::1', VIBECODE_PORT: '5174' })).toEqual({
-      host: '::1',
-      port: 5174,
-    });
-  });
-
-  it.each(['0', '70000', 'abc', '1.5'])('rejects VIBECODE_PORT=%s', (port) => {
-    expect(() => readListenConfig({ VIBECODE_PORT: port })).toThrow();
+    expect(StateResponseSchema.parse(await res.json()).lastSeq).toBe(0);
   });
 });
