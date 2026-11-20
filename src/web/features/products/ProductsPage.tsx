@@ -1,13 +1,7 @@
 import { Link } from 'react-router';
-import type { ProductPhase } from '../../../shared/domain.ts';
 import { useApp } from '../../state/store.ts';
 import { NewProductForm } from './NewProductForm.tsx';
-
-const PHASE_LABELS: Record<ProductPhase, string> = {
-  sparring: 'Sparring',
-  building: 'Building',
-  complete: 'Complete',
-};
+import { PHASE_LABELS } from './phase.ts';
 
 /** `/`: every product, kept live by the store, and the form to create a new one. */
 export function ProductsPage() {
