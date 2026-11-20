@@ -638,3 +638,32 @@ a {
 .issue-card__blocked {
   margin: var(--space-1) 0 0;
 }
+
+.spec-handoff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  grid-column: 1 / -1;
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+
+.spec-handoff__hint {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+.product-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.product-header h1 {
+  margin-bottom: 0;
+}

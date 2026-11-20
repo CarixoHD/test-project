@@ -36,3 +36,4 @@ export {
   type FakeRunResult,
   type FakeRunRule,
 } from './fake.ts';
+export { DOCKER_UNAVAILABLE_REASON, selectRuntime } from './select-runtime.ts';
