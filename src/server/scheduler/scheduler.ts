@@ -6,6 +6,7 @@ import type { Role } from '../../shared/models.ts';
 import type { ClientState, IssueState, ProductState } from '../../shared/state.ts';
 import { pendingTriggers } from '../../shared/triggers.ts';
 import type { Store } from '../store/index.ts';
+import { allIssuesDone, completeProduct } from './completion.ts';
 
 // The scheduler (ARCHITECTURE §4.4). It decides WHEN runs start; the runners (pipeline) do
 // the work and write state through the store. Live runs are in memory only: after a restart
@@ -175,18 +176,24 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   }
 
   function scheduleProduct(state: ClientState, p: ProductState, events: Event[]): void {
-    if (p.phase !== 'building' || p.paused || budgetExhausted(state, p)) return;
+    if (p.phase !== 'building') return;
     const mine = [...live.values()].filter((r) => r.productId === p.id);
+    const scoped = events.filter((e) => e.productId === p.id && e.seq > p.orchestratorCursor);
+    const triggers = pendingTriggers(scoped, p.orchestratorCursor, {
+      productId: p.id,
+      questions: state.questions,
+    });
+    const issues = Object.values(state.issues).filter((i) => i.productId === p.id);
+    // Flow 9: nothing left to run or plan. The commit re-enters kick(), which coalesces.
+    if (mine.length === 0 && triggers.length === 0 && allIssuesDone(issues)) {
+      if (completeProduct(store, p.id)) return;
+    }
+    if (p.paused || budgetExhausted(state, p)) return;
     let liveCount = mine.length;
     const max = p.settings.maxParallel;
 
     const orchestratorLive = mine.some((r) => r.kind === 'orchestrator');
     if (!orchestratorLive && liveCount < max) {
-      const scoped = events.filter((e) => e.productId === p.id && e.seq > p.orchestratorCursor);
-      const triggers = pendingTriggers(scoped, p.orchestratorCursor, {
-        productId: p.id,
-        questions: state.questions,
-      });
       const notBefore = deps.orchestratorNotBefore?.(p.id) ?? 0;
       if (
         triggers.length > 0 &&
@@ -204,8 +211,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     if (isBackendBlocked(p.id, 'implementer')) return;
     const busy = new Set(mine.flatMap((r) => (r.issueId === undefined ? [] : [r.issueId])));
     const now = clock.now();
-    const ready = Object.values(state.issues)
-      .filter((i) => i.productId === p.id && !busy.has(i.id) && isReady(i, state.issues, now))
+    const ready = issues
+      .filter((i) => !busy.has(i.id) && isReady(i, state.issues, now))
       .sort(byPriorityThenNumber);
     for (const issue of ready) {
       if (liveCount >= max) break;

@@ -130,6 +130,19 @@ function buildPlan(
   );
   if (cycle !== null) return fail(`dependency cycle: ${describePath(board, cycle)}`);
 
+  // New or reopened work means a complete product is building again (flow 9). Cancels alone
+  // leave nothing to do, so they keep it complete.
+  const reopens = plan.issueOps.some((op) => op.op === 'create' || op.op === 'rewrite');
+  if (product.phase === 'complete' && reopens) {
+    board.drafts.push({
+      type: 'product.phase_changed',
+      productId,
+      entityId: null,
+      v: 1,
+      data: { phase: 'building' },
+    });
+  }
+
   for (const text of plan.questions) {
     board.drafts.push({
       type: 'question.asked',
