@@ -52,6 +52,8 @@ export class ExecError extends Error {
 const DEFAULT_MAX_BUFFER = 10 * 1024 * 1024;
 const DEFAULT_KILL_GRACE_MS = 5_000;
 const MAX_TIMER_MS = 2 ** 31 - 1;
+/** How long terminateAllChildren waits for 'close' after the SIGKILL (pipes drain, exit is reaped). */
+const SIGKILL_SETTLE_MS = 1_000;
 /** Extra bytes captured past maxBuffer, so a secret straddling the maxBuffer-th character is masked, not dropped. */
 const REDACT_MARGIN = 4096;
 const MAX_COMMAND_IN_MESSAGE = 500;
@@ -120,9 +122,9 @@ function run(
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
         // Own process group, so timeout/abort can signal the whole tree (see TreeKiller).
-        // Trade-off: a terminal Ctrl-C/SIGHUP to the server no longer reaches the child, and if
-        // the server dies, running children are orphaned. Long-lived ones (agents) run in
-        // containers that recovery removes at boot; the callers own anything else.
+        // Trade-off: a terminal Ctrl-C/SIGHUP to the server no longer reaches the child. Graceful
+        // shutdown calls terminateAllChildren(); after a hard crash children are orphaned, and
+        // long-lived ones (agents) run in containers that recovery removes at boot.
         detached: IS_POSIX,
         windowsHide: true,
       });
@@ -143,6 +145,7 @@ function supervise(
 ): Promise<RunOutcome> {
   return new Promise((resolve, reject) => {
     const state = { timedOut: false, aborted: false, failure: undefined as unknown };
+    let markClosed: () => void = () => {};
     const killer = new TreeKiller(
       child,
       o.killSignal ?? 'SIGTERM',
@@ -161,6 +164,8 @@ function supervise(
       killer.terminate();
     }, o.timeoutMs);
     o.signal?.addEventListener('abort', onAbort, { once: true });
+    const entry: LiveChild = { killer, closed: new Promise((done) => (markClosed = done)) };
+    live.add(entry);
 
     const guard = (stream: OutputStream) => (chunk: Buffer) => {
       try {
@@ -202,9 +207,43 @@ function supervise(
     function cleanup(): void {
       clearTimeout(timer);
       killer.dispose();
+      live.delete(entry);
+      markClosed();
       o.signal?.removeEventListener('abort', onAbort);
     }
   });
+}
+
+type LiveChild = { killer: TreeKiller; closed: Promise<void> };
+
+/** Children started by exec/spawnStream that have not closed yet (removed in `cleanup`). */
+const live = new Set<LiveChild>();
+
+/** Number of children started by exec/spawnStream that have not closed yet. */
+export function liveChildCount(): number {
+  return live.size;
+}
+
+/**
+ * Shutdown: sends every live child's process group its killSignal, then SIGKILL after `graceMs`
+ * (default 5000). Resolves when all have closed, or shortly after the SIGKILL if some have not.
+ */
+export async function terminateAllChildren(opts: { graceMs?: number } = {}): Promise<void> {
+  const graceMs = opts.graceMs ?? DEFAULT_KILL_GRACE_MS;
+  const children = [...live];
+  if (children.length === 0) return;
+  for (const c of children) c.killer.terminate(graceMs);
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([
+    Promise.all(children.map((c) => c.closed)),
+    new Promise((done) => (timer = setTimeout(done, graceMs + SIGKILL_SETTLE_MS))),
+  ]);
+  clearTimeout(timer);
+}
+
+/** Force quit: SIGKILL to every live child's process group, synchronously. */
+export function killAllChildren(): void {
+  for (const c of live) c.killer.kill();
 }
 
 /** Sends the kill signal to the child's process group, then SIGKILL after a grace period. */
@@ -222,11 +261,26 @@ class TreeKiller {
     this.#graceMs = graceMs;
   }
 
-  terminate(): void {
-    if (this.#isTerminating || this.#isDisposed) return;
+  /** Sends the kill signal, then SIGKILL after the grace (shortened by `graceMs` if smaller). */
+  terminate(graceMs = this.#graceMs): void {
+    if (this.#isDisposed) return;
+    const grace = Math.min(graceMs, this.#graceMs);
+    if (this.#isTerminating) {
+      if (grace >= this.#graceMs) return;
+      // Already terminating (timeout/abort): only bring the SIGKILL forward.
+      clearTimeout(this.#graceTimer);
+    } else {
+      this.#send(this.#signal);
+    }
     this.#isTerminating = true;
-    this.#send(this.#signal);
-    this.#graceTimer = setTimeout(() => this.#send('SIGKILL'), this.#graceMs);
+    this.#graceMs = grace;
+    this.#graceTimer = setTimeout(() => this.#send('SIGKILL'), grace);
+  }
+
+  /** SIGKILL to the group now. */
+  kill(): void {
+    clearTimeout(this.#graceTimer);
+    this.#send('SIGKILL');
   }
 
   dispose(): void {
