@@ -52,6 +52,8 @@ export interface StartOptions {
   orchestratorBackoff?: OrchestratorDeps['backoff'];
   /** Wraps each orchestrator run (tests observe when runs start and end). */
   wrapRunOrchestrator?: (run: Runners['runOrchestrator']) => Runners['runOrchestrator'];
+  /** docker CLI binary for the real runtime (tests point it at a missing one). */
+  dockerCommand?: string;
 }
 
 /** Composition root: config → data dir → DB → store → app → serve. */
@@ -113,7 +115,10 @@ export async function start(
     },
   });
   const app = createApp({ store, ids, git, redactor, webRoot, settings, sparring });
-  const runtime = selectRuntime(config, config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {});
+  const runtime = selectRuntime(config, {
+    ...(config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {}),
+    ...(options.dockerCommand === undefined ? {} : { docker: options.dockerCommand }),
+  });
   // The orchestrator merges under the scheduler's lock and the scheduler runs the orchestrator:
   // the lock closure reads `scheduler` only during a run, after it has been created below.
   const orchestrator = createOrchestrator({

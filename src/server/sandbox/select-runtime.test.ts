@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { DOCKER_NOT_RUNNING, DockerCliRuntime } from './docker-cli.ts';
 import { FakeContainerRuntime } from './fake.ts';
-import { DOCKER_UNAVAILABLE_REASON, selectRuntime } from './select-runtime.ts';
+import { selectRuntime } from './select-runtime.ts';
 
 const SPEC = {
   runId: 'run-1',
@@ -28,17 +29,17 @@ describe('selectRuntime', () => {
     expect([r.code, r.stdout]).toEqual([0, 'ok\n']);
   });
 
-  it('without fakeDocker, reports unavailable and rejects with an actionable message', async () => {
-    const runtime = selectRuntime({ fakeDocker: false, dataDir: '/data' });
-    expect(DOCKER_UNAVAILABLE_REASON).toBe(
-      'Docker runtime not available yet: set VIBECODE_FAKE_DOCKER=1',
+  it('without fakeDocker, returns the docker CLI runtime', () => {
+    expect(selectRuntime({ fakeDocker: false, dataDir: '/data' })).toBeInstanceOf(DockerCliRuntime);
+  });
+
+  it('without a docker CLI, reports unavailable and rejects with an actionable message', async () => {
+    const runtime = selectRuntime(
+      { fakeDocker: false, dataDir: '/data' },
+      { docker: '/nonexistent/vibecode-no-docker' },
     );
     await expect(runtime.available()).resolves.toBe(false);
-    const reason = new Error(DOCKER_UNAVAILABLE_REASON);
-    await expect(runtime.ensureImage({ productId: 'p', contextDir: '/x' })).rejects.toThrow(reason);
-    await expect(runtime.open(SPEC)).rejects.toThrow(reason);
-    await expect(runtime.runOnce(SPEC, ['true'], { timeoutMs: 1 })).rejects.toThrow(reason);
-    await expect(runtime.listManaged()).rejects.toThrow(reason);
-    await expect(runtime.remove('vibecode-run-1')).rejects.toThrow(reason);
+    await expect(runtime.listManaged()).rejects.toThrow(DOCKER_NOT_RUNNING);
+    await expect(runtime.remove('vibecode-run-1')).rejects.toThrow(DOCKER_NOT_RUNNING);
   });
 });

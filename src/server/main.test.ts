@@ -190,6 +190,7 @@ describe('start (composition root)', () => {
     running = await start(config, join(root, 'no-web'), {
       fakeScript: [finish(PLAN)],
       orchestratorBackoff: { maxFailures: 1 },
+      dockerCommand: join(root, 'no-docker'),
     });
     const base = `http://127.0.0.1:${String(running.address.port)}`;
     const productId = await createProduct(base);
@@ -201,7 +202,7 @@ describe('start (composition root)', () => {
     const streamed = await readEvents(events, (es) => es.some(isError), 10_000);
     const error = streamed.find(isError);
     expect(error?.type === 'inbox.created' && error.data.body).toContain(
-      'Docker runtime not available yet: set VIBECODE_FAKE_DOCKER=1',
+      'Docker is not running: start Docker Desktop or the docker service',
     );
     expect(streamed.some((e) => e.type === 'issue.created')).toBe(false);
     const state = await fetch(`${base}/api/state`);
@@ -222,6 +223,7 @@ describe('start (composition root)', () => {
     running = await start(config, join(root, 'no-web'), {
       fakeScript: [finish(PLAN)],
       orchestratorBackoff: { delaysMs, maxFailures: 10 },
+      dockerCommand: join(root, 'no-docker'),
       // Observes the real runs: they fail because Docker is not available.
       wrapRunOrchestrator: (run) => async (productId, triggers, handle) => {
         started += 1;
