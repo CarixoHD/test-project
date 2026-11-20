@@ -497,9 +497,14 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
     const onAbort = (): void => stop('abort');
     const deadline = setTimeout(() => stop('timeout'), Math.min(o.timeoutMs, MAX_TIMER_MS));
     o.signal?.addEventListener('abort', onAbort, { once: true });
+    const settle = async (): Promise<void> => {
+      clearTimeout(deadline);
+      clearTimeout(grace);
+      o.signal?.removeEventListener('abort', onAbort);
+      await Promise.all(kills);
+    };
     let r: ExecResult;
     try {
-      // If util/exec throws, the docker client never ran, so no file was created to clean up.
       r = await this.#runRaw(
         ['exec', '-i', '-w', WORKSPACE, name, 'sh', '-c', EXEC_WRAPPER, 'sh', pidFile, ...argv],
         {
@@ -509,12 +514,17 @@ export class DockerCliRuntime implements ContainerRuntime, ClaudeLoginSource {
         },
         'SIGKILL',
       );
-    } finally {
-      clearTimeout(deadline);
-      clearTimeout(grace);
-      o.signal?.removeEventListener('abort', onAbort);
-      await Promise.all(kills);
+    } catch (err) {
+      await settle();
+      // util/exec also rejects after the client started (an onLine or sink throw, a non-EPIPE
+      // stdin error); it killed the client then, so the wrapper may have written its pid file
+      // or may still start: reap as after any client kill. Only a missing docker CLI (mapped to
+      // DOCKER_NOT_RUNNING) means nothing ran. #removeExecFiles never throws (it logs), so the
+      // caller always sees the original error.
+      if (!isDockerNotRunning(err)) await this.#removeExecFiles(name, pidFile, true);
+      throw err;
     }
+    await settle();
     // A user command's own exit 1 may print the daemon message too: only a failing probe of the
     // daemon makes it DOCKER_NOT_RUNNING. With the daemon down, there is no container to clean.
     if (daemonDown(r) && !(await this.available())) throw new Error(DOCKER_NOT_RUNNING);
@@ -722,6 +732,10 @@ function isCode(err: unknown, code: string): boolean {
 
 function unavailable(err: unknown): unknown {
   return err instanceof ExecError && err.code === 'ENOENT' ? new Error(DOCKER_NOT_RUNNING) : err;
+}
+
+function isDockerNotRunning(err: unknown): boolean {
+  return err instanceof Error && err.message === DOCKER_NOT_RUNNING;
 }
 
 /**

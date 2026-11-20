@@ -15,6 +15,7 @@
     "test:e2e": "playwright test",
     "test:docker": "vitest run --project docker",
     "docker:images": "node scripts/build-images.ts",
+    "docker:prune": "node scripts/prune-images.ts",
     "dev": "node scripts/dev.mjs",
     "build": "vite build",
     "start": "node src/server/main.ts",

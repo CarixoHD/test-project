@@ -1,7 +1,8 @@
 # vibecode/base: fallback image for products without a Dockerfile (ARCHITECTURE §4.8, ADR 6).
 # Debian slim + git + Node 22 LTS + python3 with a venv at /opt/venv on PATH.
 # Containers run as the host uid:gid with a read-only rootfs and a tmpfs HOME at /home/agent.
-# Built on first use by DockerCliRuntime, or by hand: `npm run docker:base`.
+# Built on first use by DockerCliRuntime as vibecode/base:<content hash>. By hand: `npm run -s docker:images`
+# prints the build commands with the current hashed tags; pipe it to `sh` to build.
 FROM node:22-bookworm-slim
 
 RUN apt-get update \

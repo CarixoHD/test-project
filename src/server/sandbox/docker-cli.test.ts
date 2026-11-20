@@ -753,6 +753,68 @@ describe('open and Sandbox', () => {
     expect(logs[0]).toMatch(/vibecode-01RUN.*\/tmp\/vibecode-exec-.*EACCES/);
   });
 
+  it('cleans up the pid files when exec rejects after the client started, rethrowing the original error', async () => {
+    const logs: string[] = [];
+    const stub = stubDocker((argv) =>
+      argv[0] === 'exec' && argv[1] === '-i'
+        ? { code: 0, stdout: 'line\n' }
+        : argv[0] === 'exec' && argv[2] === 'sh'
+          ? { code: 1, stderr: 'Error response from daemon: container is paused' }
+          : {},
+    );
+    const rt = new DockerCliRuntime({
+      dataDir,
+      uid: 1000,
+      gid: 1000,
+      exec: stub.exec,
+      spawnStream: stub.spawnStream,
+      log: (l) => logs.push(l),
+    });
+    const sb = await rt.open(spec());
+    const boom = new Error('onLine sink failed');
+    await expect(
+      sb.exec(['make'], {
+        ...T,
+        onLine: () => {
+          throw boom;
+        },
+      }),
+    ).rejects.toBe(boom);
+    // util/exec killed the client after it started: the wrapper may have written its pid file
+    // (or may still start), so the reap script runs as after any client kill.
+    const pidFile = stub.argvs()[1]?.[9] ?? '';
+    expect(pidFile).toMatch(/^\/tmp\/vibecode-exec-/);
+    const cleanup = stub.argvs().slice(2);
+    expect(cleanup).toHaveLength(1);
+    expect(cleanup[0]?.slice(0, 4)).toEqual(['exec', 'vibecode-01RUN', 'sh', '-c']);
+    expect(cleanup[0]?.slice(5)).toEqual(['sh', pidFile]);
+    // A failed cleanup is logged and does not replace the original error.
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain(pidFile);
+    expect(logs[0]).toContain('container is paused');
+  });
+
+  it('skips the pid file cleanup when the docker CLI is missing (the client never ran)', async () => {
+    const logs: string[] = [];
+    let missing = false;
+    const stub = stubDocker(() =>
+      missing ? new ExecError('Could not run "docker": ENOENT', 'ENOENT') : {},
+    );
+    const rt = new DockerCliRuntime({
+      dataDir,
+      uid: 1000,
+      gid: 1000,
+      exec: stub.exec,
+      spawnStream: stub.spawnStream,
+      log: (l) => logs.push(l),
+    });
+    const sb = await rt.open(spec());
+    missing = true;
+    await expect(sb.exec(['make'], T)).rejects.toThrow(DOCKER_NOT_RUNNING);
+    expect(stub.argvs().slice(2)).toEqual([]);
+    expect(logs).toEqual([]);
+  });
+
   it('runs file ops through the shared fileOpArgv protocol', async () => {
     const stub = stubDocker();
     const sb = await runtime(stub).open(spec());

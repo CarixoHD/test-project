@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import type { IssueState, UsageTotals } from '../../../shared/state.ts';
+import type { IssueState, QuestionState, UsageTotals } from '../../../shared/state.ts';
 import { Button, StatusBadge } from '../../ui/index.ts';
 import { CancelIssueDialog, EditIssueDialog, isCancellable, isEditable } from '../issues/index.ts';
 import { ISSUE_STATUS_BADGE } from '../issues/issue-status.ts';
@@ -13,10 +13,27 @@ export interface IssueCardProps {
   maxAttempts: number;
   /** The issue's usage totals from ClientState; undefined before any usage. */
   usage?: UsageTotals | undefined;
+  /** The question `issue.heldQuestionId` points at, from ClientState; undefined if none. */
+  heldQuestion?: QuestionState | undefined;
+}
+
+/**
+ * The owner still owes an answer: the issue is not cancelled and its held question is neither
+ * answered nor withdrawn. `heldQuestionId` stays set after cancel/withdraw (#139), so it alone
+ * is not enough.
+ */
+export function isWaitingForOwner(issue: IssueState, heldQuestion: QuestionState | undefined) {
+  return (
+    issue.status !== 'cancelled' &&
+    issue.heldQuestionId !== null &&
+    heldQuestion?.id === issue.heldQuestionId &&
+    heldQuestion.answer === null &&
+    heldQuestion.withdrawnAt === null
+  );
 }
 
 /** One issue on the board. The title links to the issue detail; status is always in words. */
-export function IssueCard({ issue, blockedBy, maxAttempts, usage }: IssueCardProps) {
+export function IssueCard({ issue, blockedBy, maxAttempts, usage, heldQuestion }: IssueCardProps) {
   const badge = ISSUE_STATUS_BADGE[issue.status];
   const cost = issueCostText(usage);
   return (
@@ -26,7 +43,7 @@ export function IssueCard({ issue, blockedBy, maxAttempts, usage }: IssueCardPro
       </Link>
       <p className="issue-card__meta">
         <StatusBadge tone={badge.tone}>{badge.label}</StatusBadge>
-        {issue.heldQuestionId !== null && (
+        {isWaitingForOwner(issue, heldQuestion) && (
           <StatusBadge tone="warning">Waiting for owner</StatusBadge>
         )}
       </p>
