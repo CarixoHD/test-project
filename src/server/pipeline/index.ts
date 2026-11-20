@@ -43,3 +43,4 @@ export {
   runAttempt,
   type AttemptDeps,
 } from './attempt.ts';
+export { implementerPrompt, reviewerPrompt, tailLines } from './attempt-prompt.ts';

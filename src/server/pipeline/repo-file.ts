@@ -7,8 +7,7 @@ import path from 'node:path';
 const MAX_READ_BYTES = 1_000_000;
 
 export type RepoFileResult =
-  | { ok: true; value: string }
-  | { ok: false; reason: string; missing?: true };
+  { ok: true; value: string } | { ok: false; reason: string; missing?: true };
 
 /** A regular file of the worktree; `missing` is set when it does not exist. */
 export async function readRepoFile(dir: string, rel: string): Promise<RepoFileResult> {

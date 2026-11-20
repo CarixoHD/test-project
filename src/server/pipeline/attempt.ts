@@ -1,23 +1,29 @@
 import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import type { ZodType } from 'zod';
 import {
   ImplResultSchema,
   ReviewResultSchema,
   type ProjectConfig,
   type ReviewResult,
 } from '../../shared/agent-results.ts';
-import type { EventDraft, EventOf } from '../../shared/events.ts';
-import type { AttemptId, IssueId, ProductId } from '../../shared/ids.ts';
-import { transition, type IssueTransitionEvent } from '../../shared/issues.ts';
+import type { IssueId, ProductId } from '../../shared/ids.ts';
 import type { Role } from '../../shared/models.ts';
-import type { AttemptStep } from '../../shared/domain.ts';
 import type { IssueState } from '../../shared/state.ts';
 import { toolsForRole, type AgentLimits, type AgentResult } from '../agents/index.ts';
 import type { Git, Worktree } from '../git/index.ts';
 import type { ModelDeps } from '../llm/index.ts';
 import type { ContainerRuntime, ExecResult, Sandbox, SandboxSpec } from '../sandbox/index.ts';
 import type { RunHandle } from '../scheduler/index.ts';
-import type { Tx } from '../store/index.ts';
+import {
+  completeAttempt,
+  endWithError,
+  moveIssue,
+  recordStep,
+  startAttempt,
+  type AttemptOutcome,
+  type AttemptRef,
+} from './attempt-events.ts';
 import { implementerPrompt, reviewerPrompt, tailLines } from './attempt-prompt.ts';
 import { resolveModel } from './resolve-model.ts';
 import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
@@ -50,12 +56,9 @@ export interface AttemptDeps extends RecordedRunContext {
   checkTimeoutMs?: number;
 }
 
-type Ctx = {
+type Ctx = AttemptRef & {
   deps: AttemptDeps;
   run: RunHandle;
-  productId: ProductId;
-  issueId: IssueId;
-  attemptId: AttemptId;
   issueRev: number;
   wt: Worktree & { branch: string };
   artifacts: string;
@@ -64,13 +67,8 @@ type Ctx = {
 };
 
 /** What the attempt ends with; `ended` fields go into attempt.ended. */
-type Ended = {
-  headSha: string | null;
-  review: ReviewResult | null;
-  checkExit: number | null;
-} & ({ kind: 'merged' } | { kind: 'error'; reason: string });
+type Ended = AttemptOutcome & ({ kind: 'merged' } | { kind: 'error'; reason: string });
 
-type Partial_ = Omit<Ended, 'kind'>;
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 export async function runAttempt(deps: AttemptDeps, issueId: IssueId, run: RunHandle) {
@@ -78,26 +76,42 @@ export async function runAttempt(deps: AttemptDeps, issueId: IssueId, run: RunHa
   if (issue === null) throw new Error(`runAttempt: unknown issue ${issueId}`);
   const attemptId = deps.ids.next('attempt');
   const wt = await deps.git.addWorktree(issue.productId, attemptId);
+  const { branch } = wt;
+  if (branch === null) {
+    await deps.git.removeWorktree(wt.dir);
+    throw new Error('runAttempt: the attempt worktree has no branch');
+  }
   const ctx: Ctx = {
+    store: deps.store,
     deps,
     run,
     productId: issue.productId,
     issueId,
     attemptId,
     issueRev: issue.rev,
-    wt: { ...wt, branch: wt.branch ?? `detached-${attemptId}` },
+    wt: { ...wt, branch },
     artifacts: path.join(deps.artifactsDir, attemptId),
     sandboxes: new Set(),
   };
   try {
-    if (!start(ctx)) return;
+    if (!startAttempt(ctx, ctx.wt)) return;
     let ended: Ended;
     try {
       ended = await attempt(ctx);
     } catch (err) {
-      ended = { kind: 'error', reason: errorText(err), headSha: null, review: null, checkExit: null };
+      ended = {
+        kind: 'error',
+        reason: errorText(err),
+        headSha: null,
+        review: null,
+        checkExit: null,
+      };
     }
-    if (ended.kind === 'error') endWithError(ctx, ended);
+    if (ended.kind === 'error') {
+      const { kind: _kind, reason, ...outcome } = ended;
+      const runAfter = deps.clock.now() + ERROR_RETRY_DELAY_MS;
+      endWithError(ctx, deps.redactor.redact(reason), outcome, runAfter);
+    }
   } finally {
     try {
       await Promise.all([...ctx.sandboxes].map((s) => s.close()));
@@ -107,32 +121,8 @@ export async function runAttempt(deps: AttemptDeps, issueId: IssueId, run: RunHa
   }
 }
 
-/** issue → in_progress and attempt.started; false when the issue can no longer start. */
-function start(ctx: Ctx): boolean {
-  let started = false;
-  ctx.deps.store.commit((tx) => {
-    const issue = tx.q.issue(ctx.issueId);
-    if (issue === null) return [];
-    const moved = statusDraft(tx, issue, { type: 'start' });
-    if (moved === null) return [];
-    started = true;
-    const n = tx.q.attemptsByIssue(ctx.issueId).length + 1;
-    return [
-      moved,
-      attemptDraft(ctx, 'attempt.started', {
-        issueId: ctx.issueId,
-        n,
-        issueRev: issue.rev,
-        baseSha: ctx.wt.baseSha,
-        branch: ctx.wt.branch,
-      }),
-    ];
-  });
-  return started;
-}
-
 async function attempt(ctx: Ctx): Promise<Ended> {
-  const fail = (reason: string, p: Partial<Partial_> = {}): Ended => ({
+  const fail = (reason: string, p: Partial<AttemptOutcome> = {}): Ended => ({
     kind: 'error',
     reason,
     headSha: p.headSha ?? null,
@@ -145,7 +135,7 @@ async function attempt(ctx: Ctx): Promise<Ended> {
   const project = product.project;
   if (project === null || project.check.length === 0) return fail(NO_CHECK_REASON);
 
-  step(ctx, 'implement');
+  recordStep(ctx, 'implement');
   const impl = await implement(ctx, issue, product.name, project);
   if (!impl.ok) return fail(impl.reason);
 
@@ -155,7 +145,7 @@ async function attempt(ctx: Ctx): Promise<Ended> {
   await mkdir(ctx.artifacts, { recursive: true });
   await writeFile(path.join(ctx.artifacts, 'diff.patch'), commit.diff, { mode: 0o600 });
 
-  step(ctx, 'check');
+  recordStep(ctx, 'check');
   const check = await runCheck(ctx, project, ctx.wt.dir, 'check.log');
   await ctx.deps.git.cleanWorktree(ctx.wt.dir);
   if (check.code !== 0) {
@@ -172,10 +162,13 @@ async function attempt(ctx: Ctx): Promise<Ended> {
   const done = { headSha, checkExit: check.code };
   if (!review.ok) return fail(review.reason, done);
   if (!review.value.approve) {
-    return fail(`rejected:\n${review.value.findings.join('\n')}`, { ...done, review: review.value });
+    return fail(`rejected:\n${review.value.findings.join('\n')}`, {
+      ...done,
+      review: review.value,
+    });
   }
 
-  step(ctx, 'merge');
+  recordStep(ctx, 'merge');
   return ctx.deps.withMergeLock(ctx.productId, () =>
     merge(ctx, issue, project, { ...done, review: review.value }),
   );
@@ -246,14 +239,17 @@ async function runAgentIn<T>(
   o: Pick<SandboxSpec, 'worktree' | 'readOnly' | 'network' | 'runId'> & {
     instructions: string;
     prompt: string;
-    schema: import('zod').ZodType<T>;
+    schema: ZodType<T>;
   },
 ): Promise<Check<T>> {
   const { deps } = ctx;
   const resolved = resolveModel(deps.store, ctx.productId, role, { demo: deps.demo === true });
   if (!resolved.ok) return resolved;
   const model = resolved.model;
-  const image = await deps.runtime.ensureImage({ productId: ctx.productId, contextDir: o.worktree });
+  const image = await deps.runtime.ensureImage({
+    productId: ctx.productId,
+    contextDir: o.worktree,
+  });
   const sandbox = await deps.runtime.open({
     runId: o.runId,
     productId: ctx.productId,
@@ -357,7 +353,7 @@ async function merge(
   ctx: Ctx,
   issue: IssueState,
   project: ProjectConfig,
-  done: Partial_,
+  done: AttemptOutcome,
 ): Promise<Ended> {
   const fail = (reason: string): Ended => ({ kind: 'error', reason, ...done });
   const { git, store } = ctx.deps;
@@ -389,113 +385,8 @@ async function merge(
       return assertNever(r);
   }
   await git.advanceMain(ctx.productId, r.commitSha, main);
-  complete(ctx, r.commitSha, done);
+  completeAttempt(ctx, r.commitSha, done);
   return { kind: 'merged', ...done };
-}
-
-/** issue.completed{mergedOrder, mergeSha} and attempt.ended{merged} in one commit. */
-function complete(ctx: Ctx, mergeSha: string, done: Partial_): void {
-  ctx.deps.store.commit((tx) => {
-    const issue = tx.q.issue(ctx.issueId);
-    if (issue === null) throw new Error(`issue ${ctx.issueId} disappeared during the merge`);
-    const mergedOrder =
-      Math.max(0, ...tx.q.issuesByProduct(ctx.productId).map((i) => i.mergedOrder ?? 0)) + 1;
-    const maxAttempts = tx.q.product(ctx.productId)?.settings.maxAttempts ?? 1;
-    const next = transition(issue, { type: 'merged', mergedOrder, mergeSha }, { maxAttempts });
-    if (!next.ok) throw new Error(`cannot complete issue: ${next.reason}`);
-    return [
-      {
-        type: 'issue.completed',
-        productId: ctx.productId,
-        entityId: ctx.issueId,
-        v: 1,
-        data: { attemptId: ctx.attemptId, mergedOrder, mergeSha },
-      },
-      endedDraft(ctx, 'merged', null, done),
-    ];
-  });
-}
-
-/** attempt.ended{error} (uncounted) and, if it is still running, the issue back to open. */
-function endWithError(ctx: Ctx, ended: Extract<Ended, { kind: 'error' }>): void {
-  const reason = ctx.deps.redactor.redact(ended.reason);
-  const runAfter = ctx.deps.clock.now() + ERROR_RETRY_DELAY_MS;
-  ctx.deps.store.commit((tx) => {
-    const issue = tx.q.issue(ctx.issueId);
-    // No counted-failure semantics yet: an uncounted return to open, like an interruption.
-    const reopened =
-      issue === null
-        ? null
-        : statusDraft(tx, issue, { type: 'interrupted', reason: 'shutdown', runAfter });
-    return [endedDraft(ctx, 'error', reason, ended), ...(reopened === null ? [] : [reopened])];
-  });
-}
-
-function step(ctx: Ctx, s: AttemptStep): void {
-  ctx.deps.store.commit(() => [
-    attemptDraft(ctx, 'attempt.step', { issueId: ctx.issueId, step: s }),
-  ]);
-}
-
-/** Moves the issue (and the attempt to `s`) in one commit; false when the move is illegal. */
-function moveIssue(ctx: Ctx, ev: IssueTransitionEvent, s: AttemptStep): boolean {
-  let moved = false;
-  ctx.deps.store.commit((tx) => {
-    const issue = tx.q.issue(ctx.issueId);
-    const draft = issue === null ? null : statusDraft(tx, issue, ev);
-    if (draft === null) return [];
-    moved = true;
-    return [draft, attemptDraft(ctx, 'attempt.step', { issueId: ctx.issueId, step: s })];
-  });
-  return moved;
-}
-
-/** issue.status_changed for a legal transition, else null. */
-function statusDraft(tx: Tx, issue: IssueState, ev: IssueTransitionEvent): EventDraft | null {
-  const maxAttempts = tx.q.product(issue.productId)?.settings.maxAttempts ?? 1;
-  const r = transition(issue, ev, { maxAttempts });
-  if (!r.ok || r.next.status === issue.status) return null;
-  return {
-    type: 'issue.status_changed',
-    productId: issue.productId,
-    entityId: issue.id,
-    v: 1,
-    data: {
-      from: issue.status,
-      to: r.next.status,
-      attemptCount: r.next.attemptCount,
-      runAfter: r.next.runAfter,
-    },
-  };
-}
-
-function endedDraft(
-  ctx: Ctx,
-  status: 'merged' | 'error',
-  feedback: string | null,
-  done: Partial_,
-): EventDraft {
-  return attemptDraft(ctx, 'attempt.ended', {
-    issueId: ctx.issueId,
-    status,
-    counted: false,
-    headSha: done.headSha,
-    feedback,
-    review: done.review,
-    checkExit: done.checkExit,
-    interruptReason: null,
-  });
-}
-
-type AttemptEventType = 'attempt.started' | 'attempt.step' | 'attempt.ended';
-
-function attemptDraft<T extends AttemptEventType>(
-  ctx: Ctx,
-  type: T,
-  data: EventOf<T>['data'],
-): EventDraft {
-  // `data` is checked against T's schema type above; TS cannot narrow the union draft from T.
-  return { type, productId: ctx.productId, entityId: ctx.attemptId, v: 1, data } as EventDraft;
 }
 
 function mergeMessage(issue: IssueState): string {
