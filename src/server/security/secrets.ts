@@ -57,3 +57,6 @@ export function createSecrets({ db, clock, redactor }: SecretsDeps): Secrets {
         })),
   };
 }
+
+/** `secrets` key of a product's git remote token (write-only; read only to push). */
+export const gitTokenSecret = (productId: string): string => `git-token:${productId}`;
