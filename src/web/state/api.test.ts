@@ -9,6 +9,7 @@ import {
   changePassword,
   editIssue,
   getSession,
+  getAttemptArtifact,
   getState,
   handoffProduct,
   login,
@@ -161,6 +162,28 @@ describe('api', () => {
     const [url, init] = fetchFn.mock.calls[0] as FetchArgs;
     expect(url).toBe('/api/issues/i1/cancel');
     expect(init.method).toBe('POST');
+  });
+
+  it('getAttemptArtifact GETs the attempt diff or check output as text', async () => {
+    const fetchFn = stubFetch(new Response('+added\n', { status: 200 }));
+    await expect(getAttemptArtifact('a 1', 'diff')).resolves.toBe('+added\n');
+    const [url, init] = fetchFn.mock.calls[0] as FetchArgs;
+    expect(url).toBe('/api/attempts/a%201/diff');
+    expect(init.method).toBe('GET');
+    expect(new Headers(init.headers).get('Accept')).toBe('text/plain');
+  });
+
+  it('getAttemptArtifact returns null when the artifact does not exist (404)', async () => {
+    stubFetch(json({ error: { code: 'not_found', message: 'No attempt' } }, 404));
+    await expect(getAttemptArtifact('a1', 'check')).resolves.toBeNull();
+  });
+
+  it('getAttemptArtifact turns other failures into an ApiError', async () => {
+    stubFetch(json({ error: { code: 'internal', message: 'boom' } }, 500));
+    await expect(getAttemptArtifact('a1', 'check')).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 500,
+    });
   });
 });
 

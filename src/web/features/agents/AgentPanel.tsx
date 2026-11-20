@@ -57,8 +57,17 @@ export function IssueLink({ issue }: { issue?: IssueState | null | undefined }) 
   );
 }
 
-/** Plain-text log that follows new lines unless the owner has scrolled up. */
-function LiveLog({ agentId }: { agentId: string }) {
+export interface LiveLogProps {
+  agentId: string;
+  /** Accessible name of the log region. */
+  label?: string;
+}
+
+/**
+ * Plain-text log that follows new lines unless the owner has scrolled up. Used by the panel
+ * and by the issue detail page (each attempt's agent logs).
+ */
+export function LiveLog({ agentId, label = 'Live log' }: LiveLogProps) {
   const { lines, status } = useAgentLog(agentId);
   const boxRef = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
@@ -86,7 +95,7 @@ function LiveLog({ agentId }: { agentId: string }) {
         ref={boxRef}
         className="agent-log__lines"
         role="log"
-        aria-label="Live log"
+        aria-label={label}
         aria-live="off"
         // Keyboard users scroll the log with the arrow keys once it has focus.
         // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex

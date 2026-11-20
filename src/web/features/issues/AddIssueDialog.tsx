@@ -1,8 +1,8 @@
 import { useRef, useState, type FormEvent } from 'react';
 import type { ProductId } from '../../../shared/ids.ts';
 import { addIssue, ApiError } from '../../state/api.ts';
-import { Button, Dialog, Field } from '../../ui/index.ts';
-import { IssueFields, PRIORITY_OPTIONS, TITLE_REQUIRED, type IssueDraft } from './IssueFields.tsx';
+import { Button, Dialog } from '../../ui/index.ts';
+import { IssueFields, PriorityField, TITLE_REQUIRED, type IssueDraft } from './IssueFields.tsx';
 
 export interface AddIssueDialogProps {
   productId: ProductId;
@@ -57,22 +57,7 @@ function AddIssueForm({ productId, onDone }: { productId: ProductId; onDone: () 
         titleError={titleError}
         titleRef={titleRef}
       />
-      <Field label="Priority">
-        {(control) => (
-          <select
-            {...control}
-            name="priority"
-            value={priority}
-            onChange={(e) => setPriority(Number(e.target.value))}
-          >
-            {PRIORITY_OPTIONS.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        )}
-      </Field>
+      <PriorityField value={priority} onChange={setPriority} />
       {serverError !== null ? (
         <p role="alert" className="ui-field__error">
           {serverError}

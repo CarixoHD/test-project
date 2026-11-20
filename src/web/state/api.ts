@@ -82,28 +82,7 @@ function notifyUnauthorized(): void {
 }
 
 export async function request<T>(path: string, opts: RequestOptions<T>): Promise<T> {
-  const timeout = AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
-  const headers = new Headers({ Accept: 'application/json' });
-  const method = opts.method ?? 'GET';
-  const init: RequestInit = { method, headers, signal };
-  // The server accepts only JSON mutations (CSRF defence, ADR 9), even those without a body.
-  if (method !== 'GET') headers.set('Content-Type', 'application/json');
-  if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
-
-  let res: Response;
-  try {
-    res = await fetch(path, init);
-  } catch (cause) {
-    if (timeout.aborted) {
-      throw new ApiError('timeout', `The server did not answer ${path} in time`, 0, { cause });
-    }
-    if (opts.signal?.aborted) throw cause;
-    throw new ApiError('network', 'Cannot reach the Vibecode server; is it running?', 0, {
-      cause,
-    });
-  }
-
+  const res = await send(path, opts);
   const body = await readJson(res);
   if (!res.ok) {
     if (res.status === 401 && opts.expectUnauthorized !== true) notifyUnauthorized();
@@ -116,6 +95,47 @@ export async function request<T>(path: string, opts: RequestOptions<T>): Promise
     });
   }
   return parsed.data;
+}
+
+/** GET of a plain-text resource; null on 404, every other failure → ApiError. */
+async function requestText(
+  path: string,
+  opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<string | null> {
+  const res = await send(path, { ...opts, accept: 'text/plain' });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    if (res.status === 401) notifyUnauthorized();
+    throw errorFromResponse(res, await readJson(res));
+  }
+  return res.text();
+}
+
+/** One fetch with timeout and JSON mutation headers; transport failures → ApiError. */
+async function send(
+  path: string,
+  opts: Omit<RequestOptions<unknown>, 'schema'> & { accept?: string },
+): Promise<Response> {
+  const timeout = AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+  const headers = new Headers({ Accept: opts.accept ?? 'application/json' });
+  const method = opts.method ?? 'GET';
+  const init: RequestInit = { method, headers, signal };
+  // The server accepts only JSON mutations (CSRF defence, ADR 9), even those without a body.
+  if (method !== 'GET') headers.set('Content-Type', 'application/json');
+  if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
+
+  try {
+    return await fetch(path, init);
+  } catch (cause) {
+    if (timeout.aborted) {
+      throw new ApiError('timeout', `The server did not answer ${path} in time`, 0, { cause });
+    }
+    if (opts.signal?.aborted) throw cause;
+    throw new ApiError('network', 'Cannot reach the Vibecode server; is it running?', 0, {
+      cause,
+    });
+  }
 }
 
 async function readJson(res: Response): Promise<unknown> {
@@ -386,4 +406,18 @@ export async function recheckSession(): Promise<SessionCheck> {
     return 'unauthenticated';
   }
   return 'authenticated';
+}
+
+/** Artifacts of an attempt: `diff` (diff.patch) and `check` (check output). */
+export type AttemptArtifact = 'diff' | 'check';
+
+/** GET /api/attempts/:id/diff | /check as text; null when the attempt has none (404). */
+export function getAttemptArtifact(
+  attemptId: string,
+  kind: AttemptArtifact,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  return requestText(`/api/attempts/${encodeURIComponent(attemptId)}/${kind}`, {
+    ...(signal ? { signal } : {}),
+  });
 }

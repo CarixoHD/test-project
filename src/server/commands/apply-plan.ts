@@ -130,6 +130,19 @@ function buildPlan(
   );
   if (cycle !== null) return fail(`dependency cycle: ${describePath(board, cycle)}`);
 
+  // New or reopened work means a complete product is building again (flow 9). Cancels alone
+  // leave nothing to do, so they keep it complete.
+  const reopens = plan.issueOps.some((op) => op.op === 'create' || op.op === 'rewrite');
+  if (product.phase === 'complete' && reopens) {
+    board.drafts.push({
+      type: 'product.phase_changed',
+      productId,
+      entityId: null,
+      v: 1,
+      data: { phase: 'building' },
+    });
+  }
+
   for (const text of plan.questions) {
     board.drafts.push({
       type: 'question.asked',
@@ -287,6 +300,7 @@ function editIssue(board: Board, op: OpOf<'edit'>): { ok: true } | Fail {
     title: op.title ?? issue.title,
     body: op.body ?? issue.body,
     dependsOn: dependsOn ?? issue.dependsOn,
+    priority: op.priority ?? issue.priority,
   };
   board.issues.set(issue.id, next);
   board.drafts.push({
@@ -299,6 +313,7 @@ function editIssue(board: Board, op: OpOf<'edit'>): { ok: true } | Fail {
       ...(op.title === undefined ? {} : { title: op.title }),
       ...(op.body === undefined ? {} : { body: op.body }),
       ...(dependsOn === undefined ? {} : { dependsOn }),
+      ...(op.priority === undefined ? {} : { priority: op.priority }),
     },
   });
   return { ok: true };

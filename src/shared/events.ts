@@ -140,6 +140,8 @@ const issueEvents = [
       title: Text.optional(),
       body: z.string().optional(),
       dependsOn: z.array(IssueIdSchema).optional(),
+      /** Absent in events written before priority became editable. */
+      priority: z.int().optional(),
     }),
   ),
   defineEvent(
