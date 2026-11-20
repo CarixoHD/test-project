@@ -4,7 +4,9 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_BASE_IMAGE_DIR,
+  DockerCliRuntime,
   FakeContainerRuntime,
+  baseImageTag,
   claudeImageTag,
   fileOpArgv,
   type ExecOpts,
@@ -108,10 +110,12 @@ describe('FakeContainerRuntime lifecycle', () => {
     expect(await new FakeContainerRuntime({ dataDir, isAvailable: false }).available()).toBe(false);
   });
 
-  it('ensureImage returns a deterministic tag from the Dockerfile, or vibecode/base', async () => {
+  it('ensureImage returns a deterministic tag from the Dockerfile, or the hashed base tag', async () => {
     const rt = new FakeContainerRuntime({ dataDir });
     const p = { productId: '01PROD', contextDir: wt };
-    expect(await rt.ensureImage(p)).toBe('vibecode/base');
+    const baseTag = await rt.ensureImage(p);
+    expect(baseTag).toMatch(/^vibecode\/base:[0-9a-f]{12}$/);
+    expect(baseTag).toBe(await baseImageTag(DEFAULT_BASE_IMAGE_DIR));
     await writeFile(path.join(wt, 'Dockerfile'), 'FROM node:22\n');
     const tag = await rt.ensureImage(p);
     expect(tag).toMatch(/^vibecode\/p-01PROD:[0-9a-f]{12}$/);
@@ -125,7 +129,8 @@ describe('FakeContainerRuntime lifecycle', () => {
     const p = { productId: '01PROD', contextDir: wt, claude: true };
     const claudeTag = await rt.ensureImage(p);
     expect(claudeTag).toMatch(/^vibecode\/claude-code:[0-9a-f]{64}$/);
-    expect(claudeTag).toBe(await claudeImageTag(DEFAULT_BASE_IMAGE_DIR, '01PROD', 'vibecode/base'));
+    const baseTag = await baseImageTag(DEFAULT_BASE_IMAGE_DIR);
+    expect(claudeTag).toBe(await claudeImageTag(DEFAULT_BASE_IMAGE_DIR, '01PROD', baseTag));
     await writeFile(path.join(wt, 'Dockerfile'), 'FROM node:22\n');
     const product = await rt.ensureImage({ productId: '01PROD', contextDir: wt });
     const derived = await rt.ensureImage(p);
@@ -148,6 +153,43 @@ describe('FakeContainerRuntime lifecycle', () => {
     const after = await rt.ensureImage(p);
     expect(after).toMatch(/^vibecode\/claude-code:[0-9a-f]{64}$/);
     expect(after).not.toBe(before);
+  });
+
+  it('returns the same base and Claude tags as the docker runtime for the same inputs', async () => {
+    const imageDir = path.join(base, 'docker');
+    await mkdir(imageDir);
+    await writeFile(path.join(imageDir, 'base.Dockerfile'), 'FROM debian\n');
+    await writeFile(path.join(imageDir, 'claude-code.Dockerfile'), 'ARG V=1\n');
+    const fake = new FakeContainerRuntime({ dataDir, baseImageDir: imageDir });
+    // Every image "exists", so the docker runtime only inspects and never builds.
+    const exec = () =>
+      Promise.resolve({
+        code: 0,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        aborted: false,
+        truncated: false,
+      });
+    const docker = new DockerCliRuntime({ dataDir, uid: 1, gid: 1, baseImageDir: imageDir, exec });
+    const p = { productId: '01PROD', contextDir: wt };
+    const tags = async (rt: DockerCliRuntime | FakeContainerRuntime) => [
+      await rt.ensureImage(p),
+      await rt.ensureImage({ ...p, claude: true }),
+    ];
+    const fromFake = await tags(fake);
+    expect(fromFake[0]).toMatch(/^vibecode\/base:[0-9a-f]{12}$/);
+    expect(fromFake[1]).toMatch(/^vibecode\/claude-code:[0-9a-f]{64}$/);
+    expect(await tags(docker)).toEqual(fromFake);
+    expect((await docker.claudeLoginCommands()).build).toBe(
+      (await fake.claudeLoginCommands()).build,
+    );
+    await writeFile(path.join(imageDir, 'base.Dockerfile'), 'FROM debian:trixie\n');
+    const bumped = await tags(fake);
+    expect(bumped[0]).not.toBe(fromFake[0]);
+    expect(bumped[1]).not.toBe(fromFake[1]);
+    expect(await tags(docker)).toEqual(bumped);
   });
 
   it('gives the login commands for its host uid:gid and the current Claude image', async () => {

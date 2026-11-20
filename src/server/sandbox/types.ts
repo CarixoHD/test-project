@@ -67,11 +67,12 @@ export type ManagedContainer = { name: string; labels: Record<string, string> };
 export interface ContainerRuntime {
   available(): Promise<boolean>;
   /**
-   * Tag `vibecode/p-<id>:<sha256(Dockerfile+imageInputs)>`, or `vibecode/base` without a
-   * Dockerfile. With `claude`, the derived Claude Code image FROM that product image:
-   * `vibecode/claude-code:<hash>` over vibecode/base, else `vibecode/p-<id>-claude:<hash>`, where
-   * the hash covers the product image tag and docker/claude-code.Dockerfile (plus
-   * base.Dockerfile over vibecode/base), so a CLI pin bump rebuilds (ADR 4).
+   * Tag `vibecode/p-<id>:<sha256(Dockerfile+imageInputs)>`, or without a Dockerfile
+   * `vibecode/base:<sha256(base.Dockerfile + the files it COPYs)[:12]>` (baseImageTag), so
+   * editing base.Dockerfile rebuilds. With `claude`, the derived Claude Code image FROM that
+   * product image: `vibecode/claude-code:<hash>` over the base, else
+   * `vibecode/p-<id>-claude:<hash>`, where the hash covers the product image tag and
+   * docker/claude-code.Dockerfile, so a CLI pin bump or a new base rebuilds (ADR 4).
    */
   ensureImage(p: EnsureImageParams): Promise<string>;
   /** Starts a warm container (`sleep infinity`); every tool call is an exec in it. */
@@ -91,7 +92,7 @@ export interface ContainerRuntime {
 
 /** The owner's one-time Claude Code setup, as shell commands to run on the host (ADR 4). */
 export type ClaudeLoginCommands = {
-  /** Builds vibecode/base and the current `vibecode/claude-code:<hash>` login image. */
+  /** Builds the current `vibecode/base:<hash>` and `vibecode/claude-code:<hash>` login image. */
   build: string;
   /** Creates the `vibecode-claude-config` volume. */
   volume: string;

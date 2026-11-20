@@ -24,6 +24,7 @@ import {
 import {
   DOCKER_NOT_RUNNING,
   DockerCliRuntime,
+  baseImageTag,
   buildRunArgs,
   fileOpArgv,
   type SandboxSpec,
@@ -121,7 +122,7 @@ function spec(over: Partial<SandboxSpec> = {}): SandboxSpec {
   };
 }
 
-function runtime(stub = stubDocker(), over: { docker?: string } = {}) {
+function runtime(stub = stubDocker(), over: { docker?: string; baseImageDir?: string } = {}) {
   return new DockerCliRuntime({
     dataDir,
     uid: 1000,
@@ -196,33 +197,61 @@ describe('ensureImage', () => {
   const missing = (argv: string[]): Reply =>
     argv[0] === 'image' ? { code: 1, stderr: 'No such image' } : {};
 
-  it('uses vibecode/base without a Dockerfile, building it from docker/base.Dockerfile on first use', async () => {
+  /** docker/ with a base.Dockerfile; the no-Dockerfile path tags the base by its content. */
+  async function baseDir(content = 'FROM debian\n'): Promise<string> {
+    const dir = path.join(base, 'docker');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'base.Dockerfile'), content);
+    return dir;
+  }
+  const BASE_TAG = /^vibecode\/base:[0-9a-f]{12}$/;
+
+  it('uses vibecode/base:<hash> without a Dockerfile, building it from docker/base.Dockerfile on first use', async () => {
+    const dir = await baseDir();
     const ctx = await product('p', { 'README.md': 'hi' });
     const stub = stubDocker(missing);
-    const rt = runtime(stub);
-    expect(await rt.ensureImage({ productId: '01PROD', contextDir: ctx })).toBe('vibecode/base');
+    const tag = await runtime(stub, { baseImageDir: dir }).ensureImage({
+      productId: '01PROD',
+      contextDir: ctx,
+    });
+    expect(tag).toMatch(BASE_TAG);
+    expect(tag).toBe(await baseImageTag(dir));
     expect(stub.argvs()).toEqual([
-      ['image', 'inspect', '--format', '{{.Id}}', 'vibecode/base'],
-      [
-        'buildx',
-        'build',
-        '--load',
-        '--tag',
-        'vibecode/base',
-        '--file',
-        '/opt/vibecode/docker/base.Dockerfile',
-        '/opt/vibecode/docker',
-      ],
+      ['image', 'inspect', '--format', '{{.Id}}', tag],
+      ['buildx', 'build', '--load', '--tag', tag, '--file', path.join(dir, 'base.Dockerfile'), dir],
     ]);
   });
 
-  it('reuses vibecode/base when it is present', async () => {
+  it('reuses vibecode/base:<hash> when it is present', async () => {
+    const dir = await baseDir();
     const ctx = await product('p', {});
     const stub = stubDocker();
-    expect(await runtime(stub).ensureImage({ productId: '01PROD', contextDir: ctx })).toBe(
-      'vibecode/base',
-    );
-    expect(stub.argvs()).toEqual([['image', 'inspect', '--format', '{{.Id}}', 'vibecode/base']]);
+    const tag = await runtime(stub, { baseImageDir: dir }).ensureImage({
+      productId: '01PROD',
+      contextDir: ctx,
+    });
+    expect(stub.argvs()).toEqual([['image', 'inspect', '--format', '{{.Id}}', tag]]);
+  });
+
+  it('builds a new base tag when base.Dockerfile changes, instead of reusing the stale image', async () => {
+    const dir = await baseDir('FROM debian:bookworm\n');
+    const ctx = await product('p', {});
+    const images = new Set<string>();
+    const stub = stubDocker((argv) => {
+      if (argv[0] === 'image') {
+        return images.has(argv.at(-1) ?? '') ? {} : { code: 1, stderr: 'No such image' };
+      }
+      if (argv[0] === 'buildx') images.add(argv[argv.indexOf('--tag') + 1] ?? '');
+      return {};
+    });
+    const p = { productId: '01PROD', contextDir: ctx };
+    const before = await runtime(stub, { baseImageDir: dir }).ensureImage(p);
+    await writeFile(path.join(dir, 'base.Dockerfile'), 'FROM debian:trixie\n');
+    const after = await runtime(stub, { baseImageDir: dir }).ensureImage(p);
+    expect(after).toMatch(BASE_TAG);
+    expect(after).not.toBe(before);
+    const built = stub.argvs().filter((a) => a[0] === 'buildx');
+    expect(built.map((a) => a[4])).toEqual([before, after]);
   });
 
   it('builds the repo Dockerfile with buildx under a content-addressed tag', async () => {
@@ -292,6 +321,47 @@ describe('ensureImage', () => {
   });
 });
 
+describe('baseImageTag', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = path.join(base, 'docker');
+    await mkdir(path.join(dir, 'conf'), { recursive: true });
+  });
+
+  it('is vibecode/base:<12 hex of sha256> over base.Dockerfile', async () => {
+    await writeFile(path.join(dir, 'base.Dockerfile'), 'FROM debian\n');
+    const tag = await baseImageTag(dir);
+    expect(tag).toMatch(/^vibecode\/base:[0-9a-f]{12}$/);
+    expect(await baseImageTag(dir)).toBe(tag);
+    await writeFile(path.join(dir, 'base.Dockerfile'), 'FROM debian\nRUN true\n');
+    expect(await baseImageTag(dir)).not.toBe(tag);
+  });
+
+  it('covers the build-context files base.Dockerfile COPYs or ADDs, not other files', async () => {
+    await writeFile(
+      path.join(dir, 'base.Dockerfile'),
+      'FROM debian\nCOPY --chown=0:0 entry.sh /usr/local/bin/\nADD conf /etc/conf\n' +
+        'COPY --from=other /x /x\n',
+    );
+    await writeFile(path.join(dir, 'entry.sh'), 'echo 1\n');
+    await writeFile(path.join(dir, 'conf', 'a.ini'), 'a=1\n');
+    await writeFile(path.join(dir, 'claude-code.Dockerfile'), 'FROM x\n');
+    const tag = await baseImageTag(dir);
+    await writeFile(path.join(dir, 'claude-code.Dockerfile'), 'FROM y\n');
+    expect(await baseImageTag(dir)).toBe(tag);
+    await writeFile(path.join(dir, 'entry.sh'), 'echo 2\n');
+    const copied = await baseImageTag(dir);
+    expect(copied).not.toBe(tag);
+    await writeFile(path.join(dir, 'conf', 'a.ini'), 'a=2\n');
+    expect(await baseImageTag(dir)).not.toBe(copied);
+  });
+
+  it('refuses a COPY source outside the image directory', async () => {
+    await writeFile(path.join(dir, 'base.Dockerfile'), 'FROM debian\nCOPY ../secret /s\n');
+    await expect(baseImageTag(dir)).rejects.toThrow(/outside/);
+  });
+});
+
 describe('ensureImage with claude (derived Claude Code image)', () => {
   const CLAUDE_DF = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN install claude\n';
   let dockerDir: string;
@@ -329,7 +399,7 @@ describe('ensureImage with claude (derived Claude Code image)', () => {
     stub.argvs().filter((a) => a[0] === 'buildx');
   const CLAUDE_TAG = /^vibecode\/claude-code:[0-9a-f]{64}$/;
 
-  it('builds vibecode/claude-code:<hash> FROM vibecode/base when the product has no Dockerfile', async () => {
+  it('builds vibecode/claude-code:<hash> FROM the hashed vibecode/base tag when the product has no Dockerfile', async () => {
     const ctx = path.join(base, 'p');
     await mkdir(ctx, { recursive: true });
     const stub = stubDocker(missing);
@@ -344,7 +414,7 @@ describe('ensureImage with claude (derived Claude Code image)', () => {
         '--tag',
         tag,
         '--build-arg',
-        'BASE_IMAGE=vibecode/base',
+        `BASE_IMAGE=${await baseImageTag(dockerDir)}`,
         '--file',
         path.join(dockerDir, 'claude-code.Dockerfile'),
         dockerDir,
@@ -366,16 +436,24 @@ describe('ensureImage with claude (derived Claude Code image)', () => {
 
     expect(after).toMatch(CLAUDE_TAG);
     expect(after).not.toBe(before);
-    expect(builds(stub).map((a) => a[4])).toEqual(['vibecode/base', before, after]);
+    const baseTag = await baseImageTag(dockerDir);
+    expect(builds(stub).map((a) => a[4])).toEqual([baseTag, before, after]);
   });
 
-  it('changes the Claude tag when base.Dockerfile changes', async () => {
+  it('changes the Claude tag and builds it FROM the new base tag when base.Dockerfile changes', async () => {
     const ctx = path.join(base, 'p');
     await mkdir(ctx, { recursive: true });
     const p = { productId: '01PROD', contextDir: ctx, claude: true };
     const before = await rt(stubDocker()).ensureImage(p);
     await writeFile(path.join(dockerDir, 'base.Dockerfile'), 'FROM debian:trixie\n');
-    expect(await rt(stubDocker()).ensureImage(p)).not.toBe(before);
+    const stub = stubDocker(missing);
+    const after = await rt(stub).ensureImage(p);
+    expect(after).not.toBe(before);
+    const newBase = await baseImageTag(dockerDir);
+    expect(builds(stub).map((a) => [a[4], a[6]])).toEqual([
+      [newBase, path.join(dockerDir, 'base.Dockerfile')],
+      [after, `BASE_IMAGE=${newBase}`],
+    ]);
   });
 
   it('reuses the Claude image without rebuilding while claude-code.Dockerfile is unchanged', async () => {
@@ -387,7 +465,7 @@ describe('ensureImage with claude (derived Claude Code image)', () => {
     const calls = stub.calls.length;
     expect(await rt(stub).ensureImage(p)).toBe(first);
     expect(stub.argvs().slice(calls)).toEqual([
-      ['image', 'inspect', '--format', '{{.Id}}', 'vibecode/base'],
+      ['image', 'inspect', '--format', '{{.Id}}', await baseImageTag(dockerDir)],
       ['image', 'inspect', '--format', '{{.Id}}', first],
     ]);
     expect(builds(stub)).toHaveLength(2);
@@ -482,9 +560,11 @@ describe('claudeLoginCommands', () => {
     expect(c.volume).toBe('docker volume create vibecode-claude-config');
     const q = (name: string) => `'${path.join(dockerDir, name)}'`;
     const dir = `'${dockerDir}'`;
+    const baseTag = await baseImageTag(dockerDir);
+    expect(baseTag).toMatch(/^vibecode\/base:[0-9a-f]{12}$/);
     expect(c.build).toBe(
-      `docker buildx build --load --tag vibecode/base --file ${q('base.Dockerfile')} ${dir} && ` +
-        `docker buildx build --load --tag ${tag} --build-arg BASE_IMAGE=vibecode/base ` +
+      `docker buildx build --load --tag ${baseTag} --file ${q('base.Dockerfile')} ${dir} && ` +
+        `docker buildx build --load --tag ${tag} --build-arg BASE_IMAGE=${baseTag} ` +
         `--file ${q('claude-code.Dockerfile')} ${dir}`,
     );
     expect(stub.calls).toEqual([]);

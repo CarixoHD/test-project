@@ -9,8 +9,8 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { redactor } from '../security/index.ts';
 import {
-  BASE_IMAGE,
   DEFAULT_BASE_IMAGE_DIR,
+  baseImageTag,
   claudeImageTag,
   claudeLoginCommands,
 } from './docker-cli.ts';
@@ -96,7 +96,8 @@ export class FakeContainerRuntime implements ContainerRuntime, ClaudeLoginSource
   }
 
   /**
-   * `vibecode/p-<id>:<sha256(Dockerfile)[:12]>`, or vibecode/base when there is no Dockerfile.
+   * `vibecode/p-<id>:<sha256(Dockerfile)[:12]>`, or the docker runtime's baseImageTag
+   * (`vibecode/base:<hash>`) when there is no Dockerfile.
    * With `claude`, the docker runtime's claudeImageTag of that image: `vibecode/claude-code:<hash>`
    * over the base, else `vibecode/p-<id>-claude:<hash>`. Nothing is built.
    */
@@ -108,15 +109,17 @@ export class FakeContainerRuntime implements ContainerRuntime, ClaudeLoginSource
       contextDir: p.contextDir,
       ...(claude ? { claude } : {}),
     });
-    const product = await productImage(p);
+    const product = await productImage(p, this.#imageDir);
     return claude ? claudeImageTag(this.#imageDir, p.productId, product) : product;
   }
 
   /** The same commands as the docker runtime, for this fake host's uid:gid. */
   async claudeLoginCommands(): Promise<ClaudeLoginCommands> {
-    const claudeTag = await claudeImageTag(this.#imageDir, '', BASE_IMAGE);
+    const imageDir = this.#imageDir;
+    const baseTag = await baseImageTag(imageDir);
+    const claudeTag = await claudeImageTag(imageDir, '', baseTag);
     const { uid, gid } = this.#host;
-    return claudeLoginCommands({ imageDir: this.#imageDir, claudeTag, uid, gid });
+    return claudeLoginCommands({ imageDir, baseTag, claudeTag, uid, gid });
   }
 
   /** The `docker run` args the real runtime would use for container `name` (tests assert on them). */
@@ -247,12 +250,13 @@ export class FakeContainerRuntime implements ContainerRuntime, ClaudeLoginSource
   }
 }
 
-async function productImage(p: EnsureImageParams): Promise<string> {
+async function productImage(p: EnsureImageParams, imageDir: string): Promise<string> {
   let dockerfile: Buffer;
   try {
     dockerfile = await readFile(path.join(p.contextDir, 'Dockerfile'));
   } catch (err) {
-    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return BASE_IMAGE;
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT')
+      return baseImageTag(imageDir);
     throw err;
   }
   const hash = createHash('sha256').update(dockerfile).digest('hex').slice(0, 12);

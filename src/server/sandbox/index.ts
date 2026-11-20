@@ -45,6 +45,7 @@ export {
   CLAUDE_IMAGE,
   DOCKER_NOT_RUNNING,
   DEFAULT_BASE_IMAGE_DIR,
+  baseImageTag,
   claudeImageTag,
   claudeLoginCommands,
   DockerCliRuntime,
