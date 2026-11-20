@@ -7,8 +7,7 @@ import type { ModelRef } from '../../shared/models.ts';
 import { API_KEY_SECRETS, type FakeCallPrompt, type FakeScript } from '../llm/index.ts';
 import { FakeContainerRuntime, type Sandbox } from '../sandbox/index.ts';
 import { FakeClock } from '../util/clock.ts';
-import { FINISH_NUDGE } from './api-backend.ts';
-import { runAgent, type AgentSpec, type StepUsage } from './index.ts';
+import { FINISH_NUDGE, runAgent, type AgentSpec, type StepUsage } from './index.ts';
 
 const START = 1_700_000_000_000;
 const ResultSchema = z.strictObject({ summary: z.string().min(1) });
