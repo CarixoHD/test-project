@@ -82,7 +82,7 @@ src/
     main.tsx, App.tsx, routes/
     state/           store.ts (snapshot + EventSource + reduce), api.ts (typed fetch)
     features/        board/, issue/, sparring/, inbox/, agents/, settings/, products/
-    scene/           Scene3D.tsx (lazy), Workers.tsx, Building.tsx, assets/ (+LICENSE.md)
+    scene/           ScenePanel.tsx, Scene3D.tsx (lazy), scene-model.ts (pure mapping), figures.ts (primitive figures/pieces; assets/ + LICENSE.md once GLBs are vendored)
     ui/              shared accessible primitives (Button, Dialog, Markdown, Tabs, …)
 docker/              base.Dockerfile (vibecode/base), claude-code.Dockerfile
 scripts/             dev.mjs, update-prices.mjs, set-password.ts
@@ -255,7 +255,7 @@ interface Scheduler { start(): void; stop(): Promise<void>; kick(): void;
 RunHandle = {runId, signal /* aborted on stop() */, shouldStop()}
 ```
 Issue `priority` is an integer; higher is more urgent (urgent > high > normal > low), ties by lower number. Runners are called synchronously; a run that settles does not re-tick by itself (its end events or the 2 s timer do), so a run that ends without committing cannot hot-loop. The orchestrator counts against `maxParallel`. The default backend check resolves the role's backend from `settings.models[role].provider` and treats a `backendLimits` entry as active while it needs login, has no `until`, or `until` is in the future.
-It ticks on every bus event and every 2 s. A product is skipped if it is not `building`, if it is paused, or if its budget is exhausted. For each remaining product it does three things. (1) If `pendingTriggers` is non-empty and no orchestrator run is live, it starts one. (2) While running agents (orchestrator plus attempts) is below `maxParallel`, it starts `runAttempt` for the next ready issue, ordered by priority and then number. (3) It skips roles whose backend is rate-limited or needs login. Live runs are kept in an in-memory `Map<runId, {abort, productId}>`. `shouldStop(runId)` returns true when the product is paused, the budget is exhausted, or the server is shutting down. It also owns `withMergeLock(productId, fn)`, a per-product async mutex.
+It ticks on every bus event and every 2 s. A product is skipped if it is not `building`, if it is paused, or if its budget is exhausted. For each remaining product it does three things. (1) If `pendingTriggers` is non-empty and no orchestrator run is live, it starts one. (2) While running agents (orchestrator plus attempts) is below `maxParallel`, it starts `runAttempt` for the next ready issue, ordered by priority and then number. (3) It skips roles whose backend is rate-limited or needs login. Before that, a `building` product (paused or not) with no live runs, no pending triggers and at least one issue, every non-cancelled one `completed`, gets `product.phase_changed{complete}` (`scheduler/completion.ts`, re-checked inside the commit so it fires once; the inbox hook adds the `complete` item). Every store event wakes the tick, so an owner `issue.cancelled` of the last unfinished issue completes the product at once; a merge whose run is still live completes on the next timer tick. Live runs are kept in an in-memory `Map<runId, {abort, productId}>`. `shouldStop(runId)` returns true when the product is paused, the budget is exhausted, or the server is shutting down. It also owns `withMergeLock(productId, fn)`, a per-product async mutex.
 
 ### 4.5 server/pipeline
 ```ts
@@ -281,6 +281,8 @@ applyPlan(deps, productId, plan: PlanResult, consumedSeq, opts?: {project?: Proj
 // cancel/rewrite via transition(); then no cycle across all issues. Invalid → nothing committed, cursor unchanged.
 // Valid → ONE commit: issue.created (next per-product numbers, origin orchestrator, product prdVersion, priority ?? 0),
 // issue.edited, issue.cancelled{by:'orchestrator'}, issue.rewritten, question.asked{target:'orchestrator'},
+// product.phase_changed{building} when the product is complete and the plan creates or rewrites an issue
+// (a cancel-only plan leaves it complete),
 // orchestrator.cursor_advanced{cursor: consumedSeq} (refused if consumedSeq < current cursor).
 // opts.project → product.settings_changed{project}; opts.replan → prd.summarized{version, summary} (stored on
 // prd_versions) + inbox.created{kind:'replan', body: summary, link /products/:id}; all in the same commit (a refused plan commits neither; an invalid project is refused).
@@ -555,6 +557,9 @@ Never a shell. The child runs in its own process group, and timeout or abort sig
   - `/settings`
 - Browser `Notification` fires on `inbox.created` once the owner has granted permission. This belongs to the inbox feature (`features/inbox`, #33), not to the store.
 - Scene3D is `React.lazy`. It renders `sceneReduce` output, with one InstancedMesh per piece type and `SkeletonUtils.clone` for each worker. When collapsed or off-screen it keeps `frameloop="never"` and stays mounted. Clicking a worker opens the same `AgentPanel` that the agent list uses.
+  - `ScenePanel` (`scene/ScenePanel.tsx`): a heading button with `aria-expanded` collapses the view; the choice is kept in `localStorage['vibecode.scene.collapsed']`. The scene chunk loads on the first expand and then stays mounted. `frameloop` comes from `sceneFrameloop({expanded, onScreen, reducedMotion})`: `never` when collapsed or off-screen (IntersectionObserver), `demand` with `prefers-reduced-motion` (no animations), else `always`. The canvas is `aria-hidden`; a note says the board and agent list carry the same information. The scene is `sceneFromState` of the live client state (≡ replaying `sceneReduce`), memoised so events without a scene effect don't re-render it.
+  - `scene-model.ts` (pure, unit-tested): `instanceCounts`/`piecesByType`, `workerPlacements` (look by figure, spot at the site/desk/bench), `debrisPlacements`, `Scene3DProps {scene, frameloop, reducedMotion}`.
+  - Render stats for the E2E smoke test: `window.__vibecodeScene = {drawCalls, triangles, frames, workers, pieces}`, set in dev/test builds, or in production when `localStorage['vibecode.debug.sceneStats'] === '1'` (`SCENE_STATS_FLAG`).
 
 ## 5. Data model (SQLite, `data/vibecode.db`)
 
