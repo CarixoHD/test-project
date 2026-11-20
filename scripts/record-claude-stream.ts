@@ -3,20 +3,28 @@
 // vibecode/claude-code image as the host uid:gid with the vibecode-claude-config login volume
 // mounted, using exactly the argv the ClaudeCodeBackend uses, for a tiny structured task. The raw
 // NDJSON goes through the Redactor before it is written. The script never reads the volume itself
-// (the CLI inside the container does), and never prints the login.
+// (the CLI inside the container does), and never prints the login. Values stored in the app's
+// `secrets` table (read-only, only when the DB already exists) are registered with the Redactor too.
+import { existsSync } from 'node:fs';
 import { mkdir, writeFile as fsWriteFile } from 'node:fs/promises';
 import path from 'node:path';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { z } from 'zod';
 import type { Role } from '../src/shared/models.ts';
 import { buildClaudeArgv, claudeExecArgv, type AgentLimits } from '../src/server/agents/index.ts';
+import { parseConfig } from '../src/server/config.ts';
+import { schema } from '../src/server/db/index.ts';
 import {
   AGENT_HOME,
   CLAUDE_CONFIG_VOLUME,
   DEFAULT_BASE_IMAGE_DIR,
+  TMP_TMPFS,
   baseImageTag,
   claudeImageTag,
+  limitArgs,
 } from '../src/server/sandbox/index.ts';
-import { redactor, type Redactor } from '../src/server/security/index.ts';
+import { createSecrets, redactor, type Redactor } from '../src/server/security/index.ts';
 import { exec as defaultExec } from '../src/server/util/exec.ts';
 
 export const DEFAULT_OUT = path.join(
@@ -81,6 +89,8 @@ export function parseRecordArgs(args: readonly string[]): ParsedArgs {
 export type RecordDeps = {
   /** The current content-hashed vibecode/claude-code tag (as scripts/build-images.ts computes it). */
   claudeTag: () => Promise<string>;
+  /** Every value in the app's `secrets` table (none when there is no DB yet). */
+  loadStoredSecrets: () => Promise<string[]>;
   uid: number;
   gid: number;
   redactor: Redactor;
@@ -89,14 +99,56 @@ export type RecordDeps = {
   log: (line: string) => void;
 };
 
-/** `docker run` options shared by both calls: never pull, run as the host identity. */
+/**
+ * Reads every value of the `secrets` table from the DB at `dbPath`, opened read-only. A missing
+ * DB is never created or migrated: logs a note and returns no values.
+ */
+export async function loadStoredSecrets(
+  dbPath: string,
+  log: (line: string) => void,
+): Promise<string[]> {
+  if (!existsSync(dbPath)) {
+    log(`No database at ${dbPath}: no stored secrets to redact.`);
+    return [];
+  }
+  const client = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const values: string[] = [];
+    // createSecrets registers every stored value at boot; collect them instead of redacting here.
+    createSecrets({
+      db: drizzle({ client, schema }),
+      clock: { now: () => 0 },
+      redactor: { register: (value) => values.push(value) },
+    });
+    return values;
+  } finally {
+    client.close();
+  }
+}
+
+/**
+ * `docker run` options shared by both calls: never pull, run as the host identity, with the
+ * sandbox hardening (CODING_STANDARDS §7: no capabilities, no-new-privileges, read-only rootfs
+ * with a tmpfs /tmp, CPU/memory/pids limits from src/server/sandbox so they cannot drift).
+ * This owner-only tool deliberately does not use buildRunArgs (and calls docker from scripts/,
+ * cf. ARCHITECTURE §4 / AGENTS.md rule 8): buildRunArgs needs a worktree under the data dir to
+ * mount, and this one-off recording has none.
+ */
 function baseRunArgs(uid: number, gid: number): string[] {
-  return ['run', '--rm', '--init', '--pull', 'never', '--user', `${uid}:${gid}`];
+  return [
+    ...['run', '--rm', '--init', '--pull', 'never', '--user', `${uid}:${gid}`],
+    ...['--cap-drop', 'ALL'],
+    ...['--security-opt', 'no-new-privileges:true'],
+    '--read-only',
+    ...['--tmpfs', TMP_TMPFS],
+    ...limitArgs(),
+  ];
 }
 
 /** Records one run; returns the process exit code. */
 export async function recordClaudeStream(o: RecordOptions, deps: RecordDeps): Promise<number> {
   const { uid, gid } = deps;
+  for (const value of await deps.loadStoredSecrets()) deps.redactor.register(value);
   const tag = await deps.claudeTag();
   const clean = (text: string) => deps.redactor.redact(text).trim();
 
@@ -124,8 +176,6 @@ export async function recordClaudeStream(o: RecordOptions, deps: RecordDeps): Pr
     [
       ...baseRunArgs(uid, gid),
       '--interactive',
-      ...['--cap-drop', 'ALL'],
-      ...['--security-opt', 'no-new-privileges:true'],
       ...[
         '--tmpfs',
         `${AGENT_HOME}:rw,nosuid,nodev,exec,size=256m,mode=0700,uid=${uid},gid=${gid}`,
@@ -167,7 +217,10 @@ if (import.meta.main) {
     for (const [name, value] of Object.entries(process.env)) {
       if (value !== undefined && SECRET_ENV_NAME.test(name)) redactor.register(value);
     }
+    const log = (line: string) => console.log(line);
+    const { dbPath } = parseConfig(process.env);
     process.exitCode = await recordClaudeStream(parsed, {
+      loadStoredSecrets: () => loadStoredSecrets(dbPath, log),
       claudeTag: async () =>
         claudeImageTag(DEFAULT_BASE_IMAGE_DIR, '', await baseImageTag(DEFAULT_BASE_IMAGE_DIR)),
       uid: process.getuid?.() ?? 0,
@@ -178,7 +231,7 @@ if (import.meta.main) {
         await mkdir(path.dirname(file), { recursive: true });
         await fsWriteFile(file, text);
       },
-      log: (line) => console.log(line),
+      log,
     });
   }
 }
