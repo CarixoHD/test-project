@@ -5,6 +5,7 @@ import { isReady } from '../../shared/issues.ts';
 import type { Role } from '../../shared/models.ts';
 import type { ClientState, IssueState, ProductState } from '../../shared/state.ts';
 import { pendingTriggers } from '../../shared/triggers.ts';
+import { redactor as sharedRedactor } from '../security/index.ts';
 import type { Store } from '../store/index.ts';
 import { allIssuesDone, completeProduct } from './completion.ts';
 import { clearExpiredLimits } from './limits.ts';
@@ -56,6 +57,13 @@ export interface SchedulerDeps {
   tickMs?: number;
   /** A runner rejected (runners report their own failures as events; this is diagnostics). */
   onError?: (err: unknown, run: { runId: RunId; kind: RunKind; productId: ProductId }) => void;
+  /**
+   * A tick threw (e.g. a DB fault). The scheduler contains it and ticks again on the next kick or
+   * interval. Default: one `console.error` line, passed through `redactor`.
+   */
+  onTickError?: (err: unknown) => void;
+  /** Redacts the default tick-error log line. Default: the server's shared redactor. */
+  redactor?: { redact(text: string): string };
 }
 
 export interface Scheduler {
@@ -97,11 +105,10 @@ export function backendBlockedByLimits(
   clock: Clock,
 ): (productId: ProductId, role: Role) => boolean {
   return (productId, role) => {
-    const { state } = store.snapshot();
-    const backend = state.products[productId]?.settings.models[role]?.provider;
+    const backend = store.q.product(productId)?.settings.models[role]?.provider;
     if (backend === undefined) return false;
-    const limit = state.backendLimits[backend];
-    if (limit === undefined) return false;
+    const limit = store.q.backendLimit(backend);
+    if (limit === null) return false;
     return limit.needsLogin || limit.until === null || limit.until > clock.now();
   };
 }
@@ -122,6 +129,13 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   const timer = deps.timer ?? systemTimer;
   const ids = deps.ids ?? idCounter();
   const onError = deps.onError ?? (() => {});
+  const onTickError =
+    deps.onTickError ??
+    ((err: unknown) => {
+      const text = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      const line = `scheduler tick failed (retrying on the next tick): ${text}`;
+      console.error((deps.redactor ?? sharedRedactor).redact(line));
+    });
 
   const live = new Map<RunId, LiveRun>();
   const settled = new Map<RunId, Promise<void>>();
@@ -132,6 +146,13 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   let unsubscribe: (() => void) | null = null;
   let ticking = false;
   let again = false;
+  /** The store's lastSeq as read by the latest tick: events up to it were already scheduled on. */
+  let seenSeq = -1;
+  /**
+   * Pending-trigger checks for products whose backlog is not loaded this tick, keyed by product:
+   * reused while neither its cursor nor the store's lastSeq moved.
+   */
+  const pendingCache = new Map<ProductId, { cursor: number; seq: number; pending: boolean }>();
 
   function productBlocked(productId: ProductId): boolean {
     const p = store.q.product(productId);
@@ -176,18 +197,41 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     settled.set(runId, done);
   }
 
-  function scheduleProduct(state: ClientState, p: ProductState, events: Event[]): void {
+  /** Whether the product can start an orchestrator run this tick (bar its pending triggers). */
+  function orchestratorEligible(state: ClientState, p: ProductState): boolean {
+    if (p.paused || budgetExhausted(state, p)) return false;
+    return (deps.orchestratorNotBefore?.(p.id) ?? 0) <= clock.now();
+  }
+
+  /** For a product outside this tick's event window: reads its backlog once per change. */
+  function hasPendingTriggers(p: ProductState, triggersFrom: (all: Event[]) => Event[]): boolean {
+    const hit = pendingCache.get(p.id);
+    if (hit?.cursor === p.orchestratorCursor && hit.seq === seenSeq) return hit.pending;
+    const pending = triggersFrom(store.eventsSince(p.orchestratorCursor)).length > 0;
+    pendingCache.set(p.id, { cursor: p.orchestratorCursor, seq: seenSeq, pending });
+    return pending;
+  }
+
+  /**
+   * `events`: every event after the minimum cursor of the orchestrator-eligible products, or null
+   * when this product is not eligible (its own backlog is then read only when it matters).
+   */
+  function scheduleProduct(state: ClientState, p: ProductState, events: Event[] | null): void {
     if (p.phase !== 'building') return;
     const mine = [...live.values()].filter((r) => r.productId === p.id);
-    const scoped = events.filter((e) => e.productId === p.id && e.seq > p.orchestratorCursor);
-    const triggers = pendingTriggers(scoped, p.orchestratorCursor, {
-      productId: p.id,
-      questions: state.questions,
-    });
+    const triggersFrom = (all: Event[]) =>
+      pendingTriggers(
+        all.filter((e) => e.productId === p.id && e.seq > p.orchestratorCursor),
+        p.orchestratorCursor,
+        { productId: p.id, questions: state.questions },
+      );
+    const triggers = events === null ? [] : triggersFrom(events);
     const issues = Object.values(state.issues).filter((i) => i.productId === p.id);
     // Flow 9: nothing left to run or plan. The commit re-enters kick(), which coalesces.
-    if (mine.length === 0 && triggers.length === 0 && allIssuesDone(issues)) {
-      if (completeProduct(store, p.id)) return;
+    if (mine.length === 0 && allIssuesDone(issues)) {
+      // Paused or not (§4.4). Outside the event window the backlog is read once per change.
+      const pending = events === null ? hasPendingTriggers(p, triggersFrom) : triggers.length > 0;
+      if (!pending && completeProduct(store, p.id)) return;
     }
     if (p.paused || budgetExhausted(state, p)) return;
     let liveCount = mine.length;
@@ -223,17 +267,23 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   }
 
   function tickOnce(): void {
-    const { state } = store.snapshot();
+    const { state, lastSeq } = store.snapshot();
+    seenSeq = Math.max(seenSeq, lastSeq);
     // An expired rate limit clears first; the commit re-enters kick(), which then schedules on
     // the cleared state (the interrupted issues' runAfter is the same `until`).
     clearExpiredLimits(store, state.backendLimits, clock.now());
     const products = Object.values(state.products).filter((p) => p.phase === 'building');
     if (products.length === 0) return;
-    const minCursor = Math.min(...products.map((p) => p.orchestratorCursor));
-    const events = store.eventsSince(minCursor);
+    // Only products that can get an orchestrator run now need their trigger backlog: a paused
+    // or backed-off product with an old cursor must not make every tick re-read its history.
+    const eligible = products.filter((p) => orchestratorEligible(state, p));
+    const events =
+      eligible.length === 0
+        ? []
+        : store.eventsSince(Math.min(...eligible.map((p) => p.orchestratorCursor)));
     for (const p of products) {
       if (!running || stopping) return;
-      scheduleProduct(state, p, events);
+      scheduleProduct(state, p, eligible.includes(p) ? events : null);
     }
   }
 
@@ -248,7 +298,16 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     try {
       do {
         again = false;
-        tickOnce();
+        try {
+          tickOnce();
+        } catch (err) {
+          // Contained: never into a committing caller (bus) or out of the interval callback.
+          try {
+            onTickError(err);
+          } catch {
+            // A broken sink must not break scheduling either.
+          }
+        }
       } while (again && running && !stopping);
     } finally {
       ticking = false;
@@ -260,7 +319,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       if (running) return;
       running = true;
       stopping = false;
-      unsubscribe = store.subscribe(() => {
+      unsubscribe = store.subscribe((e) => {
+        // A commit notifies once per event, after all of them are durable: the first event's
+        // tick already read the whole batch, so the rest of it must not tick again.
+        if (e.seq <= seenSeq) return;
         kick();
       });
       handle = timer.setInterval(kick, deps.tickMs ?? TICK_MS);

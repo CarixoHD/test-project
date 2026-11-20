@@ -6,6 +6,7 @@ import {
   PIECE_TYPES,
   debrisPlacements,
   instanceCounts,
+  pieceFacing,
   piecesByType,
   sceneFrameloop,
   workerPlacements,
@@ -133,5 +134,27 @@ describe('sceneFrameloop', () => {
   it('animates continuously when visible, and only on demand with reduced motion', () => {
     expect(sceneFrameloop({ expanded: true, onScreen: true, reducedMotion: false })).toBe('always');
     expect(sceneFrameloop({ expanded: true, onScreen: true, reducedMotion: true })).toBe('demand');
+  });
+});
+
+describe('pieceFacing', () => {
+  it('turns every wall and window module to face away from the building centre', () => {
+    const pieces = sceneWith(40, 41).pieces.filter((p) => p.type === 'wall' || p.type === 'window');
+    expect(pieces.length).toBeGreaterThan(8);
+    for (const p of pieces) {
+      const angle = pieceFacing(p);
+      // A model's front faces +z; rotated by `angle` it points along (sin, cos).
+      const front = [Math.sin(angle), Math.cos(angle)] as const;
+      expect(front[0] * p.pos[0] + front[1] * p.pos[2]).toBeGreaterThan(0);
+      expect(Math.abs(front[0] * p.pos[2] - front[1] * p.pos[0])).toBeLessThan(
+        Math.max(Math.abs(p.pos[0]), Math.abs(p.pos[2])),
+      );
+    }
+  });
+
+  it('keeps the layout rotation of floors and roofs', () => {
+    for (const p of sceneWith(3, 3).pieces.filter((x) => x.type === 'floor' || x.type === 'roof')) {
+      expect(pieceFacing(p)).toBe(p.rotY);
+    }
   });
 });

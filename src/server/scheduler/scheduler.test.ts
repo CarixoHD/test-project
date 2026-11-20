@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PlanResult } from '../../shared/agent-results.ts';
 import type { Event, EventDraft } from '../../shared/events.ts';
 import { ProductIdSchema, type IssueId, type ProductId } from '../../shared/ids.ts';
 import { applyPlan } from '../commands/index.ts';
 import { open } from '../db/index.ts';
-import { Redactor } from '../security/index.ts';
+import { Redactor, redactor as sharedRedactor } from '../security/index.ts';
 import { createStore, type Store } from '../store/index.ts';
 import { FakeClock } from '../util/clock.ts';
 import { FakeIdGen } from '../util/id-gen.ts';
@@ -580,5 +580,291 @@ describe('scheduler: clearing backend limits', () => {
     expect(t.cleared()).toHaveLength(0);
     expect(t.store.q.backendLimit('claude-code')).toMatchObject({ needsLogin: true });
     expect(t.attempts()).toHaveLength(0);
+  });
+});
+
+describe('scheduler: tick robustness', () => {
+  /** A store whose snapshot()/eventsSince() calls are counted and can be made to fail. */
+  function instrumented() {
+    const db = open(':memory:');
+    const clock = new FakeClock();
+    const subscriberErrors: unknown[] = [];
+    const inner = createStore({
+      db,
+      clock,
+      redactor: new Redactor(),
+      onSubscriberError: (err) => subscriberErrors.push(err),
+    });
+    const spy = { snapshots: 0, failNext: 0, cursors: [] as number[] };
+    const store: Store = {
+      ...inner,
+      snapshot() {
+        spy.snapshots += 1;
+        if (spy.failNext > 0) {
+          spy.failNext -= 1;
+          throw new Error('disk I/O error');
+        }
+        return inner.snapshot();
+      },
+      eventsSince(seq, limit) {
+        spy.cursors.push(seq);
+        return inner.eventsSince(seq, limit);
+      },
+    };
+    const ids = new FakeIdGen();
+    const fake = fakeRunners();
+    const timer = new FakeTimer();
+    const tickErrors: unknown[] = [];
+    const scheduler = createScheduler({
+      store,
+      clock,
+      runners: fake.runners,
+      ids,
+      timer,
+      isBackendBlocked: () => false,
+      onTickError: (err) => tickErrors.push(err),
+    });
+    function plan(ops: PlanResult['issueOps'], productId = P): Record<string, IssueId> {
+      const r = applyPlan(
+        { store: inner, ids },
+        productId,
+        { issueOps: ops, questions: [], summary: 's' },
+        inner.snapshot().lastSeq,
+      );
+      if (!r.ok) throw new Error(r.reason);
+      return r.createdIds;
+    }
+    return { inner, store, spy, scheduler, timer, plan, tickErrors, subscriberErrors, ...fake };
+  }
+
+  it('one committed batch of N events triggers at most 2 ticks, not N', () => {
+    const t = instrumented();
+    createProduct(t.inner, P, { maxParallel: 1 });
+    t.plan([]);
+    t.scheduler.start();
+    t.spy.snapshots = 0;
+    const before = t.inner.snapshot().lastSeq;
+    t.plan(['a', 'b', 'c', 'd', 'e', 'f'].map((k) => create(k)));
+    const committed = t.inner.snapshot().lastSeq - before;
+    expect(committed).toBeGreaterThanOrEqual(6);
+    expect(t.spy.snapshots).toBeLessThanOrEqual(2);
+    expect(t.attempts()).toHaveLength(1);
+  });
+
+  it('a paused product with an older cursor does not lower the eventsSince cursor', () => {
+    const t = instrumented();
+    createProduct(t.inner, P2);
+    t.inner.commit(() => [draft('product.paused', P2, null, { reason: 'owner' })]);
+    createProduct(t.inner, P);
+    t.plan([], P);
+    t.inner.commit(() => [
+      draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null }),
+    ]);
+    const cursor = t.inner.q.product(P)?.orchestratorCursor ?? -1;
+    expect(t.inner.q.product(P2)?.orchestratorCursor).toBeLessThan(cursor);
+
+    t.scheduler.start();
+    expect(t.spy.cursors.length).toBeGreaterThan(0);
+    expect(Math.min(...t.spy.cursors)).toBe(cursor);
+    const o = nth(t.orchestrators(), 0);
+    if (o.kind !== 'orchestrator') throw new Error('expected orchestrator');
+    expect(o.productId).toBe(P);
+    expect(o.triggers.map((e) => e.type)).toEqual(['prd.applied']);
+  });
+
+  it('a failing snapshot neither throws from commit() nor from the interval; the next tick runs', () => {
+    const t = instrumented();
+    createProduct(t.inner, P);
+    t.plan([]);
+    t.scheduler.start();
+
+    t.spy.failNext = 1;
+    expect(() =>
+      t.inner.commit(() => [draft('product.paused', P, null, { reason: 'owner' })]),
+    ).not.toThrow();
+    expect(t.subscriberErrors).toEqual([]);
+    expect(t.tickErrors).toHaveLength(1);
+
+    t.spy.failNext = 1;
+    expect(() => t.timer.fire()).not.toThrow();
+    expect(t.tickErrors).toHaveLength(2);
+
+    t.inner.commit(() => [draft('product.resumed', P, null, {})]);
+    t.plan([create('a')]);
+    expect(t.attempts()).toHaveLength(1);
+    expect(t.tickErrors).toHaveLength(2);
+  });
+});
+
+describe('scheduler: tick robustness (logging and ineligible products)', () => {
+  it('logs a failed tick through the shared redactor by default', () => {
+    const secret = 'sk-test-SECRET-value-1234567890';
+    sharedRedactor.register(secret);
+    const db = open(':memory:');
+    const clock = new FakeClock();
+    const inner = createStore({ db, clock, redactor: new Redactor() });
+    createProduct(inner, P);
+    const store: Store = {
+      ...inner,
+      snapshot() {
+        throw new Error(`db fault with ${secret}`);
+      },
+    };
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    });
+    try {
+      const scheduler = createScheduler({
+        store,
+        clock,
+        runners: fakeRunners().runners,
+        timer: new FakeTimer(),
+        isBackendBlocked: () => false,
+      });
+      scheduler.start();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('scheduler tick failed');
+    expect(lines[0]).not.toContain(secret);
+  });
+
+  /** A paused building product whose only issue is completed; optionally a pending trigger. */
+  function pausedAllDone(withTrigger: boolean) {
+    const db = open(':memory:');
+    const clock = new FakeClock();
+    const inner = createStore({ db, clock, redactor: new Redactor() });
+    const cursors: number[] = [];
+    const store: Store = {
+      ...inner,
+      eventsSince(seq, limit) {
+        cursors.push(seq);
+        return inner.eventsSince(seq, limit);
+      },
+    };
+    const ids = new FakeIdGen();
+    createProduct(inner, P);
+    const r = applyPlan(
+      { store: inner, ids },
+      P,
+      { issueOps: [create('a')], questions: [], summary: 's' },
+      inner.snapshot().lastSeq,
+    );
+    if (!r.ok) throw new Error(r.reason);
+    const a = idOf(r.createdIds, 'a');
+    inner.commit(() => [
+      draft('issue.status_changed', P, a, {
+        from: 'open',
+        to: 'in_progress',
+        attemptCount: 0,
+        runAfter: 0,
+      }),
+      draft('issue.status_changed', P, a, {
+        from: 'in_progress',
+        to: 'in_review',
+        attemptCount: 0,
+        runAfter: 0,
+      }),
+      draft('issue.completed', P, a, {
+        attemptId: 'attempt-x',
+        mergedOrder: 1,
+        mergeSha: 'c'.repeat(40),
+      }),
+      draft('product.paused', P, null, { reason: 'owner' }),
+      ...(withTrigger
+        ? [draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null })]
+        : []),
+    ]);
+    const timer = new FakeTimer();
+    const scheduler = createScheduler({
+      store,
+      clock,
+      runners: fakeRunners().runners,
+      ids,
+      timer,
+      isBackendBlocked: () => false,
+    });
+    return { inner, cursors, timer, scheduler };
+  }
+
+  it('a paused product with all issues done and pending triggers reads its backlog at most once', () => {
+    const t = pausedAllDone(true);
+    t.scheduler.start();
+    t.timer.fire();
+    t.timer.fire();
+    expect(t.cursors.length).toBeLessThanOrEqual(1);
+    expect(t.inner.q.product(P)?.phase).toBe('building');
+  });
+
+  it('a paused product with all issues done and nothing pending still completes (paused or not)', () => {
+    const t = pausedAllDone(false);
+    t.scheduler.start();
+    t.timer.fire();
+    t.timer.fire();
+    expect(t.inner.q.product(P)?.phase).toBe('complete');
+  });
+
+  it('a backed-off product with all issues done re-reads its backlog only when something changed', () => {
+    const db = open(':memory:');
+    const clock = new FakeClock();
+    const inner = createStore({ db, clock, redactor: new Redactor() });
+    const cursors: number[] = [];
+    const store: Store = {
+      ...inner,
+      eventsSince(seq, limit) {
+        cursors.push(seq);
+        return inner.eventsSince(seq, limit);
+      },
+    };
+    const ids = new FakeIdGen();
+    createProduct(inner, P);
+    const r = applyPlan(
+      { store: inner, ids },
+      P,
+      { issueOps: [create('a')], questions: [], summary: 's' },
+      inner.snapshot().lastSeq,
+    );
+    if (!r.ok) throw new Error(r.reason);
+    const a = idOf(r.createdIds, 'a');
+    inner.commit(() => [
+      draft('issue.status_changed', P, a, {
+        from: 'open',
+        to: 'in_progress',
+        attemptCount: 0,
+        runAfter: 0,
+      }),
+      draft('issue.status_changed', P, a, {
+        from: 'in_progress',
+        to: 'in_review',
+        attemptCount: 0,
+        runAfter: 0,
+      }),
+      draft('issue.completed', P, a, {
+        attemptId: 'attempt-x',
+        mergedOrder: 1,
+        mergeSha: 'c'.repeat(40),
+      }),
+      draft('prd.applied', P, null, { version: 2, markdown: '# v2', summary: null }),
+    ]);
+    const timer = new FakeTimer();
+    const fake = fakeRunners();
+    const scheduler = createScheduler({
+      store,
+      clock,
+      runners: fake.runners,
+      ids,
+      timer,
+      isBackendBlocked: () => false,
+      orchestratorNotBefore: () => Number.MAX_SAFE_INTEGER,
+    });
+    scheduler.start();
+    expect(cursors).toHaveLength(1);
+    timer.fire();
+    timer.fire();
+    expect(cursors).toHaveLength(1); // nothing changed: the cached result is reused
+    expect(inner.q.product(P)?.phase).toBe('building'); // the prd.applied trigger is pending
+    expect(fake.orchestrators()).toHaveLength(0);
   });
 });
