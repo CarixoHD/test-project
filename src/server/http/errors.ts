@@ -5,8 +5,12 @@ import { ZodError } from 'zod';
 /** Error codes of expected failures and the HTTP status each maps to (CODING_STANDARDS §5). */
 export const ERROR_STATUS = {
   invalid: 400,
+  unauthorized: 401,
+  forbidden: 403,
   not_found: 404,
   conflict: 409,
+  unsupported_media_type: 415,
+  rate_limited: 429,
 } as const satisfies Record<string, ContentfulStatusCode>;
 export type ErrorCode = keyof typeof ERROR_STATUS;
 

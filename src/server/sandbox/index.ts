@@ -1,6 +1,7 @@
 export type {
   ContainerRuntime,
   DetachedContainer,
+  EnsureImageParams,
   ExecOpts,
   ExecResult,
   HostIdentity,
@@ -39,6 +40,7 @@ export {
 } from './fake.ts';
 export {
   BASE_IMAGE,
+  CLAUDE_IMAGE,
   DOCKER_NOT_RUNNING,
   DockerCliRuntime,
   type DockerCliRuntimeOptions,

@@ -1,3 +1,5 @@
+import { mkdir, rm } from 'node:fs/promises';
+import path from 'node:path';
 import { SparResultSchema, type SparResult } from '../../shared/agent-results.ts';
 import type { EventDraft } from '../../shared/events.ts';
 import type { ProductId } from '../../shared/ids.ts';
@@ -5,6 +7,7 @@ import type { SparMessage } from '../../shared/state.ts';
 import type { AgentResult } from '../agents/index.ts';
 import { nextSparMessageId } from '../commands/index.ts';
 import type { ModelDeps } from '../llm/index.ts';
+import type { ContainerRuntime, Sandbox } from '../sandbox/index.ts';
 import { renderPrompt } from './prompts.ts';
 import { resolveModel } from './resolve-model.ts';
 import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
@@ -18,6 +21,12 @@ export interface SparringDeps extends RecordedRunContext {
   demo?: boolean;
   /** Server shutdown; the turn is recorded as stopped. */
   shouldStop?: () => boolean;
+  /**
+   * Container runtime and data dir for Claude Code sparring, which runs the CLI in a container
+   * on an empty scratch worktree `<dataDir>/worktrees/<runId>` (no repo). API models need neither.
+   */
+  runtime?: ContainerRuntime;
+  dataDir?: string;
 }
 
 /** A sparring turn has no tools: one or two steps to call `finish` are plenty. */
@@ -51,20 +60,33 @@ export async function sparTurn(
     draft: draft === null || draft.markdown.trim() === '' ? '(no draft yet)' : draft.markdown,
   });
 
+  const claude = resolved.model.provider === 'claude-code';
+  if (claude && (deps.runtime === undefined || deps.dataDir === undefined)) {
+    recordFailure(
+      deps,
+      productId,
+      `Sparring with Claude Code needs the container runtime, which is not available. Choose an API model for sparring in Settings. ${AGAIN}`,
+    );
+    return;
+  }
+
   let result: AgentResult<SparResult>;
   try {
-    ({ result } = await runRecordedAgent(deps, {
-      productId,
-      role: 'sparring',
-      model: resolved.model,
-      instructions,
-      prompt: ownerMessage,
-      schema: SparResultSchema,
-      tools: [],
-      limits: SPAR_LIMITS,
-      shouldStop: deps.shouldStop ?? (() => false),
-      modelDeps: deps.modelDeps,
-    }));
+    ({ result } = await withSparSandbox(deps, productId, claude, (sandbox) =>
+      runRecordedAgent(deps, {
+        productId,
+        role: 'sparring',
+        model: resolved.model,
+        instructions,
+        prompt: ownerMessage,
+        schema: SparResultSchema,
+        ...(sandbox === undefined ? {} : { sandbox }),
+        tools: [],
+        limits: SPAR_LIMITS,
+        shouldStop: deps.shouldStop ?? (() => false),
+        modelDeps: deps.modelDeps,
+      }),
+    ));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     recordFailure(deps, productId, `The sparring agent crashed: ${sentence(message)} ${AGAIN}`);
@@ -90,6 +112,44 @@ export async function sparTurn(
           } satisfies EventDraft,
         ]),
   ]);
+}
+
+/**
+ * Runs `fn` without a sandbox (API models), or for Claude Code in a container from the derived
+ * Claude image with the CLI login volume, on an empty scratch worktree. Both are removed after.
+ */
+async function withSparSandbox<T>(
+  deps: SparringDeps,
+  productId: ProductId,
+  claude: boolean,
+  fn: (sandbox: Sandbox | undefined) => Promise<T>,
+): Promise<T> {
+  const { runtime, dataDir } = deps;
+  if (!claude || runtime === undefined || dataDir === undefined) return fn(undefined);
+  const runId = deps.ids.next('run');
+  const scratch = path.join(dataDir, 'worktrees', runId);
+  await mkdir(scratch, { recursive: true, mode: 0o700 });
+  let sandbox: Sandbox | undefined;
+  try {
+    const image = await runtime.ensureImage({ productId, contextDir: scratch, claude: true });
+    sandbox = await runtime.open({
+      runId,
+      productId,
+      role: 'agent',
+      image,
+      worktree: scratch,
+      readOnly: true,
+      network: 'egress',
+      claude: true,
+    });
+    return await fn(sandbox);
+  } finally {
+    try {
+      await sandbox?.close();
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
 }
 
 /** The transcript without the latest owner message (that one is the agent's prompt). */

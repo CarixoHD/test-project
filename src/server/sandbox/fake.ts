@@ -14,6 +14,7 @@ import { buildRunArgs, containerName, managedLabels } from './run-args.ts';
 import type {
   ContainerRuntime,
   DetachedContainer,
+  EnsureImageParams,
   ExecOpts,
   ExecResult,
   HostIdentity,
@@ -34,7 +35,7 @@ export type FakeCall =
   | { kind: 'exec' | 'runOnce'; name: string; argv: string[]; stdin?: string }
   | { kind: 'runDetached'; name: string; argv: string[] }
   | { kind: 'open' | 'close' | 'remove'; name: string }
-  | { kind: 'ensureImage'; productId: string; contextDir: string };
+  | { kind: 'ensureImage'; productId: string; contextDir: string; claude?: boolean };
 
 export type FakeContainerRuntimeOptions = {
   dataDir: string;
@@ -47,6 +48,7 @@ export type FakeContainerRuntimeOptions = {
 const DEFAULT_ID = 1000;
 const NOT_FOUND = 127;
 const BASE_IMAGE = 'vibecode/base';
+const CLAUDE_IMAGE = 'vibecode/claude-code';
 /** What a fake detached (preview) container serves on its published 127.0.0.1 port. */
 const PREVIEW_PAGE =
   '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Vibecode preview</title>' +
@@ -60,6 +62,8 @@ export class FakeContainerRuntime implements ContainerRuntime {
   readonly #script: readonly FakeRunRule[];
   readonly #isAvailable: boolean;
   readonly #open = new Map<string, SandboxSpec>();
+  /** `docker run` args (buildRunArgs) of every container started, by name. */
+  readonly #runArgs = new Map<string, string[]>();
   /** Local page servers of detached containers, closed on remove. */
   readonly #servers = new Map<string, Server>();
 
@@ -73,26 +77,45 @@ export class FakeContainerRuntime implements ContainerRuntime {
     return Promise.resolve(this.#isAvailable);
   }
 
-  /** `vibecode/p-<id>:<sha256(Dockerfile)[:12]>`, or vibecode/base when there is no Dockerfile. */
-  async ensureImage(p: { productId: string; contextDir: string }): Promise<string> {
-    this.calls.push({ kind: 'ensureImage', ...p });
+  /**
+   * `vibecode/p-<id>:<sha256(Dockerfile)[:12]>`, or vibecode/base when there is no Dockerfile.
+   * With `claude`: vibecode/claude-code over the base, else `vibecode/p-<id>-claude:<same hash>`.
+   */
+  async ensureImage(p: EnsureImageParams): Promise<string> {
+    const claude = p.claude === true;
+    this.calls.push({
+      kind: 'ensureImage',
+      productId: p.productId,
+      contextDir: p.contextDir,
+      ...(claude ? { claude } : {}),
+    });
     let dockerfile: Buffer;
     try {
       dockerfile = await readFile(path.join(p.contextDir, 'Dockerfile'));
     } catch (err) {
-      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return BASE_IMAGE;
+      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
+        return claude ? CLAUDE_IMAGE : BASE_IMAGE;
+      }
       throw err;
     }
     const hash = createHash('sha256').update(dockerfile).digest('hex').slice(0, 12);
-    return `vibecode/p-${p.productId}:${hash}`;
+    return `vibecode/p-${p.productId}${claude ? '-claude' : ''}:${hash}`;
+  }
+
+  /** The `docker run` args the real runtime would use for container `name` (tests assert on them). */
+  runArgs(name: string): string[] | undefined {
+    const args = this.#runArgs.get(name);
+    return args === undefined ? undefined : [...args];
   }
 
   async open(spec: SandboxSpec): Promise<Sandbox> {
     await Promise.resolve();
-    buildRunArgs(spec, this.#host); // rejects on any policy violation, exactly like the real runtime
+    // Rejects on any policy violation, exactly like the real runtime.
+    const args = buildRunArgs(spec, this.#host);
     const name = containerName(spec.runId);
     if (this.#open.has(name)) throw new Error(`Container name ${name} is already in use`);
     this.#open.set(name, spec);
+    this.#runArgs.set(name, args);
     this.calls.push({ kind: 'open', name });
     return {
       name,
@@ -113,7 +136,7 @@ export class FakeContainerRuntime implements ContainerRuntime {
 
   async runOnce(spec: SandboxSpec, argv: readonly string[], o: ExecOpts): Promise<ExecResult> {
     await Promise.resolve();
-    buildRunArgs(spec, this.#host);
+    this.#runArgs.set(containerName(spec.runId), buildRunArgs(spec, this.#host));
     this.calls.push({ kind: 'runOnce', name: containerName(spec.runId), ...callArgs(argv, o) });
     return this.#run(spec, argv, o);
   }

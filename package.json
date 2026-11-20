@@ -15,9 +15,11 @@
     "test:e2e": "playwright test",
     "test:docker": "vitest run --project docker",
     "docker:base": "docker buildx build --load --tag vibecode/base --file docker/base.Dockerfile docker",
+    "docker:claude-code": "npm run docker:base && docker buildx build --load --tag vibecode/claude-code --build-arg BASE_IMAGE=vibecode/base --file docker/claude-code.Dockerfile docker",
     "dev": "node scripts/dev.mjs",
     "build": "vite build",
     "start": "node src/server/main.ts",
+    "set-password": "node scripts/set-password.ts",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

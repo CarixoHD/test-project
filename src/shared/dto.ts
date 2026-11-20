@@ -168,6 +168,35 @@ export type SettingsResponse = z.infer<typeof SettingsResponseSchema>;
 export const SettingsUpdateResponseSchema = SettingsResponseSchema.extend({ ok: z.literal(true) });
 export type SettingsUpdateResponse = z.infer<typeof SettingsUpdateResponseSchema>;
 
+// ---- access control (POST /api/login, /api/logout, /api/settings/password; GET /api/session)
+
+export const PASSWORD_MIN_LENGTH = 12;
+/** Upper bound so a request cannot make scrypt hash megabytes. */
+export const PASSWORD_MAX_LENGTH = 1024;
+
+/** `POST /api/login`. */
+export const LoginRequestSchema = z.strictObject({
+  password: z.string().min(1).max(PASSWORD_MAX_LENGTH),
+});
+export type LoginRequest = z.infer<typeof LoginRequestSchema>;
+
+/** `POST /api/settings/password`: `current` is required once a password is set. */
+export const PasswordChangeRequestSchema = z.strictObject({
+  current: z.string().max(PASSWORD_MAX_LENGTH).optional(),
+  next: z
+    .string()
+    .min(PASSWORD_MIN_LENGTH, `The password must be at least ${PASSWORD_MIN_LENGTH} characters`)
+    .max(PASSWORD_MAX_LENGTH),
+});
+export type PasswordChangeRequest = z.infer<typeof PasswordChangeRequestSchema>;
+
+/** `GET /api/session`. Without a password every (loopback) client counts as authenticated. */
+export const SessionResponseSchema = z.object({
+  passwordSet: z.boolean(),
+  authenticated: z.boolean(),
+});
+export type SessionResponse = z.infer<typeof SessionResponseSchema>;
+
 export const SPAR_MESSAGE_MAX = 8000;
 export const PRD_MARKDOWN_MAX = 200_000;
 

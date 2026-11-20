@@ -48,7 +48,10 @@ async function setup(opts: { git?: (git: Git) => Git; draft?: string | null } = 
 }
 
 const postHandoff = (app: Awaited<ReturnType<typeof setup>>['app'], id: string) =>
-  app.request(`/api/products/${id}/handoff`, { method: 'POST' });
+  app.request(`/api/products/${id}/handoff`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+  });
 
 describe('handoff', () => {
   it('commits docs/PRD.md to main and emits v1, prd.applied, handed_off and phase building', async () => {

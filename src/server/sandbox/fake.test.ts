@@ -113,6 +113,32 @@ describe('FakeContainerRuntime lifecycle', () => {
     await writeFile(path.join(wt, 'Dockerfile'), 'FROM node:24\n');
     expect(await rt.ensureImage(p)).not.toBe(tag);
   });
+
+  it('ensureImage with claude returns the derived Claude Code image and records the flag', async () => {
+    const rt = new FakeContainerRuntime({ dataDir });
+    const p = { productId: '01PROD', contextDir: wt, claude: true };
+    expect(await rt.ensureImage(p)).toBe('vibecode/claude-code');
+    await writeFile(path.join(wt, 'Dockerfile'), 'FROM node:22\n');
+    const product = await rt.ensureImage({ productId: '01PROD', contextDir: wt });
+    expect(await rt.ensureImage(p)).toBe(
+      product.replace(/^vibecode\/p-01PROD:/, 'vibecode/p-01PROD-claude:'),
+    );
+    expect(rt.calls[0]).toEqual({ kind: 'ensureImage', ...p });
+    expect(rt.calls[1]).toEqual({ kind: 'ensureImage', productId: '01PROD', contextDir: wt });
+  });
+
+  it('exposes the docker run args of each container it starts', async () => {
+    const rt = new FakeContainerRuntime({ dataDir });
+    const sb = await rt.open(spec({ image: 'vibecode/claude-code', claude: true }));
+    const args = rt.runArgs(sb.name) ?? [];
+    expect(args).toContain('vibecode/claude-code');
+    expect(args).toContain('type=volume,src=vibecode-claude-config,dst=/home/agent/.claude');
+    await rt.runOnce(spec({ runId: '01CHECK', role: 'check', network: 'none' }), ['x'], {
+      timeoutMs: 1,
+    });
+    expect(rt.runArgs('vibecode-01CHECK')).toContain('vibecode/base');
+    expect(rt.runArgs('vibecode-nope')).toBeUndefined();
+  });
 });
 
 describe('FakeContainerRuntime file ops', () => {

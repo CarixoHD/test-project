@@ -62,11 +62,11 @@ export async function request<T>(path: string, opts: RequestOptions<T>): Promise
   const timeout = AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
   const headers = new Headers({ Accept: 'application/json' });
-  const init: RequestInit = { method: opts.method ?? 'GET', headers, signal };
-  if (opts.body !== undefined) {
-    headers.set('Content-Type', 'application/json');
-    init.body = JSON.stringify(opts.body);
-  }
+  const method = opts.method ?? 'GET';
+  const init: RequestInit = { method, headers, signal };
+  // The server accepts only JSON mutations (CSRF defence, ADR 9), even those without a body.
+  if (method !== 'GET') headers.set('Content-Type', 'application/json');
+  if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
 
   let res: Response;
   try {
@@ -175,6 +175,15 @@ export function updateProductSettings(
 /** Hands the PRD draft to the orchestrator; the phase change arrives as events. */
 export function handoffProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
   return request(`/api/products/${encodeURIComponent(productId)}/handoff`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Clears an account-wide backend limit, e.g. Claude Code's needs_login after logging in. */
+export function clearBackendLimit(backend: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/backends/${encodeURIComponent(backend)}/clear`, {
     method: 'POST',
     schema: OkResponseSchema,
     ...(signal ? { signal } : {}),

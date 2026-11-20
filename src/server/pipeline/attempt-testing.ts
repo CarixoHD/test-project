@@ -43,6 +43,10 @@ export type HarnessOptions = {
   script?: (agent: SpawnedAgent) => FakeScript | undefined;
   /** Result of the n-th (0-based) check run; default: passes. */
   check?: (n: number) => CheckResult;
+  /** Product model overrides per role (product.created `models`); default none (demo fake). */
+  models?: object;
+  /** Extra container script rules (after the check rule); `specs` is live. */
+  runtimeScript?: (specs: readonly SpecCall[]) => FakeRunRule[];
 };
 
 export type Harness = {
@@ -112,7 +116,7 @@ export async function setupAttempt(dataDir: string, o: HarnessOptions = {}): Pro
       budgetUsd: null,
       maxParallel: 3,
       maxAttempts: o.maxAttempts ?? 3,
-      models: {},
+      models: o.models ?? {},
       gitRemote: null,
     }),
     ...(project === null ? [] : [draft('product.settings_changed', null, { project })]),
@@ -126,8 +130,11 @@ export async function setupAttempt(dataDir: string, o: HarnessOptions = {}): Pro
       return o.check?.(n) ?? PASSING_CHECK;
     },
   };
-  const runtime = new FakeContainerRuntime({ dataDir, script: [checkRule] });
   const specs: SpecCall[] = [];
+  const runtime = new FakeContainerRuntime({
+    dataDir,
+    script: [checkRule, ...(o.runtimeScript?.(specs) ?? [])],
+  });
   const realOpen = runtime.open.bind(runtime);
   const realRunOnce = runtime.runOnce.bind(runtime);
   runtime.open = (spec) => {

@@ -55,6 +55,31 @@ describe('start (composition root)', () => {
     expect(JSON.parse(text)).toMatchObject({ keys: [{ provider: 'anthropic', last4: '5678' }] });
   });
 
+  it('refuses remote bind without a password, and allows it once one is set', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
+    const local = { ...parseConfig({ VIBECODE_DATA_DIR: join(root, 'data') }), port: 0 };
+    const remote = { ...local, host: '0.0.0.0' };
+    await expect(start(remote, join(root, 'no-web'))).rejects.toThrow(
+      /VIBECODE_HOST=0\.0\.0\.0.*no password.*set-password/s,
+    );
+
+    running = await start(local, join(root, 'no-web'));
+    const set = await fetch(
+      `http://127.0.0.1:${String(running.address.port)}/api/settings/password`,
+      json({ next: 'correct horse battery' }),
+    );
+    expect(set.status).toBe(200);
+    await running.close();
+
+    running = await start(remote, join(root, 'no-web'));
+    const base = `http://127.0.0.1:${String(running.address.port)}`;
+    expect((await fetch(`${base}/api/state`)).status).toBe(401);
+    expect(await (await fetch(`${base}/api/session`)).json()).toEqual({
+      passwordSet: true,
+      authenticated: false,
+    });
+  });
+
   it('runs sparring turns: POST /spar yields the agent reply over SSE', async () => {
     root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
     const config = {
@@ -150,7 +175,10 @@ describe('start (composition root)', () => {
       data: { kind: 'rate_limited' },
     });
 
-    const read = await fetch(`${base}/api/inbox/${inboxId}/read`, { method: 'POST' });
+    const read = await fetch(`${base}/api/inbox/${inboxId}/read`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
     expect(read.status).toBe(200);
     const after = StateResponseSchema.parse(await (await fetch(`${base}/api/state`)).json());
     expect(after.state.inbox[inboxId]?.read).toBe(true);
