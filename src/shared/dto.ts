@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { PriceOverridesSchema } from './budget.ts';
-import { GitRemoteSchema } from './domain.ts';
+import { GitRemoteInputSchema } from './domain.ts';
 import { ProductIdSchema } from './ids.ts';
 import { IssueIdSchema } from './ids.ts';
 import {
@@ -106,7 +106,7 @@ export const ProductSettingsUpdateRequestSchema = z
       .max(MAX_ATTEMPTS_LIMIT, `Attempts must be between 1 and ${MAX_ATTEMPTS_LIMIT}`)
       .optional(),
     models: z.partialRecord(RoleSchema, ModelRefSchema.nullable()).optional(),
-    gitRemote: GitRemoteSchema.nullable().optional(),
+    gitRemote: GitRemoteInputSchema.nullable().optional(),
   })
   .refine((u) => Object.keys(u).length > 0, 'Nothing to update');
 export type ProductSettingsUpdateRequest = z.infer<typeof ProductSettingsUpdateRequestSchema>;
