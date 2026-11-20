@@ -18,14 +18,17 @@ export const LIMIT_DEDUPE_TOLERANCE_MS = 5_000;
 
 /**
  * backend.limited for `limit`, shared by attempts and orchestrator runs, so parallel runs hitting
- * the same limit record it (and its inbox item) once. While the backend has a limit (until the
- * scheduler or the owner commits backend.cleared), a rate limit is recorded only when it extends
- * the active one by more than LIMIT_DEDUPE_TOLERANCE_MS, so an active limit is never shortened.
- * A change between rate-limited and needs-login is always recorded; a repeated needs-login is not.
+ * the same limit record it (and its inbox item) once. While the backend has an active limit, a
+ * rate limit is recorded only when it extends the active one by more than
+ * LIMIT_DEDUPE_TOLERANCE_MS, so an active limit is never shortened. A projected limit whose
+ * `until` is at or before `now` (expired, but the scheduler has not committed backend.cleared
+ * yet) is inactive, so a new limit is always recorded. A change between rate-limited and
+ * needs-login is always recorded; a repeated needs-login is not.
  */
-export function backendLimitDrafts(tx: Tx, limit: BackendLimitDraft): EventDraft[] {
+export function backendLimitDrafts(tx: Tx, limit: BackendLimitDraft, now: number): EventDraft[] {
   const current = tx.q.backendLimit(limit.backend);
-  return current === null || current.needsLogin !== limit.needsLogin || extendsLimit(current, limit)
+  const active = current !== null && (current.until === null || current.until > now);
+  return !active || current.needsLogin !== limit.needsLogin || extendsLimit(current, limit)
     ? [{ type: 'backend.limited', productId: null, entityId: null, v: 1, data: limit }]
     : [];
 }
@@ -189,13 +192,17 @@ export function endWithError(
   ]);
 }
 
+/** A limit to record with the clock's time when it was hit (`backendLimitDrafts`). */
+export type TimedLimit = { draft: BackendLimitDraft; now: number };
+
 /** An implementer's question to the owner (flow 4.3); it holds the issue until answered. */
 export type QuestionDraft = { id: QuestionId; agentId: AgentId; text: string };
 
 /**
  * attempt.ended{interrupted, interruptReason}, uncounted (ADR 7), and the issue back to open
  * (not before `runAfter`) when it is still in progress or in review. `limit` also commits
- * backend.limited unless it repeats the backend's active limit (`backendLimitDrafts`), so parallel
+ * backend.limited unless it repeats the backend's active limit at `limit.now`
+ * (`backendLimitDrafts`), so parallel
  * attempts hitting the same limit record it (and its inbox item) once. `question` also commits
  * question.asked{target:'issue'} and issue.held, so the scheduler skips the issue until the
  * owner answers; when the issue was cancelled meanwhile (re-read inside the commit), the
@@ -206,14 +213,14 @@ export function interruptAttempt(
   reason: InterruptReason,
   feedback: string,
   outcome: AttemptOutcome,
-  o: { runAfter?: number; limit?: BackendLimitDraft; question?: QuestionDraft } = {},
+  o: { runAfter?: number; limit?: TimedLimit; question?: QuestionDraft } = {},
 ): void {
   ref.store.commit((tx) => {
     const { limit, runAfter, question } = o;
     if (question !== undefined && tx.q.issue(ref.issueId)?.status === 'cancelled') {
       return [endedDraft(ref, 'discarded', feedback, outcome)];
     }
-    const limited = limit === undefined ? [] : backendLimitDrafts(tx, limit);
+    const limited = limit === undefined ? [] : backendLimitDrafts(tx, limit.draft, limit.now);
     const asked = question === undefined ? [] : questionDrafts(ref, question);
     return [
       endedDraft(ref, 'interrupted', feedback, outcome, false, reason),
