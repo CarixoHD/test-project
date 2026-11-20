@@ -121,6 +121,14 @@ const usageRecorded = (
 
 const held = (n: number) => event('issue.held', `i${String(n)}`, { questionId: 'q1' });
 
+const questionAsked = (n: number) =>
+  event('question.asked', 'q1', {
+    target: 'issue',
+    issueId: `i${String(n)}`,
+    agentId: null,
+    text: 'Which colour?',
+  });
+
 beforeEach(() => {
   seq = 0;
   vi.stubGlobal('EventSource', FakeEventSource);
@@ -229,11 +237,45 @@ describe('Board', () => {
     expect(c).not.toHaveTextContent('#1');
   });
 
-  it('marks held issues as waiting for the owner, live', async () => {
+  it('marks held issues with an open question as waiting for the owner, live', async () => {
     await renderBoard([() => issueCreated({ n: 1, title: 'Pick a colour' })]);
     expect(card('#1 Pick a colour')).not.toHaveTextContent('Waiting for owner');
-    push(held(1));
+    push(questionAsked(1), held(1));
     expect(card('#1 Pick a colour')).toHaveTextContent('Waiting for owner');
+  });
+
+  it('drops the waiting badge once a held issue is cancelled and its question withdrawn', async () => {
+    await renderBoard([
+      () => issueCreated({ n: 1, title: 'Pick a colour' }),
+      () => questionAsked(1),
+      () => held(1),
+    ]);
+    expect(card('#1 Pick a colour')).toHaveTextContent('Waiting for owner');
+    push(
+      event('issue.cancelled', 'i1', { from: 'open', by: 'owner', reason: 'Not needed' }),
+      event('question.withdrawn', 'q1', { reason: 'The issue was cancelled.' }),
+    );
+    expect(card('#1 Pick a colour')).not.toHaveTextContent('Waiting for owner');
+  });
+
+  it('shows no waiting badge on a cancelled issue whose question is still open', async () => {
+    await renderBoard([
+      () => issueCreated({ n: 1, title: 'Pick a colour' }),
+      () => questionAsked(1),
+      () => held(1),
+      () => event('issue.cancelled', 'i1', { from: 'open', by: 'owner', reason: 'Not needed' }),
+    ]);
+    expect(card('#1 Pick a colour')).not.toHaveTextContent('Waiting for owner');
+  });
+
+  it('shows no waiting badge when the held question was withdrawn', async () => {
+    await renderBoard([
+      () => issueCreated({ n: 1, title: 'Pick a colour' }),
+      () => questionAsked(1),
+      () => held(1),
+      () => event('question.withdrawn', 'q1', { reason: 'Plan changed.' }),
+    ]);
+    expect(card('#1 Pick a colour')).not.toHaveTextContent('Waiting for owner');
   });
 
   it('shows each issue its own cost from the usage totals, live', async () => {
