@@ -9,6 +9,8 @@ import type { CommandDeps } from './apply-plan.ts';
 export type PauseCommandResult =
   { ok: true; events: Event[] } | { ok: false; reason: string; code: 'not_found' | 'conflict' };
 
+export const BUDGET_EXHAUSTED = 'Budget exhausted: raise the budget in Settings';
+
 type Outcome = { ok: true } | { ok: false; reason: string; code: 'not_found' | 'conflict' };
 
 export function pauseProduct(deps: CommandDeps, productId: ProductId): PauseCommandResult {
@@ -46,7 +48,7 @@ export function resumeProduct(deps: CommandDeps, productId: ProductId): PauseCom
       outcome = {
         ok: false,
         code: 'conflict',
-        reason: 'The budget is exhausted; raise it in Settings before resuming',
+        reason: BUDGET_EXHAUSTED,
       };
       return [];
     }

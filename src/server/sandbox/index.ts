@@ -37,7 +37,13 @@ export {
   type FakeRunResult,
   type FakeRunRule,
 } from './fake.ts';
-export { DOCKER_UNAVAILABLE_REASON, selectRuntime } from './select-runtime.ts';
+export {
+  BASE_IMAGE,
+  DOCKER_NOT_RUNNING,
+  DockerCliRuntime,
+  type DockerCliRuntimeOptions,
+} from './docker-cli.ts';
+export { selectRuntime } from './select-runtime.ts';
 export {
   createPreviews,
   PREVIEW_POLL_MS,

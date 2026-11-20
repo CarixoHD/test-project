@@ -17,6 +17,7 @@ function settingsChanged(db: Db, e: EventOf<'product.settings_changed'>): void {
   if (d.models !== undefined) set.models = d.models;
   if (d.gitRemote !== undefined) set.gitRemote = d.gitRemote;
   if (d.project !== undefined) set.project = d.project;
+  if (d.budgetWarned === false) set.budgetWarned = false;
   db.update(products).set(set).where(eq(products.id, e.productId)).run();
 }
 
