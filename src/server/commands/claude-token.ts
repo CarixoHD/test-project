@@ -1,7 +1,4 @@
-import {
-  ClaudeCodeTokenUpdateRequestSchema,
-  type ClaudeCodeTokenView,
-} from '../../shared/dto.ts';
+import { ClaudeCodeTokenUpdateRequestSchema, type ClaudeCodeTokenView } from '../../shared/dto.ts';
 import { CLAUDE_CODE_TOKEN_SECRET, type Secrets } from '../security/index.ts';
 import type { Store } from '../store/index.ts';
 import { clearBackendLimit } from './backend-limits.ts';
