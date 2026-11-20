@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { EventDraft } from '../../shared/events.ts';
-import type { IssueId } from '../../shared/ids.ts';
+import { QuestionIdSchema, type IssueId } from '../../shared/ids.ts';
 import { createApp } from '../http/index.ts';
 import { productCreated, setupStore, TEST_PRODUCT } from '../http/testing.ts';
 import { expectSnapshotMatchesReplay } from '../store/testing.ts';
@@ -48,6 +48,8 @@ function askOrchestratorQuestion(s: ReturnType<typeof setup>, id: string) {
 }
 
 const issue = (s: ReturnType<typeof setup>, id: IssueId) => s.store.q.issue(id);
+const question = (s: ReturnType<typeof setup>, id: string) =>
+  s.store.q.question(QuestionIdSchema.parse(id));
 const typesSince = (s: ReturnType<typeof setup>, seq: number) =>
   s.store.eventsSince(seq).map((e) => e.type);
 
@@ -70,7 +72,7 @@ describe('answerQuestion', () => {
     expect(r.ok).toBe(true);
     expect(typesSince(s, before)).toEqual(['question.answered', 'issue.released']);
     expect(issue(s, s.issueId)?.heldQuestionId).toBeNull();
-    expect(s.store.snapshot().state.questions['question-1']).toMatchObject({
+    expect(question(s, 'question-1')).toMatchObject({
       answer: 'Email, please',
       answeredAt: expect.any(Number),
     });
@@ -109,7 +111,7 @@ describe('answerQuestion', () => {
       code: 'conflict',
     });
     expect(s.store.snapshot().lastSeq).toBe(before);
-    expect(s.store.snapshot().state.questions['question-1']?.answer).toBe('Email');
+    expect(question(s, 'question-1')?.answer).toBe('Email');
   });
 
   it('an unknown question is not_found', () => {
@@ -141,6 +143,6 @@ describe('POST /api/questions/:id/answer', () => {
     expect((await post(s.app, 'question-x', { text: 'Email' })).status).toBe(404);
     expect((await post(s.app, 'question-1', { text: '   ' })).status).toBe(400);
     expect((await post(s.app, 'question-1', {})).status).toBe(400);
-    expect(s.store.snapshot().state.questions['question-1']?.answer).toBeNull();
+    expect(question(s, 'question-1')?.answer).toBeNull();
   });
 });
