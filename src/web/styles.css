@@ -667,3 +667,83 @@ a {
 .product-header h1 {
   margin-bottom: 0;
 }
+
+/* ---- /settings ---- */
+
+.settings-section {
+  max-width: 48rem;
+  margin-bottom: var(--space-8);
+}
+
+.settings-section__intro {
+  color: var(--ink-muted);
+}
+
+.settings-provider,
+.settings-model-row {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+
+.settings-provider legend,
+.settings-model-row legend {
+  padding: 0 var(--space-1);
+  font-weight: 700;
+}
+
+.settings-provider__stored {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.settings-provider__stored p {
+  margin: 0 var(--space-2) 0 0;
+  font-family: ui-monospace, monospace;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Stays rendered while empty so screen readers announce text added to the live region. */
+.settings-notice:empty {
+  margin: 0;
+}
+
+.settings-prices {
+  width: 100%;
+  margin-bottom: var(--space-4);
+  border-collapse: collapse;
+}
+
+.settings-prices th {
+  text-align: left;
+  padding: var(--space-1) var(--space-2);
+}
+
+.settings-prices td {
+  vertical-align: top;
+  padding: var(--space-1) var(--space-2);
+}
+
+.settings-prices input {
+  width: 100%;
+  font: inherit;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.settings-prices [aria-invalid='true'] {
+  border: 2px solid var(--danger);
+}
