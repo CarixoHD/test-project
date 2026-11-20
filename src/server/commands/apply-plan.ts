@@ -287,6 +287,7 @@ function editIssue(board: Board, op: OpOf<'edit'>): { ok: true } | Fail {
     title: op.title ?? issue.title,
     body: op.body ?? issue.body,
     dependsOn: dependsOn ?? issue.dependsOn,
+    priority: op.priority ?? issue.priority,
   };
   board.issues.set(issue.id, next);
   board.drafts.push({
@@ -299,6 +300,7 @@ function editIssue(board: Board, op: OpOf<'edit'>): { ok: true } | Fail {
       ...(op.title === undefined ? {} : { title: op.title }),
       ...(op.body === undefined ? {} : { body: op.body }),
       ...(dependsOn === undefined ? {} : { dependsOn }),
+      ...(op.priority === undefined ? {} : { priority: op.priority }),
     },
   });
   return { ok: true };
