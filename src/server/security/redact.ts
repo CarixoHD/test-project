@@ -21,7 +21,21 @@ export class Redactor {
   #pattern: RegExp | undefined;
   #maxLength = 0;
 
+  /**
+   * Registers a secret. A multi-line value (LF or CRLF) also registers each of its lines,
+   * because line-split streams never see the whole value; the whole value stays registered
+   * so whole-buffer redaction masks it as one piece.
+   */
   register(value: string): void {
+    if (value.includes('\n')) {
+      for (const line of value.split('\n')) {
+        this.#add(line.endsWith('\r') ? line.slice(0, -1) : line);
+      }
+    }
+    this.#add(value);
+  }
+
+  #add(value: string): void {
     if (value.length < MIN_SECRET_LENGTH || this.#secrets.has(value)) return;
     this.#secrets.add(value);
     this.#maxLength = Math.max(this.#maxLength, value.length);
