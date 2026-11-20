@@ -3,11 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EventDraft } from '../../../shared/events.ts';
+import { AttemptIdSchema, IssueIdSchema } from '../../../shared/ids.ts';
 import { createApp } from '../app.ts';
 import { productCreated, setupStore, TEST_PRODUCT } from '../testing.ts';
 
-const ISSUE = 'issue-1';
-const ATTEMPT = 'attempt-1';
+const ISSUE = IssueIdSchema.parse('issue-1');
+const ATTEMPT = AttemptIdSchema.parse('attempt-1');
 const SECRET = 'sk-test-secret-0123456789abcdef';
 
 let artifactsDir: string | undefined;
