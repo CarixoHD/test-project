@@ -181,6 +181,15 @@ export function handoffProduct(productId: string, signal?: AbortSignal): Promise
   });
 }
 
+/** Applies the edited PRD draft as the next version; 409 when it equals the latest version. */
+export function applyPrdChanges(productId: string, signal?: AbortSignal): Promise<OkResponse> {
+  return request(`/api/products/${encodeURIComponent(productId)}/apply-prd`, {
+    method: 'POST',
+    schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
 /** Pauses the product's build; 409 when it is already paused. */
 export function pauseProduct(productId: string, signal?: AbortSignal): Promise<OkResponse> {
   return request(`/api/products/${encodeURIComponent(productId)}/pause`, {

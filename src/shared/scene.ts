@@ -191,6 +191,7 @@ export const NO_OP_SCENE_EVENTS = [
   'spar.message',
   'prd.draft_saved',
   'prd.applied',
+  'prd.summarized',
   'orchestrator.cursor_advanced',
   'issue.edited',
   'issue.held',
@@ -293,6 +294,7 @@ export function sceneReduce(s: SceneState, e: Event): SceneState {
     case 'spar.message':
     case 'prd.draft_saved':
     case 'prd.applied':
+    case 'prd.summarized':
     case 'orchestrator.cursor_advanced':
     case 'issue.edited':
     case 'issue.held':

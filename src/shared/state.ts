@@ -44,6 +44,7 @@ export function reduce(s: ClientState, e: Event): ClientState {
     case 'spar.message':
     case 'prd.draft_saved':
     case 'prd.applied':
+    case 'prd.summarized':
     case 'orchestrator.cursor_advanced':
     case 'budget.warned':
     case 'preview.started':

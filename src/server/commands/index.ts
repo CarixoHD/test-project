@@ -49,6 +49,7 @@ export {
 } from './spar.ts';
 export { updateProductSettings, type UpdateProductSettingsResult } from './product-settings.ts';
 export { handoff, PRD_PATH, type HandoffDeps, type HandoffResult } from './handoff.ts';
+export { applyPrd, type ApplyPrdDeps, type ApplyPrdResult } from './apply-prd.ts';
 export { pauseProduct, resumeProduct, type PauseCommandResult } from './pause.ts';
 export {
   budgetAfterUsage,

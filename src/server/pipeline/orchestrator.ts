@@ -247,12 +247,16 @@ function planOptions(
   plan: PlanResult,
   triggers: readonly Event[],
 ): ApplyPlanOptions {
-  const isReplan = triggers.some((e) => e.type === 'prd.applied' && e.data.version > 1);
+  // The newest PRD version this run planned for; v1 is the initial plan, not a replan.
+  const replanVersion = Math.max(
+    0,
+    ...triggers.flatMap((e) => (e.type === 'prd.applied' ? [e.data.version] : [])),
+  );
   const projectChanged =
     project !== null && JSON.stringify(project) !== JSON.stringify(product.project);
   return {
     ...(projectChanged ? { project } : {}),
-    ...(isReplan ? { replanSummary: plan.summary } : {}),
+    ...(replanVersion > 1 ? { replan: { version: replanVersion, summary: plan.summary } } : {}),
   };
 }
 

@@ -106,6 +106,13 @@ export function reduceProductEvent(s: ClientState, e: ProductLevelEvent): Client
     }
     case 'prd.applied':
       return prdApplied(s, e);
+    case 'prd.summarized': {
+      const { version, summary } = e.data;
+      const versions = (s.prdVersions[e.productId] ?? []).map((v) =>
+        v.version === version ? { ...v, summary } : v,
+      );
+      return { ...s, prdVersions: { ...s.prdVersions, [e.productId]: versions } };
+    }
     case 'orchestrator.cursor_advanced':
       return updateProduct(s, e.productId, (p) => ({ ...p, orchestratorCursor: e.data.cursor }));
     case 'budget.warned':
@@ -129,6 +136,7 @@ export type ProductLevelEvent = EventOf<
   | 'spar.message'
   | 'prd.draft_saved'
   | 'prd.applied'
+  | 'prd.summarized'
   | 'orchestrator.cursor_advanced'
   | 'budget.warned'
   | 'preview.started'
