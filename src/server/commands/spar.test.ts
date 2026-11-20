@@ -14,12 +14,7 @@ import { createStore } from '../store/index.ts';
 import { expectSnapshotMatchesReplay } from '../store/testing.ts';
 import { FakeClock } from '../util/clock.ts';
 import { FakeIdGen } from '../util/id-gen.ts';
-import {
-  createSparring,
-  nextSparMessageId,
-  savePrdDraft,
-  type SparTurnRunner,
-} from './index.ts';
+import { createSparring, nextSparMessageId, savePrdDraft, type SparTurnRunner } from './index.ts';
 
 const P = ProductIdSchema.parse('product-1');
 const MISSING = ProductIdSchema.parse('product-404');
