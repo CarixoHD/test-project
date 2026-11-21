@@ -707,7 +707,7 @@ The harness runs these commands on every change, so the scaffold issue MUST defi
 | `test` | `vitest run --project unit --project web` |
 | `test:e2e` | `playwright test` |
 | `test:docker` | `vitest run --project docker` |
-| `dev` | `node scripts/dev.mjs`. It reads `$PORT` (default 5173), starts the API with `node --watch src/server/main.ts` on 127.0.0.1:`$PORT+1` with `VIBECODE_DEMO=1 VIBECODE_FAKE_DOCKER=1 VIBECODE_DATA_DIR=.data/dev`, and starts Vite on 0.0.0.0:`$PORT` with `/api` proxied (SSE buffering off). |
+| `dev` | `node scripts/dev.mjs`. It reads `$PORT` (default 5173), starts the API with `node --watch src/server/main.ts` on 127.0.0.1:`$PORT+1` with `VIBECODE_DEMO=1 VIBECODE_FAKE_DOCKER=1 VIBECODE_DATA_DIR=.data/dev`, and starts Vite on 0.0.0.0:`$PORT` with `/api` proxied (SSE buffering off). The proxy presents `/api` requests to the loopback-only API as local: `changeOrigin` rewrites Host, and a same-origin `Origin` is rewritten to the API's loopback origin (`scripts/dev-proxy.mjs`; foreign Origins are left for the API to refuse). |
 | `build` | `vite build` (SPA → `dist/web`; the server is not built) |
 | `start` | `node scripts/preflight.mjs && node src/server/main.ts` |
 | `db:generate` | `drizzle-kit generate` |
