@@ -83,7 +83,10 @@ To reach it from other devices:
 1. Set an owner password (at least 12 characters). Run `npm run set-password` on the host; it
    prompts without echo, or reads the first line of stdin when piped. You can also set it through
    `POST /api/settings/password` `{current?, next}`. Setting or changing the password logs out
-   every session.
+   every session. Remove it from Settings → Password (or `DELETE /api/settings/password
+   {"current":"…"}`, or from the host with `npm run set-password -- --remove`): Vibecode then
+   answers only on localhost again. Removal from a running server is refused while
+   `VIBECODE_HOST` is not loopback, because it would refuse to start without a password.
 2. Choose how to expose Vibecode. Do not put plain HTTP on an untrusted network:
    - **Tailscale (recommended):** keep `VIBECODE_HOST=127.0.0.1` and run
      `tailscale serve --bg 4317`. Other devices on your tailnet then reach it over HTTPS.
@@ -101,6 +104,8 @@ the proxy's address. Requests that change data must be `application/json`, and t
 when present, must match the `Host` they were sent to.
 
 Forgot the password? Run `npm run set-password` again on the host; it does not ask for the old one.
+To remove it from the host instead (back to localhost-only access), run
+`npm run set-password -- --remove`; it needs no old password either.
 
 ## Using your Claude subscription (Claude Code)
 

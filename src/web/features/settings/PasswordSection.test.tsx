@@ -10,13 +10,18 @@ import { PasswordSection } from './PasswordSection.tsx';
 const OLD = 'old password 123';
 const NEXT = 'new password 456';
 
-let server: { password: string | null; posts: unknown[]; rateLimited: boolean };
+let server: {
+  password: string | null;
+  posts: unknown[];
+  deletes: unknown[];
+  rateLimited: boolean;
+};
 
 const error = (status: number, code: string, message: string) =>
   Response.json({ error: { code, message } }, { status });
 
 beforeEach(() => {
-  server = { password: null, posts: [], rateLimited: false };
+  server = { password: null, posts: [], deletes: [], rateLimited: false };
   vi.stubGlobal(
     'fetch',
     vi.fn((url: string, init?: RequestInit) => {
@@ -35,6 +40,19 @@ beforeEach(() => {
         server.password = body.next;
         return Promise.resolve(Response.json({ ok: true }));
       }
+      if (url === '/api/settings/password' && init?.method === 'DELETE') {
+        const body = JSON.parse(String(init.body)) as { current?: string };
+        server.deletes.push(body);
+        if (server.rateLimited) return Promise.resolve(error(429, 'rate_limited', 'Slow down'));
+        if (server.password === null) {
+          return Promise.resolve(error(409, 'conflict', 'No password is set'));
+        }
+        if (body.current !== server.password) {
+          return Promise.resolve(error(401, 'unauthorized', 'The current password is wrong'));
+        }
+        server.password = null;
+        return Promise.resolve(Response.json({ ok: true }));
+      }
       return Promise.resolve(error(404, 'not_found', url));
     }),
   );
@@ -47,7 +65,11 @@ afterEach(() => {
 });
 
 function renderSection() {
-  const auth: Auth = { passwordSet: false, logout: vi.fn(), passwordChanged: vi.fn() };
+  const auth: Auth = {
+    passwordSet: false,
+    logout: vi.fn(),
+    passwordChanged: vi.fn<(passwordSet: boolean) => void>(),
+  };
   render(
     <AuthContext value={auth}>
       <PasswordSection />
@@ -126,6 +148,40 @@ describe('PasswordSection', () => {
     expect(server.password).toBe(NEXT);
     expect(server.posts.at(-1)).toEqual({ current: OLD, next: NEXT });
     expect(auth.passwordChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes the password with the current one and switches back to setting one', async () => {
+    const user = userEvent.setup({ delay: null });
+    server.password = OLD;
+    const auth = renderSection();
+    const current = await screen.findByLabelText('Current password');
+    expect(
+      screen.getByText('Without a password Vibecode only answers on this machine (localhost).'),
+    ).toBeVisible();
+
+    // An empty current password is caught before sending.
+    await user.click(screen.getByRole('button', { name: 'Remove password' }));
+    expect(screen.getByText('Enter your current password.')).toBeVisible();
+    expect(current).toHaveFocus();
+    expect(server.deletes).toEqual([]);
+
+    await user.type(current, 'not it at all');
+    await user.click(screen.getByRole('button', { name: 'Remove password' }));
+    expect(await screen.findByText('The current password is wrong')).toBeVisible();
+    expect(current).toHaveAttribute('aria-invalid', 'true');
+    expect(server.password).toBe(OLD);
+
+    await user.clear(current);
+    await user.type(current, OLD);
+    await user.click(screen.getByRole('button', { name: 'Remove password' }));
+    expect(await screen.findByText(/Password removed\./)).toBeVisible();
+    expect(server.password).toBeNull();
+    expect(server.deletes.at(-1)).toEqual({ current: OLD });
+    expect(auth.passwordChanged).toHaveBeenLastCalledWith(false);
+    // Still in the app: the section now sets the first password again.
+    expect(await screen.findByRole('button', { name: 'Set password' })).toBeVisible();
+    expect(screen.getByText('No password is set.')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Remove password' })).toBeNull();
   });
 
   it('explains the rate limit', async () => {

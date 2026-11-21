@@ -71,9 +71,7 @@ export function removePassword({ env, log }: RemovePasswordOptions): Promise<num
       return 0;
     }
     access.clearPassword();
-    log(
-      `Password removed for ${dataDir}. Vibecode now answers only on this machine (localhost).`,
-    );
+    log(`Password removed for ${dataDir}. Vibecode now answers only on this machine (localhost).`);
     return 0;
   });
 }
