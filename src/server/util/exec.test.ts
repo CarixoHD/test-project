@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { redactor } from '../security/index.ts';
+import { isGone } from '../test-support/process.ts';
 import {
   exec,
   killAllChildren,
@@ -342,14 +343,6 @@ describe('terminateAllChildren', () => {
     }
     return probe();
   }
-  const isGone = (pid: number): boolean => {
-    try {
-      process.kill(pid, 0);
-      return false;
-    } catch (err) {
-      return (err as NodeJS.ErrnoException).code === 'ESRCH';
-    }
-  };
 
   it.skipIf(process.platform === 'win32')(
     'kills every live process group, grandchildren included, and resolves the runs with a signal',
@@ -370,6 +363,10 @@ describe('terminateAllChildren', () => {
       const runs = [start(), start()];
       await bothReady;
       expect(liveChildCount()).toBe(2);
+      for (const [pid = 0, grandchild = 0] of pids) {
+        expect(isGone(-pid)).toBe(false);
+        expect(isGone(grandchild)).toBe(false);
+      }
 
       await terminateAllChildren({ graceMs: 2_000 });
 
