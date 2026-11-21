@@ -22,6 +22,7 @@ import {
   type StreamOptions,
 } from '../util/exec.ts';
 import { redactor } from '../security/index.ts';
+import { isGone } from '../test-support/process.ts';
 import {
   AddressPoolsExhaustedError,
   DOCKER_ADDRESS_POOLS_EXHAUSTED,
@@ -1567,14 +1568,7 @@ describe('open and Sandbox', () => {
         killGraceMs,
         log: (l) => logs?.push(l),
       });
-    const alive = (pid: number) => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
+    const alive = (pid: number) => !isGone(pid);
     /** Runs a background `sleep 300` (a grandchild of the wrapper) and records its pid. */
     const SLEEPER = ['sh', '-c', 'sleep 300 & echo $! > child.pid; echo started; wait'];
     const childPid = async () => Number(await readFile(path.join(wt, 'child.pid'), 'utf8'));
