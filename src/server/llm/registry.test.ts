@@ -1,5 +1,5 @@
 import { generateText, streamText } from 'ai';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ModelRef } from '../../shared/models.ts';
 import {
   API_KEY_SECRETS,
@@ -136,6 +136,8 @@ describe('model registry', () => {
   ] as const)(
     '%s sends the stored key and keeps it out of the API error',
     async (provider, header, value, urlPrefix) => {
+      // The Anthropic SDK reads ANTHROPIC_BASE_URL from the environment; the sandbox sets it.
+      vi.stubEnv('ANTHROPIC_BASE_URL', undefined);
       const { fetch, requests } = recordingFetch(unauthorized);
       const m = model(
         { provider, model: 'm' },
