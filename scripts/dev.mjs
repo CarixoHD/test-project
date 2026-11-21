@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
+import { devApiOrigin } from './dev-proxy.mjs';
 import { nodeProblem } from './preflight.mjs';
 
 // The API child runs .ts via Node type stripping (ADR 0012): refuse to start without it.
@@ -52,7 +53,13 @@ const vite = await createServer({
     proxy: {
       '/api': {
         target: `http://127.0.0.1:${apiPort}`,
+        // Present /api requests to the loopback-only API as local, whatever Host the browser used.
+        changeOrigin: true,
         configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq, req) => {
+            const origin = devApiOrigin(req.headers.host, req.headers.origin, apiPort);
+            if (origin !== undefined) proxyReq.setHeader('origin', origin);
+          });
           // Keep SSE streaming: tell any intermediary not to buffer or transform event streams.
           proxy.on('proxyRes', (res) => {
             if (String(res.headers['content-type'] ?? '').startsWith('text/event-stream')) {
