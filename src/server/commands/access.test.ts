@@ -137,6 +137,81 @@ describe('access (owner password and sessions)', () => {
     expect(restarted.sessions.verify(kept)).toBe(true);
   });
 
+  it('removes the password with the right current one and ends every session', async () => {
+    const { access, store, secrets } = setup();
+    // Nothing to remove: 409 (the route answers 409 too).
+    expect(await access.removePassword({ current: PW }, 'c')).toMatchObject({
+      ok: false,
+      code: 'conflict',
+    });
+    await access.resetPassword(PW);
+    const session = access.sessions.issue();
+    expect(access.sessions.verify(session)).toBe(true);
+
+    expect(await access.removePassword({ current: PW2 }, 'c')).toMatchObject({
+      ok: false,
+      code: 'unauthorized',
+    });
+    expect(access.hasPassword()).toBe(true);
+
+    expect(await access.removePassword({ current: PW }, 'c')).toEqual({ ok: true });
+    expect(access.hasPassword()).toBe(false);
+    expect(store.q.setting(PASSWORD_HASH_SETTING)).toBeUndefined();
+    expect(access.sessions.verify(session)).toBe(false);
+    expect(secrets.get(SESSION_KEY_SECRET)).toBeDefined();
+    const events = store.eventsSince(0);
+    expect(events.map((e) => [e.type, e.data])).toEqual([
+      ['settings.changed', { sections: ['password'], keys: [] }],
+      ['settings.changed', { sections: ['password'], keys: [] }],
+    ]);
+    expect(JSON.stringify(events)).not.toContain('scrypt');
+    expectSnapshotMatchesReplay(store);
+  });
+
+  it('rate-limits current-password guesses on removal, like a change', async () => {
+    const { access } = setup();
+    await access.resetPassword(PW);
+    for (let i = 0; i < LOGIN_RATE_LIMIT.limit; i++) {
+      expect(await access.removePassword({ current: PW2 }, 'a')).toMatchObject({
+        ok: false,
+        code: 'unauthorized',
+      });
+    }
+    expect(await access.removePassword({ current: PW }, 'a')).toMatchObject({
+      ok: false,
+      code: 'rate_limited',
+    });
+    expect(access.hasPassword()).toBe(true);
+  });
+
+  it('refuses removal while bound to a non-loopback host (boot would then fail)', async () => {
+    const base = setupStore();
+    const access = createAccess({
+      store: base.store,
+      secrets: createSecrets(base),
+      clock: base.clock,
+      passwords: fastPasswordHasher,
+      bindHost: '0.0.0.0',
+    });
+    await access.resetPassword(PW);
+    expect(await access.removePassword({ current: PW }, 'c')).toMatchObject({
+      ok: false,
+      code: 'conflict',
+      reason: expect.stringMatching(/VIBECODE_HOST=0\.0\.0\.0/) as unknown,
+    });
+    expect(access.hasPassword()).toBe(true);
+  });
+
+  it('clears the password for the CLI without the current one', async () => {
+    const { access, store } = setup();
+    await access.resetPassword(PW);
+    const session = access.sessions.issue();
+    access.clearPassword();
+    expect(access.hasPassword()).toBe(false);
+    expect(access.sessions.verify(session)).toBe(false);
+    expect(store.q.setting(PASSWORD_HASH_SETTING)).toBeUndefined();
+  });
+
   it('records settings.changed{password} without the hash, and snapshot ≡ replay', async () => {
     const { access, store } = setup();
     await access.changePassword({ next: PW }, 'c');
