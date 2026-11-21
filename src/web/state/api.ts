@@ -22,6 +22,7 @@ import {
   type GitTokenView,
   type OkResponse,
   type PasswordChangeRequest,
+  type PasswordRemoveRequest,
   type ProductSettingsUpdateRequest,
   type SessionResponse,
   type SettingsResponse,
@@ -458,6 +459,19 @@ export function changePassword(
     method: 'POST',
     body,
     schema: OkResponseSchema,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** Removes the password; a wrong `current` is an ApiError with status 401, too many 429. */
+export function removePassword(current: string, signal?: AbortSignal): Promise<OkResponse> {
+  const body: PasswordRemoveRequest = { current };
+  return request('/api/settings/password', {
+    method: 'DELETE',
+    body,
+    schema: OkResponseSchema,
+    // A wrong current password is expected here, not a lost session.
+    expectUnauthorized: true,
     ...(signal ? { signal } : {}),
   });
 }

@@ -1,10 +1,11 @@
-// Sets (or resets) the owner password from the host: `npm run set-password`.
-// Reads the password from the terminal without echo, or from stdin when piped, never from argv
-// (argv is visible to other users in `ps`). Uses VIBECODE_DATA_DIR like the server, and works
-// while the server runs: it reads the password hash from the DB on every request.
+// Sets, resets or removes the owner password from the host: `npm run set-password`, or
+// `npm run set-password -- --remove` for a forgotten password. Reads the password from the
+// terminal without echo, or from stdin when piped, never from argv (argv is visible to other
+// users in `ps`). Uses VIBECODE_DATA_DIR like the server, and works while the server runs: it
+// reads the password hash from the DB on every request.
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { createAccess } from '../src/server/commands/index.ts';
+import { createAccess, type Access } from '../src/server/commands/index.ts';
 import { ensureDataDir, parseConfig } from '../src/server/config.ts';
 import { open } from '../src/server/db/index.ts';
 import { createSecrets, redactor } from '../src/server/security/index.ts';
@@ -17,8 +18,21 @@ export interface SetPasswordOptions {
   log: (line: string) => void;
 }
 
-/** Stores the password's scrypt hash and ends every session. Returns the exit code. */
-export async function setPassword({ env, password, log }: SetPasswordOptions): Promise<number> {
+export interface RemovePasswordOptions {
+  env: Record<string, string | undefined>;
+  log: (line: string) => void;
+}
+
+/** `--remove` switches the script from setting to removing the password. */
+export function modeFromArgs(argv: readonly string[]): 'set' | 'remove' {
+  return argv.includes('--remove') ? 'remove' : 'set';
+}
+
+/** Opens the data dir's DB and access for one command, then closes the connection. */
+async function withAccess<T>(
+  env: Record<string, string | undefined>,
+  run: (access: Access, dataDir: string) => Promise<T> | T,
+): Promise<T> {
   const config = parseConfig(env);
   ensureDataDir(config.dataDir);
   const db = open(config.dbPath);
@@ -26,16 +40,40 @@ export async function setPassword({ env, password, log }: SetPasswordOptions): P
     const clock = systemClock;
     const secrets = createSecrets({ db, clock, redactor });
     const store = createStore({ db, clock, redactor });
-    const result = await createAccess({ store, secrets, clock }).resetPassword(password);
+    return await run(createAccess({ store, secrets, clock }), config.dataDir);
+  } finally {
+    db.$client.close();
+  }
+}
+
+/** Stores the password's scrypt hash and ends every session. Returns the exit code. */
+export function setPassword({ env, password, log }: SetPasswordOptions): Promise<number> {
+  return withAccess(env, async (access, dataDir) => {
+    const result = await access.resetPassword(password);
     if (!result.ok) {
       log(`Password not set: ${result.reason}`);
       return 1;
     }
-    log(`Password set for ${config.dataDir}. Existing sessions were logged out.`);
+    log(`Password set for ${dataDir}. Existing sessions were logged out.`);
     return 0;
-  } finally {
-    db.$client.close();
-  }
+  });
+}
+
+/**
+ * Forgets the password without the old one and ends every session. Returns the exit code.
+ * Works regardless of VIBECODE_HOST: this is the recovery path, and boot then says clearly
+ * that the server needs a password or a loopback host.
+ */
+export function removePassword({ env, log }: RemovePasswordOptions): Promise<number> {
+  return withAccess(env, (access, dataDir) => {
+    if (!access.hasPassword()) {
+      log('No password is set; nothing to remove.');
+      return 0;
+    }
+    access.clearPassword();
+    log(`Password removed for ${dataDir}. Vibecode now answers only on this machine (localhost).`);
+    return 0;
+  });
 }
 
 async function readAll(stream: NodeJS.ReadableStream): Promise<string> {
@@ -72,11 +110,15 @@ async function readPassword(): Promise<string | null> {
 }
 
 if (import.meta.main) {
-  const password = await readPassword();
-  if (password === null) {
-    console.error('The passwords do not match; nothing was changed.');
-    process.exitCode = 1;
+  if (modeFromArgs(process.argv.slice(2)) === 'remove') {
+    process.exitCode = await removePassword({ env: process.env, log: console.log });
   } else {
-    process.exitCode = await setPassword({ env: process.env, password, log: console.log });
+    const password = await readPassword();
+    if (password === null) {
+      console.error('The passwords do not match; nothing was changed.');
+      process.exitCode = 1;
+    } else {
+      process.exitCode = await setPassword({ env: process.env, password, log: console.log });
+    }
   }
 }

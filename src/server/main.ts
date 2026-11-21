@@ -84,7 +84,7 @@ export async function start(
   // inboxHook turns owner-relevant events into inbox.created in the same commit (§4.2).
   const store = createStore({ db, clock, redactor, hooks: [inboxHook({ ids })] });
   // Owner password and sessions (ADR 9). Without a password only loopback may be bound.
-  const access = createAccess({ store, secrets, clock });
+  const access = createAccess({ store, secrets, clock, bindHost: config.host });
   try {
     assertBindAllowed(config.host, access.hasPassword());
   } catch (err) {

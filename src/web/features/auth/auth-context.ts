@@ -6,8 +6,11 @@ export interface Auth {
   passwordSet: boolean;
   /** Ends this browser's session and shows the Login page. */
   logout(): Promise<void>;
-  /** The password was set or changed from Settings (this browser holds the new session). */
-  passwordChanged(): void;
+  /**
+   * The password was set, changed or removed from Settings (this browser keeps its access).
+   * Without a password there is no Logout button and no Login page.
+   */
+  passwordChanged(passwordSet: boolean): void;
 }
 
 export const AuthContext = createContext<Auth | null>(null);

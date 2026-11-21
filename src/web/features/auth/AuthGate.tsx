@@ -66,7 +66,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
               await logout();
               setPhase({ kind: 'login', notice: null });
             },
-            passwordChanged: () => setPhase({ kind: 'in', passwordSet: true }),
+            passwordChanged: (passwordSet) => setPhase({ kind: 'in', passwordSet }),
           }
         : null,
     [phase],

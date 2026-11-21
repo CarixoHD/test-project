@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from '../../../shared/dto.ts';
-import { ApiError, changePassword, getSession } from '../../state/api.ts';
+import { ApiError, changePassword, getSession, removePassword } from '../../state/api.ts';
 import { Button, Field } from '../../ui/index.ts';
 import { useAuth } from '../auth/index.ts';
 
@@ -80,7 +80,7 @@ export function PasswordSection() {
           : 'Password set. Log in with it from now on.',
       );
       setPasswordSet(true);
-      auth?.passwordChanged();
+      auth?.passwordChanged(true);
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
         setAlert('Too many attempts. Wait a minute, then try again.');
@@ -89,6 +89,35 @@ export function PasswordSection() {
         showErrors(/current/i.test(err.message) ? { current: err.message } : { next: err.message });
       } else {
         setAlert(err instanceof Error ? err.message : 'Could not save the password.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    if (busy || passwordSet !== true) return;
+    setAlert(null);
+    setNotice('');
+    if (draft.current === '') {
+      showErrors({ current: 'Enter your current password.' });
+      return;
+    }
+    setErrors({});
+    setBusy(true);
+    try {
+      await removePassword(draft.current);
+      setDraft(EMPTY);
+      setNotice('Password removed. Vibecode now answers only on this machine (localhost).');
+      setPasswordSet(false);
+      auth?.passwordChanged(false);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 429) {
+        setAlert('Too many attempts. Wait a minute, then try again.');
+      } else if (err instanceof ApiError && (err.status === 400 || err.status === 401)) {
+        showErrors({ current: err.message });
+      } else {
+        setAlert(err instanceof Error ? err.message : 'Could not remove the password.');
       }
     } finally {
       setBusy(false);
@@ -136,10 +165,24 @@ export function PasswordSection() {
           <p role="alert" className="ui-field__error login__alert">
             {alert}
           </p>
+          {passwordSet ? (
+            <p className="settings-section__intro">
+              Without a password Vibecode only answers on this machine (localhost).
+            </p>
+          ) : null}
           <div className="settings-actions">
             <Button type="submit" variant="primary" aria-disabled={busy || undefined}>
               {passwordSet ? 'Change password' : 'Set password'}
             </Button>
+            {passwordSet ? (
+              <Button
+                variant="danger"
+                aria-disabled={busy || undefined}
+                onClick={() => void remove()}
+              >
+                Remove password
+              </Button>
+            ) : null}
           </div>
           <p role="status" className="settings-notice">
             {notice}

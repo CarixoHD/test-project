@@ -241,6 +241,12 @@ export const PasswordChangeRequestSchema = z.strictObject({
 });
 export type PasswordChangeRequest = z.infer<typeof PasswordChangeRequestSchema>;
 
+/** `DELETE /api/settings/password`: `current` proves ownership (required while one is set). */
+export const PasswordRemoveRequestSchema = z.strictObject({
+  current: z.string().max(PASSWORD_MAX_LENGTH).optional(),
+});
+export type PasswordRemoveRequest = z.infer<typeof PasswordRemoveRequestSchema>;
+
 /** `GET /api/session`. Without a password every (loopback) client counts as authenticated. */
 export const SessionResponseSchema = z.object({
   passwordSet: z.boolean(),
