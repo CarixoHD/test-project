@@ -21,11 +21,11 @@ import { deleteSetting, writeSetting, type Store } from '../store/index.ts';
 
 // Owner access (ADR 9, ARCHITECTURE §4.10): the scrypt password hash in `settings`
 // (PASSWORD_HASH_SETTING) and the session HMAC key in `secrets` (SESSION_KEY_SECRET).
-// Setting or changing the password rotates the key, which ends every existing session;
+// Setting, changing or removing the password rotates the key, which ends every existing session;
 // logging out revokes one session (SESSION_REVOKED_SECRET).
 
 export const PASSWORD_HASH_SETTING = 'passwordHash';
-/** Password guesses (login, current password on change) allowed per client per window. */
+/** Password guesses (login, current password on change/removal) allowed per client per window. */
 export const LOGIN_RATE_LIMIT = { limit: 5, windowMs: 60_000 } as const;
 
 const RATE_LIMITED = 'Too many attempts; try again in a minute';

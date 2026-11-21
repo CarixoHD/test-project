@@ -36,6 +36,7 @@ export {
   LOGIN_RATE_LIMIT,
   type LoginResult,
   type PasswordChangeResult,
+  type PasswordRemoveResult,
 } from './access.ts';
 export {
   createAccountSettings,
