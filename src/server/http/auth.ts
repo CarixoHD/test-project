@@ -4,6 +4,7 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import {
   LoginRequestSchema,
   PasswordChangeRequestSchema,
+  PasswordRemoveRequestSchema,
   type OkResponse,
   type SessionResponse,
 } from '../../shared/dto.ts';
@@ -121,6 +122,16 @@ export function registerAuthRoutes(app: Hono, access: Access, clientKey: ClientK
     if (!result.ok) return fail(result);
     // The change rotated the session key: every session ended, the caller gets a new one.
     startSession(c);
+    const body: OkResponse = { ok: true };
+    return c.json(body);
+  });
+
+  app.delete('/api/settings/password', async (c) => {
+    const input = PasswordRemoveRequestSchema.parse(await readJson(c));
+    const result = await access.removePassword(input, clientKey(c));
+    if (!result.ok) return fail(result);
+    // Without a password no session is needed; the rotated key already invalidated this one.
+    deleteCookie(c, SESSION_COOKIE, sessionCookieOptions(isHttps(c)));
     const body: OkResponse = { ok: true };
     return c.json(body);
   });

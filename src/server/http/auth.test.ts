@@ -16,7 +16,7 @@ const PW = 'correct horse battery';
 const LOCAL = 'http://localhost:4317';
 const JSON_HEADERS = { 'content-type': 'application/json' };
 
-function setup() {
+function setup(bindHost?: string) {
   const base = setupStore();
   const secrets = createSecrets(base);
   const access = createAccess({
@@ -24,6 +24,7 @@ function setup() {
     secrets,
     clock: base.clock,
     passwords: fastPasswordHasher,
+    ...(bindHost === undefined ? {} : { bindHost }),
   });
   const app = createApp({
     store: base.store,
@@ -41,11 +42,17 @@ function setup() {
       headers: { ...JSON_HEADERS, ...headers },
       body: JSON.stringify(body),
     });
+  const del = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+    req(path, {
+      method: 'DELETE',
+      headers: { ...JSON_HEADERS, ...headers },
+      body: JSON.stringify(body),
+    });
   const login = async (password = PW, headers: Record<string, string> = {}) => {
     const res = await post('/api/login', { password }, headers);
     return { res, cookie: sessionCookie(res) };
   };
-  return { ...base, access, app, req, post, login };
+  return { ...base, access, app, req, post, del, login };
 }
 
 /** `name=value` of the session cookie a response sets, or undefined. */
@@ -321,6 +328,71 @@ describe('POST /api/settings/password', () => {
     expect((await req('/api/state', { headers })).status).toBe(401);
     const fresh = sessionCookie(ok) ?? '';
     expect((await req('/api/state', { headers: { cookie: fresh } })).status).toBe(200);
+  });
+});
+
+describe('DELETE /api/settings/password', () => {
+  const WRONG = 'wrong password!!';
+
+  it('removes the password with the right current one and stays loopback-only after', async () => {
+    const { access, del, login, req } = setup();
+    await access.resetPassword(PW);
+    const { cookie = '' } = await login();
+    expect((await req('/api/state', { headers: { cookie } })).status).toBe(200);
+
+    const res = await del('/api/settings/password', { current: PW }, { cookie });
+    expect(res.status).toBe(200);
+    expect(access.hasPassword()).toBe(false);
+
+    // The removed password ended the session: its cookie no longer verifies.
+    expect(access.sessions.verify(cookie.slice(cookie.indexOf('=') + 1))).toBe(false);
+    expect(await session(await req('/api/session'))).toEqual({
+      passwordSet: false,
+      authenticated: true,
+    });
+    // The existing loopback-only rule still applies without a password.
+    expect((await req('/api/session', { headers: { host: 'evil.example' } })).status).toBe(403);
+  });
+
+  it('rejects a wrong current password with 401 and counts the guesses toward the limit', async () => {
+    const { access, del, login } = setup();
+    await access.resetPassword(PW);
+    const { cookie = '' } = await login();
+    const headers = { cookie, 'x-test-client': 'a' };
+    for (let i = 0; i < LOGIN_RATE_LIMIT.limit; i++) {
+      const res = await del('/api/settings/password', { current: WRONG }, headers);
+      expect(res.status, `guess ${String(i + 1)}`).toBe(401);
+      expect(await errorCode(res)).toBe('unauthorized');
+    }
+    const limited = await del('/api/settings/password', { current: PW }, headers);
+    expect(limited.status).toBe(429);
+    expect(await errorCode(limited)).toBe('rate_limited');
+    expect(access.hasPassword()).toBe(true);
+  });
+
+  it('answers 409 when no password is set', async () => {
+    const { del } = setup();
+    const res = await del('/api/settings/password', { current: PW });
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe('conflict');
+  });
+
+  it('needs a session once a password is set', async () => {
+    const { access, del } = setup();
+    await access.resetPassword(PW);
+    expect((await del('/api/settings/password', { current: PW })).status).toBe(401);
+  });
+
+  it('refuses with 409 and a plain reason on a non-loopback bind', async () => {
+    const { access, del, login } = setup('0.0.0.0');
+    await access.resetPassword(PW);
+    const { cookie = '' } = await login();
+    const res = await del('/api/settings/password', { current: PW }, { cookie });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error.code).toBe('conflict');
+    expect(body.error.message).toMatch(/VIBECODE_HOST=0\.0\.0\.0/);
+    expect(access.hasPassword()).toBe(true);
   });
 });
 
