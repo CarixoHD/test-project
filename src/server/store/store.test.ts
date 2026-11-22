@@ -172,7 +172,8 @@ describe('store.commit', () => {
   it('reports subscriber errors to console.error, redacted, by default', () => {
     const { store, redactor } = setup();
     redactor.register(SECRET);
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Observe only: the redacted line also reaches the test output.
+    const spy = vi.spyOn(console, 'error');
     try {
       store.subscribe(() => {
         throw new Error(`leaked ${SECRET}`);
