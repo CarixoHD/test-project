@@ -17,6 +17,8 @@ export function selectRuntime(
   if (config.fakeDocker) {
     return new FakeContainerRuntime({
       dataDir: config.dataDir,
+      // VIBECODE_FAKE_DOCKER means no Docker: Claude Code runs fail with a plain message.
+      withoutDocker: true,
       ...(o.script === undefined ? {} : { script: o.script }),
     });
   }

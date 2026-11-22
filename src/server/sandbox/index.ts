@@ -38,6 +38,7 @@ export {
   type PathResult,
 } from './file-ops.ts';
 export {
+  CLAUDE_NEEDS_DOCKER,
   FakeContainerRuntime,
   type FakeCall,
   type FakeContainerRuntimeOptions,

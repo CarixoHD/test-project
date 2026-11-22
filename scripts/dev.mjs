@@ -1,10 +1,11 @@
 // Dev runner (docs/ARCHITECTURE.md §8): API in demo mode on 127.0.0.1:$PORT+1 with `node --watch`,
 // Vite on 0.0.0.0:$PORT proxying /api to it. Stops both on exit.
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import { devApiOrigin } from './dev-proxy.mjs';
+import { chooseContainerRuntime, containerRuntimeLabel } from './dev-runtime.mjs';
 import { nodeProblem } from './preflight.mjs';
 
 // The API child runs .ts via Node type stripping (ADR 0012): refuse to start without it.
@@ -31,6 +32,14 @@ const apiPort = uiPort + 1;
 
 mkdirSync(new URL(`../${DATA_DIR}`, import.meta.url), { recursive: true });
 
+// Claude Code needs a real container runtime, so use Docker when the daemon answers (issue #206).
+const dockerReachable = await new Promise((resolve) => {
+  execFile('docker', ['info'], { timeout: 2_000 }, (err) => {
+    resolve(err === null);
+  });
+});
+const containers = chooseContainerRuntime(process.env, dockerReachable);
+
 const api = spawn(process.execPath, ['--watch', 'src/server/main.ts'], {
   cwd: ROOT,
   stdio: 'inherit',
@@ -39,7 +48,7 @@ const api = spawn(process.execPath, ['--watch', 'src/server/main.ts'], {
     VIBECODE_HOST: '127.0.0.1',
     VIBECODE_PORT: String(apiPort),
     VIBECODE_DEMO: '1',
-    VIBECODE_FAKE_DOCKER: '1',
+    VIBECODE_FAKE_DOCKER: containers === 'fake' ? '1' : '',
     VIBECODE_DATA_DIR: DATA_DIR,
   },
 });
@@ -95,3 +104,4 @@ process.on('exit', () => {
 
 await vite.listen();
 console.log(`Vibecode dev: UI http://0.0.0.0:${uiPort}  API http://127.0.0.1:${apiPort}`);
+console.log(containerRuntimeLabel(containers, dockerReachable));

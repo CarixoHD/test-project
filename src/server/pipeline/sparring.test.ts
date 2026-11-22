@@ -6,6 +6,7 @@ import type { Event, EventDraft, EventOf } from '../../shared/events.ts';
 import { ProductIdSchema, type ProductId } from '../../shared/ids.ts';
 import { open } from '../db/index.ts';
 import type { FakeScript } from '../llm/index.ts';
+import { selectRuntime } from '../sandbox/index.ts';
 import { Redactor } from '../security/index.ts';
 import { createStore } from '../store/index.ts';
 import { expectSnapshotMatchesReplay } from '../store/testing.ts';
@@ -188,6 +189,37 @@ describe('sparTurn', () => {
     expect(ofType(events, 'spar.message')[0]?.data.text).toMatch(/Choose a model in Settings/);
     expect(ofType(events, 'inbox.created')[0]?.data.kind).toBe('error');
     expectSnapshotMatchesReplay(store);
+  });
+
+  it('fails a Claude Code turn with a plain Docker message on the fake runtime', async () => {
+    const { store, deps, events } = setup([], {
+      models: { sparring: { provider: 'claude-code', model: 'sonnet' } },
+    });
+    deps.runtime = selectRuntime({ fakeDocker: true, dataDir: path.dirname(logsDir) });
+    deps.dataDir = path.dirname(logsDir);
+
+    await sparTurn(deps, P, 'I want a todo app');
+
+    const text = ofType(events, 'spar.message')[0]?.data.text ?? '';
+    expect(text).toContain('Claude Code needs Docker');
+    expect(text).toMatch(/pick an API-key model in Settings/);
+    expect(text).not.toContain('no script entry');
+    expect(ofType(events, 'inbox.created')[0]?.data.body).toBe(text);
+    expect(ofType(events, 'agent.spawned')).toEqual([]);
+    expectSnapshotMatchesReplay(store);
+  });
+
+  it('still answers from the fake script in demo mode with no model configured', async () => {
+    const { deps, events } = setup([finish({ reply: 'Who will use it?' })], {
+      models: {},
+      demo: true,
+    });
+    deps.runtime = selectRuntime({ fakeDocker: true, dataDir: path.dirname(logsDir) });
+    deps.dataDir = path.dirname(logsDir);
+
+    await sparTurn(deps, P, 'I want a todo app');
+
+    expect(ofType(events, 'spar.message')[0]?.data.text).toBe('Who will use it?');
   });
 
   it('writes the agent log under logsDir', async () => {

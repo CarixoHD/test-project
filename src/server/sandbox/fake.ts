@@ -68,7 +68,17 @@ export type FakeContainerRuntimeOptions = {
   isAvailable?: boolean;
   /** Where claude-code.Dockerfile (and base.Dockerfile) are read for the Claude tag; default docker/. */
   baseImageDir?: string;
+  /**
+   * True when the fake stands in for a server without Docker (selectRuntime with
+   * VIBECODE_FAKE_DOCKER): Claude Code cannot run, so its image is refused instead of scripted.
+   */
+  withoutDocker?: boolean;
 };
+
+/** The plain-language failure for a Claude Code run on a server without Docker (issue #206). */
+export const CLAUDE_NEEDS_DOCKER =
+  'Claude Code needs Docker, but this server runs without it (VIBECODE_FAKE_DOCKER=1). ' +
+  'Start Vibecode with Docker, or pick an API-key model in Settings.';
 
 const DEFAULT_ID = 1000;
 const NOT_FOUND = 127;
@@ -84,6 +94,7 @@ export class FakeContainerRuntime implements ContainerRuntime, ClaudeLoginSource
   readonly #host: HostIdentity;
   readonly #script: readonly FakeRunRule[];
   readonly #isAvailable: boolean;
+  readonly #withoutDocker: boolean;
   readonly #imageDir: string;
   readonly #open = new Map<string, SandboxSpec>();
   /** `docker run` args (buildRunArgs) of every container started, by name. */
@@ -95,6 +106,7 @@ export class FakeContainerRuntime implements ContainerRuntime, ClaudeLoginSource
     this.#host = { dataDir: o.dataDir, uid: o.uid ?? DEFAULT_ID, gid: o.gid ?? DEFAULT_ID };
     this.#script = o.script ?? [];
     this.#isAvailable = o.isAvailable ?? true;
+    this.#withoutDocker = o.withoutDocker ?? false;
     this.#imageDir = o.baseImageDir ?? DEFAULT_BASE_IMAGE_DIR;
   }
 
@@ -110,6 +122,8 @@ export class FakeContainerRuntime implements ContainerRuntime, ClaudeLoginSource
    */
   async ensureImage(p: EnsureImageParams): Promise<string> {
     const claude = p.claude === true;
+    // Fail before any exec with a plain message, never the fake's "no script entry" text.
+    if (claude && this.#withoutDocker) throw new Error(CLAUDE_NEEDS_DOCKER);
     this.calls.push({
       kind: 'ensureImage',
       productId: p.productId,

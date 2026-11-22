@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 type Kind = 'docker' | 'fake';
 type DevRuntime = {
-  chooseContainerRuntime: (env: Record<string, string | undefined>, dockerReachable: boolean) => Kind;
+  chooseContainerRuntime: (
+    env: Record<string, string | undefined>,
+    dockerReachable: boolean,
+  ) => Kind;
   containerRuntimeLabel: (kind: Kind, dockerReachable: boolean) => string;
 };
 
@@ -35,9 +38,7 @@ describe('containerRuntimeLabel', () => {
   });
 
   it('says why the fake runtime is in use', () => {
-    expect(containerRuntimeLabel('fake', false)).toBe(
-      'Containers: fake (Docker not reachable)',
-    );
+    expect(containerRuntimeLabel('fake', false)).toBe('Containers: fake (Docker not reachable)');
     expect(containerRuntimeLabel('fake', true)).toBe('Containers: fake (VIBECODE_FAKE_DOCKER=1)');
   });
 });
