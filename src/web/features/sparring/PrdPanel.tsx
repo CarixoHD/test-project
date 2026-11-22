@@ -3,7 +3,7 @@ import { PRD_MARKDOWN_MAX } from '../../../shared/dto.ts';
 import type { ProductId } from '../../../shared/ids.ts';
 import type { PrdDraft, PrdVersionMeta, SparMessage } from '../../../shared/state.ts';
 import { ApiError, savePrdDraft } from '../../state/api.ts';
-import { useApp, useAppStore, type AppSnapshot } from '../../state/store.ts';
+import { useApp, type AppSnapshot } from '../../state/store.ts';
 import { Button, Field, Markdown } from '../../ui/index.ts';
 import { describeAuthor, draftAuthor } from './draft-author.ts';
 
@@ -29,7 +29,6 @@ export function PrdPanel({ productId }: { productId: ProductId }) {
   const draft = useApp((s: AppSnapshot) => s.state.prdDrafts[productId] ?? null);
   const messages = useApp((s: AppSnapshot) => s.state.sparMessages[productId] ?? NO_MESSAGES);
   const versions = useApp((s: AppSnapshot) => s.state.prdVersions[productId] ?? NO_VERSIONS);
-  const store = useAppStore();
 
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState('');
@@ -86,8 +85,6 @@ export function PrdPanel({ productId }: { productId: ProductId }) {
       await savePrdDraft(productId, text);
       setPending({ markdown: text, replaces: draft });
       stopEditing();
-      // The draft's own event can lag over SSE; Hand off must see the saved draft now.
-      void store.refresh?.();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not save the draft.');
     } finally {
