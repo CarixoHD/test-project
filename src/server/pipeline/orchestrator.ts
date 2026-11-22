@@ -45,6 +45,11 @@ export function isAllowedOrchestratorPath(p: string): boolean {
 export interface OrchestratorDeps extends RecordedRunContext {
   git: Git;
   runtime: ContainerRuntime;
+  /**
+   * Demo mode: a run whose model is the fake provider uses this runtime instead, so demo work
+   * needs no Docker (and starts no containers next to the dev server's browser, issue #206).
+   */
+  demoRuntime?: ContainerRuntime;
   modelDeps: ModelDeps;
   /** The scheduler's per-product merge lock. */
   withMergeLock: <T>(productId: ProductId, fn: () => Promise<T>) => Promise<T>;
@@ -150,17 +155,19 @@ async function orchestrate(
   });
   if (!resolved.ok) return failed(resolved.reason);
   const model = resolved.model;
+  // Demo (fake model) work runs on the demo runtime: no Docker needed for a scripted agent.
+  const runtime = model.provider === 'fake' ? (deps.demoRuntime ?? deps.runtime) : deps.runtime;
   const wt = await deps.git.addWorktree(productId, run.runId);
   let sandbox: Sandbox | undefined;
   try {
     // Claude Code: the derived image FROM the product image, plus the CLI login volume (ADR 4).
     const claude = model.provider === 'claude-code';
-    const image = await deps.runtime.ensureImage({
+    const image = await runtime.ensureImage({
       productId,
       contextDir: wt.dir,
       ...(claude ? { claude } : {}),
     });
-    sandbox = await deps.runtime.open({
+    sandbox = await runtime.open({
       runId: run.runId,
       productId,
       role: 'agent',
@@ -200,7 +207,7 @@ async function orchestrate(
       return { kind: 'limited', limit: limitOf(result, agentFailure(result)), retryAt };
     }
     if (result.kind !== 'ok') return failed(agentFailure(result));
-    return await land(deps, productId, wt, result.result, triggers, consumedSeq);
+    return await land(deps, runtime, productId, wt, result.result, triggers, consumedSeq);
   } finally {
     // Cleanup failures must not turn a landed plan into a failed run (backoff, error inbox).
     await cleanup(deps, 'close the orchestrator sandbox', () => sandbox?.close());
@@ -241,6 +248,7 @@ function assertNever(x: never): never {
 /** Host-side checks of the agent's work, then merge to main and apply the plan. */
 async function land(
   deps: OrchestratorDeps,
+  runtime: ContainerRuntime,
   productId: ProductId,
   wt: Worktree,
   plan: PlanResult,
@@ -263,7 +271,7 @@ async function land(
   if (!project.ok) return failed(project.reason);
   if (commit.sha !== null) {
     try {
-      await deps.runtime.ensureImage({ productId, contextDir: wt.dir });
+      await runtime.ensureImage({ productId, contextDir: wt.dir });
     } catch (err) {
       return failed(`image build failed: ${errorText(err)}`);
     }

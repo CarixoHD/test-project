@@ -8,7 +8,7 @@ import {
   type ReviewResult,
 } from '../../shared/agent-results.ts';
 import type { AgentId, IssueId, ProductId } from '../../shared/ids.ts';
-import type { Role } from '../../shared/models.ts';
+import type { ModelRef, Role } from '../../shared/models.ts';
 import type { IssueState } from '../../shared/state.ts';
 import { toolsForRole, type AgentLimits, type AgentResult } from '../agents/index.ts';
 import type { Git, Worktree } from '../git/index.ts';
@@ -69,6 +69,11 @@ const CHECK_FEEDBACK_LINES = 200;
 export interface AttemptDeps extends RecordedRunContext {
   git: Git;
   runtime: ContainerRuntime;
+  /**
+   * Demo mode: a run whose model is the fake provider uses this runtime instead, so demo work
+   * needs no Docker (and starts no containers next to the dev server's browser, issue #206).
+   */
+  demoRuntime?: ContainerRuntime;
   modelDeps: ModelDeps;
   /** The scheduler's per-product merge lock. */
   withMergeLock: <T>(productId: ProductId, fn: () => Promise<T>) => Promise<T>;
@@ -91,9 +96,15 @@ type Ctx = AttemptRef & {
   artifacts: string;
   /** Warm sandboxes still open; closed in `finally`. */
   sandboxes: Set<Sandbox>;
+  /** The runtime the last agent ran on; its check runs there too. */
+  runRuntime?: ContainerRuntime;
 };
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** The runtime for a role's model: the demo fake for fake models, the server runtime otherwise. */
+const runtimeFor = (deps: AttemptDeps, model: ModelRef): ContainerRuntime =>
+  model.provider === 'fake' ? (deps.demoRuntime ?? deps.runtime) : deps.runtime;
 
 export async function runAttempt(deps: AttemptDeps, issueId: IssueId, run: RunHandle) {
   const issue = deps.store.q.issue(issueId);
@@ -271,15 +282,18 @@ async function runAgentIn<T>(
   const resolved = resolveModel(deps.store, ctx.productId, role, { demo: deps.demo === true });
   if (!resolved.ok) return resolved;
   const model = resolved.model;
+  // Demo (fake model) work runs on the demo runtime: no Docker needed for a scripted agent.
+  const runtime = runtimeFor(deps, model);
+  ctx.runRuntime = runtime;
   // Claude Code runs in the derived image with the CLI login volume, and needs egress to reach
   // Anthropic even for the reviewer (ADR 4); its mount stays read-only.
   const claude = model.provider === 'claude-code';
-  const image = await deps.runtime.ensureImage({
+  const image = await runtime.ensureImage({
     productId: ctx.productId,
     contextDir: o.worktree,
     ...(claude ? { claude } : {}),
   });
-  const sandbox = await deps.runtime.open({
+  const sandbox = await runtime.open({
     runId: o.runId,
     productId: ctx.productId,
     role: 'agent',
@@ -348,9 +362,10 @@ async function runCheck(
   logName: string,
 ): Promise<CheckRun> {
   const { deps } = ctx;
-  const image = await deps.runtime.ensureImage({ productId: ctx.productId, contextDir: worktree });
+  const runtime = ctx.runRuntime ?? deps.runtime;
+  const image = await runtime.ensureImage({ productId: ctx.productId, contextDir: worktree });
   const lines: string[] = [];
-  const r: ExecResult = await deps.runtime.runOnce(
+  const r: ExecResult = await runtime.runOnce(
     {
       runId: deps.ids.next('run'),
       productId: ctx.productId,

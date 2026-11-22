@@ -26,7 +26,7 @@ import {
   type OrchestratorDeps,
 } from './pipeline/index.ts';
 import { recover } from './recovery/index.ts';
-import { createPreviews, selectRuntime } from './sandbox/index.ts';
+import { createPreviews, FakeContainerRuntime, selectRuntime } from './sandbox/index.ts';
 import { assertBindAllowed, createSecrets, redactor } from './security/index.ts';
 import { createStore, type Store } from './store/index.ts';
 import { systemClock, type Clock } from './util/clock.ts';
@@ -117,6 +117,12 @@ export async function start(
     ...(config.demo ? { script: DEMO_RUNTIME_SCRIPT } : {}),
     ...(options.dockerCommand === undefined ? {} : { docker: options.dockerCommand }),
   });
+  // Demo (fake model) runs use an in-memory runtime: they need no Docker, and starting containers
+  // next to the dev server's browser makes Chromium abort page loads (issue #206).
+  const demoRuntime =
+    config.demo && !config.fakeDocker
+      ? new FakeContainerRuntime({ dataDir: config.dataDir, script: DEMO_RUNTIME_SCRIPT })
+      : undefined;
   const sparring = createSparring({
     store,
     ids,
@@ -205,6 +211,7 @@ export async function start(
       pusher.request(productId);
     },
     demo: config.demo,
+    ...(demoRuntime === undefined ? {} : { demoRuntime }),
     ...(orchestratorBackoff === undefined ? {} : { backoff: orchestratorBackoff }),
   });
   const scheduler = createScheduler({
@@ -231,6 +238,7 @@ export async function start(
             },
             withMergeLock: (productId, fn) => scheduler.withMergeLock(productId, fn),
             demo: config.demo,
+            ...(demoRuntime === undefined ? {} : { demoRuntime }),
           },
           issueId,
           run,

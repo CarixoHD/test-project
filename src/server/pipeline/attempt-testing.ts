@@ -10,7 +10,12 @@ import { open } from '../db/index.ts';
 import { inboxHook } from '../notify/index.ts';
 import { createGit, type Git } from '../git/index.ts';
 import type { FakeScript } from '../llm/index.ts';
-import { FakeContainerRuntime, type FakeRunRule, type SandboxSpec } from '../sandbox/index.ts';
+import {
+  FakeContainerRuntime,
+  selectRuntime,
+  type FakeRunRule,
+  type SandboxSpec,
+} from '../sandbox/index.ts';
 import type { RunHandle } from '../scheduler/index.ts';
 import { Redactor } from '../security/index.ts';
 import { createStore, type Store } from '../store/index.ts';
@@ -50,6 +55,11 @@ export type HarnessOptions = {
   runtimeScript?: (specs: readonly SpecCall[]) => FakeRunRule[];
   /** Install the real inbox commit hook (notify/), as main.ts does. */
   inbox?: boolean;
+  /**
+   * The server's runtime is Docker with a missing CLI, and `demoRuntime` is the fake below:
+   * a demo (fake-model) attempt must still run on the fake.
+   */
+  dockerMissing?: boolean;
 };
 
 export type Harness = {
@@ -163,7 +173,10 @@ export async function setupAttempt(dataDir: string, o: HarnessOptions = {}): Pro
     artifactsDir: path.join(dataDir, 'artifacts'),
     setTimer: () => () => {},
     git,
-    runtime,
+    runtime: o.dockerMissing
+      ? selectRuntime({ fakeDocker: false, dataDir }, { docker: '/nonexistent/vibecode-no-docker' })
+      : runtime,
+    ...(o.dockerMissing ? { demoRuntime: runtime } : {}),
     modelDeps: {
       getSecret: () => undefined,
       // Read once per agent, when its model is created (right after agent.spawned).

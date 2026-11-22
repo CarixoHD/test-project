@@ -67,6 +67,19 @@ describe('runAttempt: happy path', () => {
     expect(events.at(-1)?.type).toBe('attempt.ended');
   });
 
+  it('runs a demo (fake model) attempt on the fake runtime when Docker is missing', async () => {
+    const h = await setup({ dockerMissing: true });
+    const id = h.addIssue('Scaffold');
+
+    await h.run(id);
+
+    // The unavailable Docker runtime was never used: agent and check ran on the demo fake.
+    expect(h.store.q.issue(id)?.status).toBe('completed');
+    expect(h.runtime.calls.some((c) => c.kind === 'open')).toBe(true);
+    expect(h.runtime.calls.some((c) => c.kind === 'runOnce')).toBe(true);
+    expect(await h.git.readFileAtMain(P, 'issue-1.txt')).toBe('work for #1\n');
+  });
+
   it('runs checks with network none and the reviewer on a read-only mount', async () => {
     const h = await setup();
     await h.run(h.addIssue('Scaffold'));

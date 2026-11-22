@@ -276,7 +276,17 @@ describe('start (composition root)', () => {
       dockerCommand: join(root, 'no-docker'),
     });
     const base = `http://127.0.0.1:${String(running.address.port)}`;
-    const productId = await createProduct(base);
+    const productId = ProductIdSchema.parse(await createProduct(base));
+    // Demo (fake model) runs need no Docker now: only a Claude Code run reaches the runtime.
+    running.store.commit(() => [
+      {
+        type: 'product.settings_changed',
+        productId,
+        entityId: null,
+        v: 1,
+        data: { models: { orchestrator: { provider: 'claude-code', model: 'sonnet' } } },
+      },
+    ]);
     const events = await fetch(`${base}/api/events?since=0`);
 
     handOff(running, productId);
@@ -351,7 +361,17 @@ describe('start (composition root)', () => {
       },
     });
     const base = `http://127.0.0.1:${String(running.address.port)}`;
-    const productId = await createProduct(base);
+    const productId = ProductIdSchema.parse(await createProduct(base));
+    // Demo (fake model) runs need no Docker now: only a Claude Code run reaches the runtime.
+    running.store.commit(() => [
+      {
+        type: 'product.settings_changed',
+        productId,
+        entityId: null,
+        v: 1,
+        data: { models: { orchestrator: { provider: 'claude-code', model: 'sonnet' } } },
+      },
+    ]);
 
     handOff(running, productId);
     await waitFor(() => finished >= 1);
