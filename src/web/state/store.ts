@@ -34,6 +34,12 @@ export interface AppStore {
   /** Connects; returns the matching stop function. Safe to start again after stopping. */
   start(): () => void;
   /**
+   * Rebuilds the state from GET /api/state, e.g. after an owner command whose own event may
+   * still be in flight (or was missed while the stream reconnected). Resolves when it is done.
+   * Optional so a read-only store double need not implement it.
+   */
+  refresh?(): Promise<void>;
+  /**
    * Calls `listener` after each new event from the live stream is applied. Not called for the
    * snapshot or for events buffered while it loaded (history, e.g. no notifications for them).
    * Returns the unsubscribe function.
@@ -154,8 +160,10 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
   }
 
   async function loadSnapshot(gen: number): Promise<void> {
-    // Everything buffered so far is already committed, so the snapshot requested now
-    // contains it: only events that arrive after this point need replaying.
+    // Everything committed before the request is in the snapshot; events committed while it is
+    // in flight are buffered (`synced` is false) and replayed after it.
+    const wasSynced = synced;
+    synced = false;
     buffer = [];
     snapshotAbort = new AbortController();
     try {
@@ -170,6 +178,7 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
       update({ status: liveStatus() });
     } catch (err) {
       if (gen !== generation) return;
+      synced = wasSynced;
       snapshotAttempts += 1;
       update({ status: 'offline', error: describeError(err) });
       const delay = Math.min(retryDelayMs * 2 ** (snapshotAttempts - 1), MAX_RETRY_DELAY_MS);
@@ -219,6 +228,9 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
       connect();
       return disconnect;
     },
+    refresh() {
+      return loadSnapshot(generation);
+    },
     onLiveEvent(listener) {
       liveListeners.add(listener);
       return () => {
@@ -258,4 +270,11 @@ export function useApp<T>(selector: (s: AppSnapshot) => T): T {
   if (store === null) throw new Error('useApp must be used inside <AppStoreProvider>');
   const getSelected = useCallback(() => selector(store.getSnapshot()), [store, selector]);
   return useSyncExternalStore(store.subscribe, getSelected, getSelected);
+}
+
+/** The store itself, for `refresh()` after an owner command (e.g. a create or a PRD save). */
+export function useAppStore(): AppStore {
+  const store = useContext(AppStoreContext);
+  if (store === null) throw new Error('useAppStore must be used inside <AppStoreProvider>');
+  return store;
 }

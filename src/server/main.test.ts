@@ -130,7 +130,7 @@ describe('start (composition root)', () => {
     expect(spar.status).toBe(202);
     const closing = running.close();
     running = undefined;
-    await new Promise((done) => setTimeout(done, 50));
+    // close() has begun (it is waiting for the gated turn); let the turn commit.
     release();
     await closing;
 
@@ -261,7 +261,7 @@ describe('start (composition root)', () => {
     } finally {
       await new Promise((done) => remote.close(done));
     }
-  }, 30_000);
+  });
 
   it('without fake Docker the orchestrator run fails with the actionable reason; the server stays up', async () => {
     root = mkdtempSync(join(tmpdir(), 'vibecode-main-'));
@@ -375,11 +375,10 @@ describe('start (composition root)', () => {
 
     handOff(running, productId);
     await waitFor(() => finished >= 1);
-    // Any commit makes the scheduler tick.
+    // Any commit ticks the scheduler synchronously from store.subscribe, so the outcome is
+    // already decided when nudge() returns.
     nudge(running);
-    await new Promise((done) => setTimeout(done, 200));
     nudge(running);
-    await new Promise((done) => setTimeout(done, 200));
 
     expect(Math.min(started, 2)).toBe(runs);
   });
@@ -580,7 +579,7 @@ describe('closeOnSignals (graceful shutdown)', () => {
       // close() never settles: a stuck shutdown.
       closeOnSignals({ close: () => new Promise<void>(() => {}) }, proc, () => {});
       emitter.emit(first);
-      await new Promise((done) => setTimeout(done, 20));
+      // The first signal's handler has run synchronously: shutdown is in progress, no exit yet.
       expect(exits).toEqual([]);
       emitter.emit(second);
       expect(exits).toEqual([code]);

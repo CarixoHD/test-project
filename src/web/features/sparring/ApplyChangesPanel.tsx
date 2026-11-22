@@ -2,7 +2,7 @@ import { useId, useState } from 'react';
 import type { ProductId } from '../../../shared/ids.ts';
 import type { PrdVersionMeta } from '../../../shared/state.ts';
 import { ApiError, applyPrdChanges } from '../../state/api.ts';
-import { useApp, type AppSnapshot } from '../../state/store.ts';
+import { useApp, useAppStore, type AppSnapshot } from '../../state/store.ts';
 import { Button, Dialog } from '../../ui/index.ts';
 import { hasUnappliedChanges } from './draft-author.ts';
 
@@ -23,6 +23,7 @@ export function ApplyChangesPanel({ productId }: { productId: ProductId }) {
   const [isSending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const hintId = useId();
+  const store = useAppStore();
 
   const latest = versions.at(-1)?.version ?? 0;
   const unapplied = hasUnappliedChanges(draft, versions);
@@ -40,6 +41,8 @@ export function ApplyChangesPanel({ productId }: { productId: ProductId }) {
     try {
       await applyPrdChanges(productId);
       setConfirming(false);
+      // The PRD version can arrive late over SSE; read it from the server.
+      void store.refresh?.();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not apply the changes.');
     } finally {

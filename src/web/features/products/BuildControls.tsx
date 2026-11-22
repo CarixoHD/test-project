@@ -1,6 +1,7 @@
 import { useId, useState } from 'react';
 import type { PreviewState, ProductState } from '../../../shared/state.ts';
 import { ApiError, pauseProduct, resumeProduct } from '../../state/api.ts';
+import { useAppStore } from '../../state/store.ts';
 import { Button, StatusBadge, type BadgeTone } from '../../ui/index.ts';
 import { PreviewControls } from './PreviewControls.tsx';
 
@@ -32,6 +33,7 @@ export function BuildControls({
 }) {
   const [isSending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const store = useAppStore();
   const statusId = useId();
   const status = pauseStatus(product);
   const canToggle = product.paused || product.phase !== 'sparring';
@@ -42,6 +44,8 @@ export function BuildControls({
     setError(null);
     try {
       await (product.paused ? resumeProduct(product.id) : pauseProduct(product.id));
+      // The product.paused/resumed event can lag over SSE; show the new state from the server.
+      void store.refresh?.();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not change the build state.');
     } finally {

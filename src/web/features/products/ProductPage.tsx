@@ -1,7 +1,8 @@
+import { useEffect } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 import { ProductIdSchema } from '../../../shared/ids.ts';
 import type { ProductState } from '../../../shared/state.ts';
-import { useApp } from '../../state/store.ts';
+import { useApp, useAppStore } from '../../state/store.ts';
 import { StatusBadge, Tabs, type TabItem } from '../../ui/index.ts';
 import { BuildTab } from '../board/BuildTab.tsx';
 import { ProductSettingsTab } from '../settings/ProductSettingsTab.tsx';
@@ -31,11 +32,18 @@ export function ProductPage() {
   const productId = ProductIdSchema.safeParse(id).data;
   const product = useApp((s) => (productId ? s.state.products[productId] : undefined));
   const loaded = useApp((s) => s.loaded);
+  const store = useAppStore();
+  const justCreated = isJustCreated(location.state);
+  useEffect(() => {
+    // The product.created event can lag over SSE (or be missed across a reconnect): when the
+    // just-created product is missing, read it from the server instead of waiting.
+    if (product === undefined && loaded && justCreated) void store.refresh?.();
+  }, [product, loaded, justCreated, store]);
 
   if (product === undefined) {
     if (!loaded) return <h1>Loading product…</h1>;
     // Right after creation the product.created event may still be on its way over SSE.
-    return <h1>{isJustCreated(location.state) ? 'Opening product…' : 'Product not found'}</h1>;
+    return <h1>{justCreated ? 'Opening product…' : 'Product not found'}</h1>;
   }
   const tab = TAB_IDS.find((t) => t === rest) ?? 'build';
   return (

@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import type { ProductId } from '../../../shared/ids.ts';
 import { ApiError, handoffProduct } from '../../state/api.ts';
-import { useApp, type AppSnapshot } from '../../state/store.ts';
+import { useApp, useAppStore, type AppSnapshot } from '../../state/store.ts';
 import { Button, Dialog } from '../../ui/index.ts';
 
 /**
@@ -15,6 +15,7 @@ export function HandoffPanel({ productId }: { productId: ProductId }) {
   );
   const [confirming, setConfirming] = useState(false);
   const [isSending, setSending] = useState(false);
+  const store = useAppStore();
   const [error, setError] = useState<string | null>(null);
   const hintId = useId();
 
@@ -31,6 +32,8 @@ export function HandoffPanel({ productId }: { productId: ProductId }) {
     try {
       await handoffProduct(productId);
       setConfirming(false);
+      // The new phase can arrive late over SSE; read it from the server.
+      void store.refresh?.();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not hand off the PRD.');
     } finally {
