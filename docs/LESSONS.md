@@ -7,3 +7,4 @@ Short lessons from building this product, written by Slopper when work needed fi
 - (milestone review) When a test depends on SDK behaviour that reads process.env (for example ANTHROPIC_BASE_URL), pin the variable with vi.stubEnv and rely on the unstubEnvs config, rather than assuming a clean environment.
 - (milestone review) When adding a dependency, install it with `npm i -D --save-exact` so package.json gets an exact version as CODING_STANDARDS §1 requires; the caret default slips past typecheck, lint and tests.
 - (milestone review) Before changing access rules, check the request's own Host as well as the bind address: behind Tailscale serve or a reverse proxy the server binds loopback but the client is remote.
+- (#206) The harness runs user journeys against `npm run dev` in your worktree and reuses `.data/dev`. Delete `.data/dev` after any manual browser check that changes settings (for example the default model), or the journeys inherit that state.
