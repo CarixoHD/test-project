@@ -9,7 +9,7 @@ import { pendingTriggers } from '../../shared/triggers.ts';
 import { open } from '../db/index.ts';
 import { createGit, type Git } from '../git/index.ts';
 import type { FakeScript, FakeTurn } from '../llm/index.ts';
-import { FakeContainerRuntime } from '../sandbox/index.ts';
+import { FakeContainerRuntime, selectRuntime } from '../sandbox/index.ts';
 import type { RunHandle } from '../scheduler/index.ts';
 import { Redactor } from '../security/index.ts';
 import { createStore, type Store } from '../store/index.ts';
@@ -99,6 +99,11 @@ type Harness = {
 async function setup(
   o: {
     runtime?: FakeContainerRuntime;
+    /**
+     * The server's runtime is Docker with a missing CLI, and `demoRuntime` is the fake: a demo
+     * (fake-model) orchestrator run must still use the fake.
+     */
+    dockerMissing?: boolean;
     failImageBuild?: () => boolean;
     models?: Record<string, { provider: string; model: string }>;
     log?: (line: string) => void;
@@ -141,7 +146,10 @@ async function setup(
     logsDir: path.join(dataDir, 'logs'),
     setTimer: () => () => {},
     git,
-    runtime,
+    runtime: o.dockerMissing
+      ? selectRuntime({ fakeDocker: false, dataDir }, { docker: '/nonexistent/vibecode-no-docker' })
+      : runtime,
+    ...(o.dockerMissing ? { demoRuntime: runtime } : {}),
     get modelDeps() {
       return { getSecret: () => undefined, fake: { script } };
     },
@@ -240,6 +248,19 @@ describe('runOrchestrator: a successful plan', () => {
     expect(inboxOf(h.store)).toEqual([]);
     expect(h.orchestrator.orchestratorNotBefore(P)).toBe(0);
     expectSnapshotMatchesReplay(h.store);
+  });
+
+  it('runs a demo (fake model) plan on the fake runtime when Docker is missing', async () => {
+    const h = await setup({ dockerMissing: true });
+
+    await h.run(setupScript());
+
+    expect(h.store.q.issuesByProduct(P).map((i) => i.title)).toEqual([
+      'Scaffold',
+      'List todos',
+      'Add a todo',
+    ]);
+    expect(h.runtime.calls.filter((c) => c.kind === 'open').length).toBe(1);
   });
 
   it('posts the plan summary to the inbox when a PRD version > 1 was applied', async () => {

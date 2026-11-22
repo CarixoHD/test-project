@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DOCKER_NOT_RUNNING, DockerCliRuntime } from './docker-cli.ts';
-import { FakeContainerRuntime } from './fake.ts';
+import { CLAUDE_NEEDS_DOCKER, FakeContainerRuntime } from './fake.ts';
 import { selectRuntime } from './select-runtime.ts';
 
 const SPEC = {
@@ -30,6 +30,13 @@ describe('selectRuntime', () => {
     );
     const r = await runtime.runOnce(SPEC, ['make', 'check'], { timeoutMs: 1 });
     expect([r.code, r.stdout]).toEqual([0, 'ok\n']);
+  });
+
+  it('the fake runtime rejects Claude Code images with a plain Docker message', async () => {
+    const runtime = selectRuntime({ fakeDocker: true, dataDir: '/data' });
+    await expect(
+      runtime.ensureImage({ productId: '01PROD', contextDir: '/data', claude: true }),
+    ).rejects.toThrow(CLAUDE_NEEDS_DOCKER);
   });
 
   it('without fakeDocker, returns the docker CLI runtime', () => {

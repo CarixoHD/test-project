@@ -1,16 +1,16 @@
 // Written by Slopper. Journeys import { test, expect } from "./journey".
-import { test as base, expect } from "@playwright/test";
+import { test as base, expect } from '@playwright/test';
 
-export const test = base.extend<{ consoleGuard: void }>({
+export const test = base.extend<{ consoleGuard: undefined }>({
   consoleGuard: [
     async ({ page }, use) => {
       const errors: string[] = [];
-      page.on("console", (message) => {
-        if (message.type() === "error") errors.push(message.text());
+      page.on('console', (message) => {
+        if (message.type() === 'error') errors.push(message.text());
       });
-      page.on("pageerror", (error) => errors.push(error.message));
-      await use();
-      expect(errors, "errors in the browser console").toEqual([]);
+      page.on('pageerror', (error) => errors.push(error.message));
+      await use(undefined);
+      expect(errors, 'errors in the browser console').toEqual([]);
     },
     { auto: true },
   ],

@@ -89,6 +89,9 @@ export function createStore({
   const listeners = new Set<(e: Event) => void>();
   const q = createQueries(db);
   let committing = false;
+  /** Committed events not yet delivered to subscribers, and whether a delivery loop runs. */
+  const queue: Event[] = [];
+  let notifying = false;
 
   /** Validates, redacts, appends and projects one draft; returns the stored event. */
   function append(draft: EventDraft, ts: number): Event {
@@ -117,18 +120,27 @@ export function createStore({
 
   /** Never throws: the commit is already durable, so a failing subscriber is only reported. */
   function notify(committed: Event[]): void {
-    for (const e of committed) {
-      for (const fn of [...listeners]) {
-        try {
-          fn(e);
-        } catch (err) {
+    queue.push(...committed);
+    // A subscriber committed (e.g. the scheduler): the outer loop delivers its events after the
+    // current one, so every subscriber sees seq order (the SSE route drops seqs it has passed).
+    if (notifying) return;
+    notifying = true;
+    try {
+      for (let e = queue.shift(); e !== undefined; e = queue.shift()) {
+        for (const fn of [...listeners]) {
           try {
-            onSubscriberError(err, e);
-          } catch {
-            // A broken sink must not turn a durable commit into a failure either.
+            fn(e);
+          } catch (err) {
+            try {
+              onSubscriberError(err, e);
+            } catch {
+              // A broken sink must not turn a durable commit into a failure either.
+            }
           }
         }
       }
+    } finally {
+      notifying = false;
     }
   }
 

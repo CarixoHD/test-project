@@ -7,7 +7,7 @@ import type { SparMessage } from '../../shared/state.ts';
 import type { AgentResult } from '../agents/index.ts';
 import { nextSparMessageId } from '../commands/index.ts';
 import type { ModelDeps } from '../llm/index.ts';
-import type { ContainerRuntime, Sandbox } from '../sandbox/index.ts';
+import { CLAUDE_NEEDS_DOCKER, type ContainerRuntime, type Sandbox } from '../sandbox/index.ts';
 import { renderPrompt } from './prompts.ts';
 import { resolveModel } from './resolve-model.ts';
 import { runRecordedAgent, type RecordedRunContext } from './run-recorded.ts';
@@ -89,7 +89,12 @@ export async function sparTurn(
     ));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    recordFailure(deps, productId, `The sparring agent crashed: ${sentence(message)} ${AGAIN}`);
+    // A known configuration problem, not a crash: report the plain message on its own.
+    const detail =
+      message === CLAUDE_NEEDS_DOCKER
+        ? `${sentence(message)} ${AGAIN}`
+        : `The sparring agent crashed: ${sentence(message)} ${AGAIN}`;
+    recordFailure(deps, productId, detail);
     return;
   }
 

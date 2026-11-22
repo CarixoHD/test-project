@@ -130,6 +130,18 @@ describe('store.commit', () => {
     ]);
   });
 
+  it('delivers a commit made by a subscriber after the event that triggered it', () => {
+    // The scheduler commits from its subscriber; the SSE route drops any seq it has passed.
+    const { store } = setup();
+    store.subscribe((e) => {
+      if (e.seq === 1) store.commit(() => [sparMessage('m1', 'nested')]);
+    });
+    const seen: number[] = [];
+    store.subscribe((e) => seen.push(e.seq));
+    store.commit(() => [productCreated()]);
+    expect(seen).toEqual([1, 2]);
+  });
+
   it('isolates a throwing subscriber: commit returns, events persist, later subscribers still run', () => {
     const db = open(':memory:');
     const reported: Array<{ err: unknown; event: Event }> = [];
@@ -160,7 +172,8 @@ describe('store.commit', () => {
   it('reports subscriber errors to console.error, redacted, by default', () => {
     const { store, redactor } = setup();
     redactor.register(SECRET);
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Observe only: the redacted line also reaches the test output.
+    const spy = vi.spyOn(console, 'error');
     try {
       store.subscribe(() => {
         throw new Error(`leaked ${SECRET}`);

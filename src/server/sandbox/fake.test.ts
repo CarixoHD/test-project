@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CLAUDE_NEEDS_DOCKER,
   DEFAULT_BASE_IMAGE_DIR,
   DockerCliRuntime,
   FakeContainerRuntime,
@@ -138,6 +139,17 @@ describe('FakeContainerRuntime lifecycle', () => {
     expect(derived).toBe(await claudeImageTag(DEFAULT_BASE_IMAGE_DIR, '01PROD', product));
     expect(rt.calls[0]).toEqual({ kind: 'ensureImage', ...p });
     expect(rt.calls[1]).toEqual({ kind: 'ensureImage', productId: '01PROD', contextDir: wt });
+  });
+
+  it('rejects a Claude Code image when it stands in for a server without Docker', async () => {
+    const rt = new FakeContainerRuntime({ dataDir, withoutDocker: true });
+    await expect(
+      rt.ensureImage({ productId: '01PROD', contextDir: wt, claude: true }),
+    ).rejects.toThrow(CLAUDE_NEEDS_DOCKER);
+    // Every other image still works: the fake keeps running the demo check.
+    await expect(rt.ensureImage({ productId: '01PROD', contextDir: wt })).resolves.toMatch(
+      /^vibecode\/base:/,
+    );
   });
 
   it('tags the Claude image by claude-code.Dockerfile, like the docker runtime', async () => {
