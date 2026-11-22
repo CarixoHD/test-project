@@ -203,6 +203,7 @@ describe('sparTurn', () => {
     const text = ofType(events, 'spar.message')[0]?.data.text ?? '';
     expect(text).toContain('Claude Code needs Docker');
     expect(text).toMatch(/pick an API-key model in Settings/);
+    expect(text).not.toContain('crashed');
     expect(text).not.toContain('no script entry');
     expect(ofType(events, 'inbox.created')[0]?.data.body).toBe(text);
     expect(ofType(events, 'agent.spawned')).toEqual([]);
